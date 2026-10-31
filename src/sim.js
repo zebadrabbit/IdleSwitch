@@ -252,7 +252,7 @@ export function spawnTrain(sim, { type, dir, dest = null, name, id = sim.nextTra
     id, name: name ?? `${type} ${id}`, type, dir, prio: T.prio, len: trainLength(type), maxSpeed: T.max * MPH,
     path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
     goal: dest !== null ? { track: dest } : { node: exitPortalNode(sim, dir) },
-    dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, events: [],
+    dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, stalled: false, events: [],
   };
   sim.trains.set(id, train);
   return train;
@@ -406,7 +406,7 @@ export function moveTrains(sim, dt = 1) {
     if (train.speed > 0 && v === 0) train.stops++;
     train.speed = v;
     train.headDist += adv;
-    if (adv > 0) train.lastMoveTime = sim.time;
+    if (adv > 0) Object.assign(train, { lastMoveTime: sim.time, stalled: false });
     occupy(sim, train);
     sectionalRelease(sim, train);
     if (runOff && train.headDist - train.len >= pathLength(sim, train)) { despawnTrain(sim, train); continue; }
@@ -419,6 +419,7 @@ export function moveTrains(sim, dt = 1) {
 export const DENSITY = { light: 12 * 60, normal: 7 * 60, busy: 4 * 60 }; // mean spawn interval per direction, sim s
 export const DWELL = { P: 3 * 60, L: 15 * 60, industry: 25 * 60 };
 const STALL = 30 * 60, STARVE = 10 * 60, NEAR = 20; // stood this long: logged / served first; "behind within" cells
+const QUEUE_MAX = 8; // queued trains per portal
 
 export function logEvent(sim, text) {
   sim.log.push({ t: sim.time, text });
@@ -493,7 +494,9 @@ function spawner(sim) {
   for (const dir of [1, -1]) {
     const queue = sim.queue[dir];
     while (sim.time >= sim.nextSpawn[dir]) {
-      queue.push(newEntry(sim, dir));
+      // ponytail: a full queue (QUEUE_MAX) drops the draw. The board lists queued trains as due soon, and past a
+      // handful they only pile up delay. Thin the spawn rate instead if queues ever sit full.
+      if (queue.length < QUEUE_MAX) queue.push(newEntry(sim, dir));
       sim.nextSpawn[dir] += -DENSITY[sim.density] * Math.log(1 - sim.rng()); // exponential gaps
     }
     // Rule: the first eligible entry enters, not strictly the head: one waiting for a full spur doesn't hold the
@@ -542,7 +545,8 @@ function missions(sim) {
         if (t.state === 'holding') Object.assign(t, { state: 'running', lastMoveTime: sim.time });
       } else if (t.state === 'stopped' && at !== null) t.state = 'holding';
     }
-    if (t.state !== 'dwelling' && t.state !== 'holding' && !t.stalled && sim.time - t.lastMoveTime >= STALL) {
+    // A stand is logged once, in AUTO only (in MANUAL the human holds trains at will); moving re-arms it.
+    if (sim.auto && t.state !== 'dwelling' && t.state !== 'holding' && !t.stalled && sim.time - t.lastMoveTime >= STALL) {
       t.stalled = true;
       logEvent(sim, `STALL ${t.name}`);
     }

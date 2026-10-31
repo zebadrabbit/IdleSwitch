@@ -370,7 +370,7 @@ const exitW = exitPortalNode(S, W);
 assert.equal(S.trains.get(X.id), X);
 assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, prio: 5, len: trainLength('X'), maxSpeed: 60 * MPH,
   path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { node: exitW }, dwellUntil: 0,
-  holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, events: [] });
+  holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false, events: [] });
 assert.equal(headNode(S, X), entryPortalNode(S, W));
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
 
@@ -745,6 +745,38 @@ for (const seed of ['lebanon', 's7', 's42']) {
   assert.ok(S.log.some(e => / entered from /.test(e.text)));
 }
 
+// STALL: logged in AUTO only, once per stand; moving re-arms it. M 6 stands at signals whose routes are set for a
+// train that isn't there (99), so neither it nor the operator can take them.
+{
+  const S = createSim(L, 'stall');
+  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  spawnTrain(S, { type: 'M', dir: E, name: 'M 6' });
+  const ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`), pc = S.routesFrom.get(ps)[0], home = pc.exitSignal;
+  const block = sig => setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { trainId: 99 }).route;
+  const stalls = () => S.log.filter(e => e.text === 'STALL M 6').length, r = block(ps);
+  for (let i = 0; i < 40 * 60; i++) step(S);
+  assert.equal(stalls(), 0, 'STALL logged in MANUAL');
+  S.auto = true;
+  step(S);
+  assert.equal(stalls(), 1, 'stood 40 min in AUTO, not logged');
+  block(home);
+  cancelRoute(S, r.id); // the operator routes M 6 up to the home signal, where it stands again
+  for (let i = 0; i < 40 * 60; i++) step(S);
+  assert.equal(stalls(), 2, 'a second stand, after moving, not logged');
+}
+
+// a portal that can't take a train keeps at most 8 waiting per direction: draws past that are dropped
+{
+  const S = busySim('lebanon');
+  for (const dir of [E, W]) {
+    const sig = S.signalAt.get(`${entryPortalNode(S, dir)}:${dir}`);
+    setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { trainId: 99 }); // the portal edge is routed for another train
+  }
+  for (let i = 0; i < 3 * 3600; i++) step(S);
+  assert.equal(S.trains.size, 0);
+  assert.deepEqual([S.queue[1].length, S.queue[-1].length], [8, 8]);
+}
+
 // soak: 8 sim-hours busy over the brief's three seeds plus s47 (a local stood 45 min at a merge there before the
 // operator served long-standing trains first); never two trains on one edge, never a stall, and the spawn gate
 // (a queued train with a destination enters only while that track is free, and reserves it)
@@ -765,7 +797,12 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       assert.equal(S.reserved.get(T.dest), T.id);
       assert.ok(trackFree(S, T.dest, T.id));
     }
-    for (const st of S.edgeState) assert.ok(st.occ.size <= 1, `${seed}: two trains on one edge`);
+    S.edgeState.forEach((st, e) => {
+      assert.ok(st.occ.size <= 1, `${seed}: two trains on one edge`);
+      // an occupied edge is unrouted (released behind its train, or never routed) or routed for its occupant
+      if (st.occ.size === 1 && st.route !== null) assert.equal(S.routes.get(st.route).trainId, [...st.occ][0], `${seed}: edge ${e} routed for another train`);
+    });
+    assert.ok(S.queue[1].length <= 8 && S.queue[-1].length <= 8, `${seed}: queue ${S.queue[1].length} / ${S.queue[-1].length}`);
     for (const T of S.trains.values()) {
       if (T.state === 'dwelling') dwelt.set(T.name, G.tracks[T.dest].cls);
       else if (T.state === 'holding') {
