@@ -655,6 +655,27 @@ for (const seed of ['lebanon', 's7', 's42']) {
   assert.equal(S.log[0].text, 'line 50');
 }
 
+// the portal queue admits its first eligible entry: a through train queued behind a freight whose spur (here: track)
+// is not free enters first; the freight enters only once its track is free
+{
+  const S = createSim(generate('s42'), 's42'), G = S.layout;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // only the hand-made queue below
+  const spur = G.tracks.find(t => t.cls === 'spur'), dir = spur.dir, q = S.queue[dir];
+  const entry = (type, dest, name) => ({ id: S.nextTrainId++, name, type, dir, dest, len: trainLength(type), spawnTime: S.time, sched: S.time });
+  const F = entry(spur.industry.trainType, spur.id, 'F 1'), X = entry('X', null, 'X 3');
+  q.push(F, X);
+  S.reserved.set(spur.id, 999); // a train still working the spur
+  step(S);
+  assert.ok(S.trains.has(X.id), 'the through train behind entered');
+  assert.deepEqual(q, [F], 'the freight waits for its spur');
+  for (let i = 0; i < 300; i++) { step(S); assert.ok(!S.trains.has(F.id), 'entered while its spur was not free'); }
+  S.reserved.delete(spur.id);
+  S.auto = true; // route the X on so the portal clears
+  for (let i = 0; i < 1800 && !S.trains.has(F.id); i++) step(S);
+  assert.ok(S.trains.has(F.id) && q.length === 0, 'the freight entered once its spur was free');
+  assert.equal(S.reserved.get(spur.id), F.id);
+}
+
 // step: one sim second; the first spawn of each direction is due at 06:00 and the head enters at once
 {
   const S = busySim('lebanon');
@@ -678,9 +699,10 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   const S = busySim(seed), G = S.layout, dwelt = new Map();
   let entered = 0;
   for (let i = 0; i < 8 * 3600; i++) {
-    const heads = [E, W].map(d => S.queue[d][0]).filter(Boolean).map(q => ({ q, free: q.dest === null || trackFree(S, q.dest) }));
+    // any queued entry may enter (the first eligible, not only the head), so snapshot them all
+    const queued = [...S.queue[E], ...S.queue[W]].map(q => ({ q, free: q.dest === null || trackFree(S, q.dest) }));
     step(S);
-    for (const { q, free } of heads) {
+    for (const { q, free } of queued) {
       if (!S.trains.has(q.id)) continue;
       entered++;
       if (q.dest === null) continue;

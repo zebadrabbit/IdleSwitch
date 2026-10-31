@@ -484,8 +484,11 @@ function spawner(sim) {
       queue.push(newEntry(sim, dir));
       sim.nextSpawn[dir] += -DENSITY[sim.density] * Math.log(1 - sim.rng()); // exponential gaps
     }
-    if (!queue.length || !canEnter(sim, queue[0])) continue;
-    const q = queue.shift(), t = spawnTrain(sim, q);
+    // Rule: the first eligible entry enters, not strictly the head: one waiting for a full spur doesn't hold the
+    // main for the through trains queued behind it.
+    const i = queue.findIndex(q => canEnter(sim, q));
+    if (i < 0) continue;
+    const [q] = queue.splice(i, 1), t = spawnTrain(sim, q);
     t.spawnTime = q.spawnTime;
     t.sched = q.sched;
     if (q.dest !== null) sim.reserved.set(q.dest, t.id);
@@ -493,9 +496,8 @@ function spawner(sim) {
   }
 }
 
-// The held-for train has left (or never existed), or the routes set ahead of it already run past the holder's
-// signal (the holder's path ends there): it has the main, and the holder follows it out. A held-for train that
-// stopped to dwell or hold itself no longer counts as coming (as in trainBehind).
+// Rule: a hold ends when the awaited train is gone, has routes past the holder's signal (where the holder's path
+// ends: it has the main, the holder follows it out), or has itself stopped to dwell or hold (not coming).
 function holdOver(sim, t) {
   const h = sim.trains.get(t.holdFor), x = n => sim.layout.nodes[n].x;
   if (!h) return !sim.queue[t.dir].some(q => q.id === t.holdFor);
@@ -530,10 +532,9 @@ function missions(sim) {
   }
 }
 
-// ponytail: "behind" is a proximity heuristic: same direction, higher priority, head node (where its routes end)
-// up to NEAR cells behind this one's, not dwelling or holding; or the head of that direction's portal queue, if
-// its destination is free (one waiting for a busy spur is not coming, and holding for it parked trains for an
-// hour in the soak). No lookahead on where the faster train is actually going.
+// Rule: a higher-priority train of the same direction is "behind" if its head node (where its routes end) is up to
+// NEAR cells behind this one's and it isn't dwelling or holding, or it is the next queued train to enter.
+// ponytail: proximity on head nodes only, ceiling NEAR = 20 cells and no lookahead on where the faster train goes.
 function trainBehind(sim, t) {
   const x = n => sim.layout.nodes[n].x, xt = x(headNode(sim, t));
   for (const h of sim.trains.values()) {
@@ -541,8 +542,10 @@ function trainBehind(sim, t) {
     const d = (xt - x(headNode(sim, h))) * t.dir;
     if (d > 0 && d <= NEAR) return h;
   }
-  const q = sim.queue[t.dir][0];
-  return q && TYPES[q.type].prio > t.prio && (q.dest === null || trackFree(sim, q.dest)) ? q : null;
+  // Rule: a queued train counts only if its destination is free (or it has none): one waiting for a busy spur is
+  // not coming, and holding for it parked trains for an hour in the soak.
+  const q = sim.queue[t.dir].find(k => k.dest === null || trackFree(sim, k.dest));
+  return q && TYPES[q.type].prio > t.prio ? q : null;
 }
 
 // Overtake: route t from sig into a free holding track it fits, to wait there for the train behind.
@@ -557,15 +560,17 @@ function hold(sim, t, sig, cands) {
   return true;
 }
 
-// Highest priority first, except that a train which has stood STARVE goes before any that hasn't: under busy
-// traffic a higher-priority main train is waiting every time the main frees, and a local at a merge starved past
-// STALL in the soak. A train whose path ends at a signal with no route from it gets the route to the next signal
-// along its pathfound way, when the interlocking allows; otherwise it waits and tries again next tick. Trains
-// ahead don't hide the way (blockedCost), and a way that dives into some other track to get round one means wait.
-// The operator never cancels anything, so human routes stand.
+// A train whose path ends at a signal with no route from it gets the route to the next signal along its pathfound
+// way, when the interlocking allows; otherwise it waits and tries again next tick. The operator never cancels
+// anything, so human routes stand.
+// Rule: trains ahead don't hide the way: a blocked edge costs BLOCKED_COST, and setRoute decides if the route sets now.
+// ponytail: 1000 outweighs any detour on generated layouts (under 100 columns); raise it if layouts reach ~1000 cells.
 const BLOCKED_COST = 1000;
 function operator(sim) {
   const { edges, tracks } = sim.layout;
+  // Rule: highest priority first, but a train that has stood STARVE (10 min) goes before any that hasn't; under
+  // busy traffic a higher-priority main train waits every time the main frees, and a local at a merge starved.
+  // ponytail: a fixed threshold, not aging; worst stand 16.8 min over 60 busy seeds. Age it if denser traffic starves.
   const rank = t => t.prio + (sim.time - t.lastMoveTime >= STARVE ? 10 : 0);
   for (const t of [...sim.trains.values()].sort((a, b) => rank(b) - rank(a) || a.id - b.id)) {
     if (t.state === 'dwelling' || t.state === 'holding' || t.holdFor !== null) continue; // holding or on its way in
@@ -573,7 +578,8 @@ function operator(sim) {
     if (sig === undefined || routeFrom(sim, sig)) continue;
     if (t.dest !== null && trackAhead(sim, t) === t.dest) continue; // arriving: it dwells before going on
     const path = findPath(sim, node, t.dir, t.goal, { trainId: t.id, blockedCost: BLOCKED_COST });
-    if (!path) { // no way at all: a human route took it past its destination; give up the call, don't stand for ever
+    if (!path) {
+      // Rule: no way at all means a human route took it past its destination: give up the call, run for the exit.
       if (t.dest !== null) {
         logEvent(sim, `${t.name} missed ${tracks[t.dest].name}`);
         sim.reserved.delete(t.dest);
@@ -585,7 +591,9 @@ function operator(sim) {
     if (t.dest === null && t.prio <= 2 && hold(sim, t, sig, cands)) continue;
     const cand = cands.find(c => c.edges.every((e, i) => path[i] === e));
     const into = cand ? edges[cand.edges.at(-1)].track : null;
-    if (!cand || (into !== null && into !== t.dest)) continue; // a detour through some other track: wait instead
+    // Rule: never into a track that isn't its destination (holds go through hold()); a way round through one = wait.
+    // ponytail: sound while mains are one-way with no crossovers (every way round is a track); not for bidirectional CTC.
+    if (!cand || (into !== null && into !== t.dest)) continue;
     if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok) logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}`);
   }
 }
