@@ -267,18 +267,23 @@ const undo = r => cancelRoute(S4, r.id);
 
 for (const s of sigs) assert.equal(A(s.id), ASPECT.STOP, 'fresh sim: every signal STOP');
 
-// straight main: next STOP -> APPROACH; next also set -> CLEAR (its own next is the open exit: CLEAR)
-{
-  const s1 = sigs.find(s => s.kind === 'high' && S4.routesFrom.get(s.id).some(c => plain(c) && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain)));
-  assert.ok(s1);
-  const c1 = S4.routesFrom.get(s1.id).find(c => plain(c) && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain));
-  const r1 = set(s1.id, c1);
-  assert.equal(A(s1.id), ASPECT.APPROACH);
-  const c2 = S4.routesFrom.get(c1.exitSignal).find(plain);
-  const r2 = set(c1.exitSignal, c2);
-  assert.equal(A(c1.exitSignal), c2.exitSignal === null ? ASPECT.CLEAR : ASPECT.APPROACH);
-  if (c2.exitSignal === null) assert.equal(A(s1.id), ASPECT.CLEAR);
-  undo(r2); undo(r1);
+// the straight main chain, entry portal to exit portal: every signal CLEAR (the last one's next is the open exit,
+// every other one's next is CLEAR). Drop the last route: its signal STOP, the one before APPROACH, the rest ADVANCE_APPROACH.
+for (const dir of [E, W]) {
+  const chain = [];
+  for (let sig = S4.signalAt.get(`${entryPortalNode(S4, dir)}:${dir}`); sig !== null;) {
+    const c = S4.routesFrom.get(sig).find(plain);
+    chain.push(set(sig, c));
+    sig = c.exitSignal;
+  }
+  assert.ok(chain.length >= 3 && chain.at(-1).cand.exitNode === exitPortalNode(S4, dir));
+  assert.deepEqual(chain.map(r => A(r.signal)), chain.map(() => ASPECT.CLEAR), `${dir}: full chain`);
+  const last = chain.pop();
+  undo(last);
+  assert.equal(A(last.signal), ASPECT.STOP);
+  assert.deepEqual(chain.map(r => A(r.signal)), chain.map((_, i) => (i === chain.length - 1 ? ASPECT.APPROACH : ASPECT.ADVANCE_APPROACH)),
+    `${dir}: chain to a STOP`);
+  chain.forEach(undo);
 }
 
 // into a platform: DIVERGING_APPROACH; into yard/siding/spur: RESTRICTING
