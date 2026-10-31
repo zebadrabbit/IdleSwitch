@@ -12,23 +12,25 @@
 <header id="hud">
   <span class="wordmark">IdleSwitch</span>
   <span id="hud-clock"></span>
-  <button id="btn-pause" title="pause/resume">⏸</button>
-  <button id="btn-speed" title="sim speed">1x</button>
-  <span id="hud-auto"></span>
-  <span id="hud-seed"></span>
+  <button id="btn-pause" title="pause / resume (Space)">⏸</button>
+  <button id="btn-speed" title="sim speed (+ / −)">1×</button>
+  <button id="hud-auto" title="AUTO / MANUAL (A)">AUTO</button>
+  <button id="hud-seed" title="seed: click to copy"></button>
+  <select id="hud-density" title="traffic density"></select>
   <span class="spacer"></span>
-  <button data-panel="board">Board</button>
-  <button data-panel="log">Log</button>
-  <button data-panel="inspector">Inspector</button>
-  <button data-panel="legend">Legend</button>
-  <button data-panel="settings">Settings</button>
+  <button data-panel="board" title="train board (1)">Board</button>
+  <button data-panel="log" title="log (2)">Log</button>
+  <button data-panel="inspector" title="inspector (3)">Inspector</button>
+  <button data-panel="legend" title="legend and keys (4, ?)">Legend</button>
+  <button data-panel="settings" title="settings (5)">Settings</button>
   <button id="btn-fullscreen" title="fullscreen">⛶</button>
 </header>
-<section class="panel" id="panel-board"><div class="panel-title">Board <button class="panel-hide">×</button></div><div class="panel-body"></div></section>
-<section class="panel" id="panel-log"><div class="panel-title">Log <button class="panel-hide">×</button></div><div class="panel-body"></div></section>
-<section class="panel" id="panel-inspector"><div class="panel-title">Inspector <button class="panel-hide">×</button></div><div class="panel-body"></div></section>
-<section class="panel" id="panel-legend"><div class="panel-title">Legend <button class="panel-hide">×</button></div><div class="panel-body"></div></section>
-<section class="panel" id="panel-settings"><div class="panel-title">Settings <button class="panel-hide">×</button></div><div class="panel-body"></div></section>
+<div id="docks"><div id="dock-left"></div><div id="dock-center"></div><div id="dock-right"></div><div id="dock-bottom"></div></div>
+<section class="panel" id="panel-board"><div class="panel-title">Board <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
+<section class="panel" id="panel-log"><div class="panel-title">Log <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
+<section class="panel" id="panel-inspector"><div class="panel-title">Inspector <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
+<section class="panel" id="panel-legend"><div class="panel-title">Legend <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
+<section class="panel" id="panel-settings"><div class="panel-title">Settings <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
 <script type="module" src="src/ui.js"></script>
 </body>
 </html>

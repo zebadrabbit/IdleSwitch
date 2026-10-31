@@ -44,7 +44,7 @@ case "${1:-}" in
     tail -n "${2:-50}" "$LOG_FILE"
     ;;
   test)
-    node tests/test_gen.mjs && node tests/test_sim.mjs
+    node tests/test_gen.mjs && node tests/test_sim.mjs && node tests/test_ui.mjs
     ;;
   deploy)
     # No build step: the site is the repo root. Ship it as-is, minus dev-only files.

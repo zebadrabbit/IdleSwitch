@@ -1,28 +1,402 @@
-// Throwaway smoke harness for the renderer (Task 7). Task 8 replaces this file with the real UI.
+// The app: boot from the seed, the frame loop, HUD, dockable panels with saved layout and settings, NX routing
+// by clicks, keybinds, camera. Panel bodies come from panels.js; pure helpers from ui-util.js.
 import { generate } from './gen.js';
-import { createSim, step } from './sim.js';
+import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel } from './sim.js';
 import { createRenderer } from './render.js';
+import { PANELS, SPEEDS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
+  cleanSettings, cleanLayout } from './ui-util.js';
+import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
 
-const seed = new URLSearchParams(location.search).get('seed') ?? 'lebanon';
+const SIM_PER_SEC = 10;      // sim seconds per real second at 1x
+const IDLE_MS = 120000;      // MANUAL with no input this long returns to AUTO (setting idleReturn)
+const PANEL_MS = 250;        // DOM panels refresh at most 4x a second
+const FLASH_MS = 1500;       // NX refusal: the entrance signal flashes red 3x (250 ms on, 250 off)
+const LAYOUT_KEY = 'idleswitch.layout', SETTINGS_KEY = 'idleswitch.settings';
+const $ = sel => document.querySelector(sel);
+const store = (() => { try { return localStorage; } catch { return null; } })(); // access itself can throw
+const newSeed = () => randomSeed(Math.random); // the app's one use of Math.random
+
+// ---- Boot
+const params = new URLSearchParams(location.search);
+const seed = params.get('seed') ?? newSeed(); // bad or empty seeds go to generate as they are
+params.set('seed', seed);
+try { history.replaceState(null, '', `?${params}`); } catch { /* file:// and sandboxed frames refuse */ }
+
+const settings = loadJSON(store, SETTINGS_KEY, v => cleanSettings(v, Object.keys(DENSITY)));
+let panels = loadJSON(store, LAYOUT_KEY, cleanLayout);
 const layout = generate(seed);
-const sim = createSim(layout, seed, { density: 'normal' });
+const sim = createSim(layout, seed, { density: settings.density });
 sim.auto = true;
-// Fast-forward 20 sim-minutes so the first frame (and the headless screenshot) has trains. Task 8 removes this.
-for (let i = 0; i < 1200; i++) step(sim);
+// Debug: ?ff=N runs N sim seconds at boot. Headless screenshots need it: --virtual-time-budget never runs rAF.
+const ff = Math.min(86400, Math.max(0, parseInt(params.get('ff'), 10) || 0));
+for (let i = 0; i < ff; i++) step(sim);
 
-document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden')); // Task 8 lays the panels out
-const r = createRenderer(document.getElementById('map'));
-r.resize();
-r.fit(layout);
-addEventListener('resize', () => { r.resize(); r.fit(layout); });
+const canvas = $('#map'), r = createRenderer(canvas);
+const state = {
+  speed: settings.speed, paused: false, armedSignal: null, selected: null, lastInput: performance.now(),
+  hover: null, refused: null, fitted: true, fitZoom: 1, pressInPanel: false,
+};
+const panelEl = id => $(`#panel-${id}`), bodies = Object.fromEntries(PANELS.map(id => [id, $(`#panel-${id} .panel-body`)]));
+const docks = { left: $('#dock-left'), right: $('#dock-right'), bottom: $('#dock-bottom') };
+const touch = () => { state.lastInput = performance.now(); };
+const saveSettings = () => saveJSON(store, SETTINGS_KEY, settings);
 
-const SIM_PER_SEC = 10;
-let last = performance.now(), acc = 0;
+// ---- Camera: fit the terminal into the area the docked panels leave free (the whole window in bare mode).
+function fit() {
+  const b = $('#dock-center').getBoundingClientRect();
+  const box = b.width > 240 && b.height > 160 ? { x: b.left, y: b.top, w: b.width, h: b.height } : undefined; // too small: whole window
+  r.fit(layout, box);
+  state.fitted = true;
+  state.fitZoom = r.camera.zoom;
+}
+
+// ---- HUD
+function hud() {
+  $('#hud-clock').textContent = formatClock(sim.time);
+  const a = $('#hud-auto');
+  a.textContent = sim.auto ? 'AUTO' : 'MANUAL';
+  a.classList.toggle('on', sim.auto);
+  $('#btn-pause').textContent = state.paused ? '▶' : '⏸';
+  $('#btn-pause').classList.toggle('on', state.paused);
+  $('#btn-speed').textContent = `${state.speed}×`;
+}
+const togglePause = () => { state.paused = !state.paused; hud(); };
+function toggleAuto() {
+  sim.auto = !sim.auto;
+  logEvent(sim, sim.auto ? 'AUTO resumed' : 'MANUAL: panel taken');
+  hud();
+  refreshPanels();
+}
+function setSpeed(s) {
+  state.speed = settings.speed = s;
+  saveSettings();
+  const radio = bodies.settings.querySelector(`input[name="speed"][value="${s}"]`);
+  if (radio) radio.checked = true;
+  hud();
+}
+const stepSpeed = d => setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, SPEEDS.indexOf(state.speed) + d))]);
+function setDensity(d) {
+  settings.density = sim.density = d;
+  saveSettings();
+  $('#hud-density').value = d;
+  bodies.settings.querySelector('select[name="density"]').value = d;
+}
+// ponytail: the standard Fullscreen API only; where it is missing (iPhone Safari) the button does nothing.
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  else document.documentElement.requestFullscreen?.().catch(() => {});
+}
+const loadSeed = s => { location.search = `?${new URLSearchParams({ seed: s })}`; };
+
+$('#btn-pause').addEventListener('click', togglePause);
+$('#btn-speed').addEventListener('click', () => setSpeed(SPEEDS[(SPEEDS.indexOf(state.speed) + 1) % SPEEDS.length]));
+$('#hud-auto').addEventListener('click', toggleAuto);
+$('#btn-fullscreen').addEventListener('click', toggleFullscreen);
+$('#hud-density').innerHTML = densityOptions(settings.density);
+$('#hud-density').addEventListener('change', e => { setDensity(e.target.value); e.target.blur(); }); // keys work again at once
+const seedBtn = $('#hud-seed');
+seedBtn.textContent = seed;
+seedBtn.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(seed); seedBtn.textContent = 'copied'; } catch { seedBtn.textContent = 'copy failed'; }
+  setTimeout(() => { seedBtn.textContent = seed; }, 1200);
+});
+// A mouse click shouldn't leave focus on a button, or Space would press it again instead of pausing.
+document.addEventListener('click', e => { if (e.detail) e.target.closest?.('button')?.blur(); });
+
+// ---- Panels: dock (moved into a #dock-* grid cell) or float (left/top), hide, drag; saved on every change.
+function clampPos(el, x, y) {
+  const w = el.offsetWidth || 300;
+  return { x: Math.max(0, Math.min(innerWidth - w, x)), y: Math.max(36, Math.min(innerHeight - 30, y)) };
+}
+function applyPanel(id) {
+  const p = panels[id], el = panelEl(id);
+  el.classList.toggle('hidden', p.hidden);
+  el.classList.remove('dock-left', 'dock-right', 'dock-bottom');
+  if (p.dock) {
+    el.classList.add(`dock-${p.dock}`);
+    if (el.parentElement !== docks[p.dock]) docks[p.dock].append(el);
+    el.style.left = el.style.top = '';
+  } else {
+    if (el.parentElement !== document.body) document.body.append(el);
+    const c = clampPos(el, p.x, p.y);
+    el.style.left = `${c.x}px`;
+    el.style.top = `${c.y}px`;
+  }
+  $(`#hud button[data-panel="${id}"]`).classList.toggle('on', !p.hidden);
+}
+function layoutChanged() {
+  saveJSON(store, LAYOUT_KEY, panels);
+  if (state.fitted) fit();
+  refreshPanels();
+}
+function togglePanel(id) {
+  panels[id].hidden = !panels[id].hidden;
+  applyPanel(id);
+  layoutChanged();
+}
+function resetLayout() {
+  panels = cleanLayout(DEFAULT_LAYOUT);
+  PANELS.forEach(applyPanel);
+  layoutChanged();
+}
+
+function startDrag(id, e) {
+  const el = panelEl(id), title = e.currentTarget, x0 = e.clientX, y0 = e.clientY, rect = el.getBoundingClientRect();
+  let dx = x0 - rect.left, dy = y0 - rect.top, moved = false;
+  title.setPointerCapture(e.pointerId);
+  const move = ev => {
+    if (!moved) {
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+      moved = true;
+      el.classList.add('dragging');
+      if (panels[id].dock) { // undock at the floating size, grabbed near where the title was taken
+        panels[id].dock = null;
+        applyPanel(id);
+        title.setPointerCapture(ev.pointerId); // moving the panel out of its dock dropped the capture
+        dx = Math.max(12, Math.min(el.offsetWidth - 40, dx));
+        dy = Math.min(dy, 14);
+      }
+    }
+    const c = clampPos(el, ev.clientX - dx, ev.clientY - dy);
+    el.style.left = `${c.x}px`;
+    el.style.top = `${c.y}px`;
+  };
+  const up = () => {
+    title.removeEventListener('pointermove', move);
+    title.removeEventListener('pointerup', up);
+    title.removeEventListener('pointercancel', up);
+    el.classList.remove('dragging');
+    if (!moved) return;
+    const b = el.getBoundingClientRect();
+    Object.assign(panels[id], { x: Math.round(b.left), y: Math.round(b.top), dock: dockFor(b.left, b.top, b.width, b.height, innerWidth, innerHeight) });
+    applyPanel(id);
+    layoutChanged();
+  };
+  title.addEventListener('pointermove', move);
+  title.addEventListener('pointerup', up);
+  title.addEventListener('pointercancel', up);
+}
+
+for (const id of PANELS) {
+  const el = panelEl(id);
+  el.querySelector('.panel-title').addEventListener('pointerdown', e => {
+    if (e.button === 0 && !e.target.closest('button')) { e.preventDefault(); startDrag(id, e); }
+  });
+  el.querySelector('.panel-hide').addEventListener('click', () => togglePanel(id));
+  $(`#hud button[data-panel="${id}"]`).addEventListener('click', () => togglePanel(id));
+  // ponytail: a panel's DOM isn't swapped while a press is down in it, or the press's click would be lost.
+  el.addEventListener('pointerdown', () => { state.pressInPanel = true; });
+}
+for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => { state.pressInPanel = false; });
+
+const lastHTML = {};
+function put(id, html) {
+  if (lastHTML[id] !== html) { bodies[id].innerHTML = html; lastHTML[id] = html; }
+}
+const visible = id => !panels[id].hidden && !document.body.classList.contains('bare');
+function refreshPanels() {
+  hud();
+  if (state.pressInPanel) return;
+  if (visible('board')) put('board', boardHTML(sim, state.selected?.kind === 'train' ? state.selected.id : null));
+  if (visible('log')) put('log', logHTML(sim));
+  if (visible('inspector')) put('inspector', inspectorHTML(sim, state.selected, state.armedSignal));
+}
+
+bodies.legend.innerHTML = legendHTML();
+bodies.settings.innerHTML = settingsHTML(settings, seed);
+document.body.classList.toggle('noflash', !settings.flash);
+bodies.settings.addEventListener('change', e => {
+  const t = e.target;
+  if (t.name !== 'seed') t.blur(); // a focused control swallows the keybinds
+  if (t.name === 'speed') setSpeed(Number(t.value));
+  else if (t.name === 'density') setDensity(t.value);
+  else if (t.name === 'idleReturn' || t.name === 'flash') {
+    settings[t.name] = t.checked;
+    saveSettings();
+    document.body.classList.toggle('noflash', !settings.flash);
+  }
+});
+bodies.settings.addEventListener('click', e => {
+  const act = e.target.closest('button')?.dataset.act;
+  if (act === 'reset') resetLayout();
+  else if (act === 'load') loadSeed(bodies.settings.querySelector('input[name="seed"]').value);
+  else if (act === 'new') loadSeed(newSeed());
+});
+bodies.settings.querySelector('input[name="seed"]').addEventListener('keydown', e => { if (e.key === 'Enter') loadSeed(e.target.value); });
+bodies.board.addEventListener('click', e => {
+  const row = e.target.closest('tr[data-train]');
+  if (row) selectTrain(Number(row.dataset.train));
+});
+bodies.inspector.addEventListener('click', e => {
+  const d = e.target.closest('button')?.dataset;
+  if (!d) return;
+  if (d.exit !== undefined) nx(Number(d.sig), Number(d.exit));
+  else if (d.cancel !== undefined) cancel(Number(d.cancel));
+  else if (d.throw !== undefined) throwIt(Number(d.throw));
+  refreshPanels();
+});
+
+// ---- NX and the other panel actions. Clicks never change AUTO/MANUAL; the operator leaves human routes alone.
+function nx(sig, exitNode) {
+  const res = setRoute(sim, sig, exitNode, { human: true });
+  if (res.ok) {
+    logEvent(sim, `Route set: ${signalLabel(sim, sig)} → ${exitLabel(sim, res.route.cand)}`);
+    state.armedSignal = null;
+  } else {
+    logEvent(sim, `Route refused: ${res.reason}`);
+    state.refused = { signal: sig, until: performance.now() + FLASH_MS };
+  }
+}
+function cancel(routeId) {
+  const rt = sim.routes.get(routeId);
+  if (rt && cancelRoute(sim, routeId)) logEvent(sim, `Route cancelled: ${signalLabel(sim, rt.signal)}`);
+  else logEvent(sim, 'Cancel refused: a train is on the route');
+}
+function throwIt(node) {
+  if (throwSwitch(sim, node)) logEvent(sim, `Switch ${switchLabel(sim, node)} thrown ${sim.switchState.get(node).lie}`);
+  else {
+    logEvent(sim, `Switch ${switchLabel(sim, node)} refused: locked`);
+    const insp = panelEl('inspector');
+    insp.classList.remove('shake');
+    void insp.offsetWidth; // restart the animation
+    insp.classList.add('shake');
+  }
+}
+function selectTrain(id) {
+  const t = sim.trains.get(id);
+  if (!t) return;
+  state.selected = { kind: 'train', id };
+  state.armedSignal = sim.signalAt.get(`${headNode(sim, t)}:${t.dir}`) ?? null; // pre-arm its next signal
+  refreshPanels();
+}
+function clickSignal(id) {
+  const armed = state.armedSignal;
+  if (armed === id) { // the entrance again: cancel its un-entered route, or just disarm
+    const rt = routeFrom(sim, id);
+    if (rt) cancel(rt.id);
+    state.armedSignal = null;
+  } else if (armed !== null) nx(armed, matchCandidate(sim.routesFrom.get(armed), id)?.exitNode); // no match: 'no such route'
+  else {
+    state.armedSignal = id;
+    state.selected = { kind: 'signal', id };
+  }
+}
+function clearSelection() {
+  state.armedSignal = state.selected = state.refused = null;
+}
+function onMapClick(hit) {
+  if (!hit) clearSelection();
+  else if (hit.kind === 'signal') clickSignal(hit.id);
+  else if (hit.kind === 'train') selectTrain(hit.id);
+  else if (hit.kind === 'switch') { state.selected = { kind: 'switch', id: hit.id }; throwIt(hit.id); }
+  else if (hit.kind === 'route') cancel(hit.id);
+  refreshPanels();
+}
+
+// ---- Canvas: click picks, drag pans, wheel zooms about the cursor. The canvas fills the window from (0, 0),
+// so client coordinates are canvas coordinates.
+let press = null;
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  canvas.setPointerCapture(e.pointerId);
+  press = { x: e.clientX, y: e.clientY, cx: r.camera.x, cy: r.camera.y, panning: false };
+});
+canvas.addEventListener('pointermove', e => {
+  if (press) {
+    if (!press.panning && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4) press.panning = true;
+    if (press.panning) {
+      r.camera.x = press.cx - (e.clientX - press.x) / r.camera.zoom;
+      r.camera.y = press.cy - (e.clientY - press.y) / r.camera.zoom;
+      state.fitted = false;
+      canvas.style.cursor = 'grabbing';
+    }
+    return;
+  }
+  const hit = r.pick(sim, e.clientX, e.clientY);
+  state.hover = hit?.kind === 'signal' ? hit.id : null;
+  canvas.style.cursor = hit ? 'pointer' : '';
+});
+canvas.addEventListener('pointerup', () => {
+  const p = press;
+  press = null;
+  canvas.style.cursor = '';
+  if (p && !p.panning) onMapClick(r.pick(sim, p.x, p.y));
+});
+canvas.addEventListener('pointercancel', () => { press = null; });
+canvas.addEventListener('pointerleave', () => { state.hover = null; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const c = r.camera, dy = e.deltaY * (e.deltaMode === 1 ? 33 : 1); // Firefox scrolls in lines
+  const z = Math.max(Math.min(0.4, state.fitZoom), Math.min(4, c.zoom * Math.exp(-dy * 0.0015)));
+  const wx = c.x + e.clientX / c.zoom, wy = c.y + e.clientY / c.zoom;
+  c.zoom = z;
+  c.x = wx - e.clientX / z;
+  c.y = wy - e.clientY / z;
+  state.fitted = false;
+}, { passive: false });
+
+// ---- Keys (ignored while typing in a field; a focused button keeps Space and Enter).
+addEventListener('keydown', e => {
+  touch();
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, select, textarea')) return;
+  if (e.target.closest?.('button') && (e.key === ' ' || e.key === 'Enter')) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const keys = {
+    ' ': togglePause, '+': () => stepSpeed(1), '=': () => stepSpeed(1), '-': () => stepSpeed(-1), a: toggleAuto, f: fit,
+    h: () => { document.body.classList.toggle('bare'); if (state.fitted) fit(); refreshPanels(); },
+    Escape: () => { clearSelection(); refreshPanels(); }, '?': () => togglePanel('legend'), n: () => loadSeed(newSeed()),
+  };
+  if (k >= '1' && k <= '5') togglePanel(PANELS[Number(k) - 1]);
+  else if (keys[k]) keys[k]();
+  else return;
+  e.preventDefault();
+});
+for (const ev of ['pointerdown', 'pointermove', 'wheel']) addEventListener(ev, touch, { passive: true });
+
+addEventListener('resize', () => {
+  r.resize();
+  PANELS.forEach(applyPanel); // re-clamp floating panels into the window
+  if (state.fitted) fit();
+});
+
+// ---- Frame loop
+function uiFor(now) {
+  const s = state.selected, f = state.refused && now < state.refused.until ? state.refused : null;
+  const hide = id => (f && f.signal === id ? null : id); // the refusal flash replaces the rings on its signal
+  return {
+    selectedSignal: s?.kind === 'signal' ? hide(s.id) : null,
+    selectedTrain: s?.kind === 'train' ? s.id : null,
+    selectedSwitch: s?.kind === 'switch' ? s.id : null,
+    armedSignal: hide(state.armedSignal),
+    refusedSignal: f && Math.floor((f.until - now) / 250) % 2 === 1 ? f.signal : null,
+    hoverSignal: state.hover,
+    blink: !settings.flash || Math.floor(now / 500) % 2 === 0,
+    now,
+  };
+}
+
+let last = performance.now(), acc = 0, lastPanels = -Infinity;
 function frame(now) {
-  acc += Math.min(0.25, Math.max(0, now - last) / 1000) * SIM_PER_SEC;
+  if (!state.paused) {
+    const t = tick(acc, now - last, state.speed, SIM_PER_SEC);
+    acc = t.acc;
+    for (let i = 0; i < t.steps; i++) step(sim);
+  }
   last = now;
-  for (; acc >= 1; acc--) step(sim);
-  r.draw(sim, { blink: Math.floor(now / 500) % 2 === 0, now });
+  if (!sim.auto && settings.idleReturn && performance.now() - state.lastInput > IDLE_MS) {
+    sim.auto = true;
+    logEvent(sim, 'AUTO resumed (idle)');
+  }
+  if (state.selected?.kind === 'train' && !sim.trains.has(state.selected.id)) state.selected = state.armedSignal = null; // it left
+  r.draw(sim, uiFor(now));
+  if (now - lastPanels >= PANEL_MS) { lastPanels = now; refreshPanels(); }
   requestAnimationFrame(frame);
 }
+
+PANELS.forEach(applyPanel);
+r.resize();
+fit();
+refreshPanels();
 requestAnimationFrame(frame);
+
+export { sim, r, state }; // for the console: (await import('./src/ui.js')).sim

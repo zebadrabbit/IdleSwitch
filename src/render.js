@@ -107,13 +107,14 @@ export function createRenderer(canvas) {
   r.worldToScreen = (x, y) => ({ x: (x - r.camera.x) * r.camera.zoom, y: (y - r.camera.y) * r.camera.zoom });
 
   // Fits columns 0..cols-1 and rows -1..rows (the module names above Main 1, the portal labels beyond
-  // both mains) with a 40 px margin.
-  r.fit = layout => {
-    const w = innerWidth, h = innerHeight, bw = (layout.cols - 1) * CELL, bh = (layout.rows + 1) * CELL;
+  // both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes the
+  // area its docked panels leave free).
+  r.fit = (layout, box = { x: 0, y: 0, w: innerWidth, h: innerHeight }) => {
+    const { w, h } = box, bw = (layout.cols - 1) * CELL, bh = (layout.rows + 1) * CELL;
     const zoom = Math.min((w - 2 * MARGIN) / bw, (h - 2 * MARGIN) / bh);
     r.camera.zoom = zoom;
-    r.camera.x = bw / 2 - w / 2 / zoom;
-    r.camera.y = (layout.rows - 1) * CELL / 2 - h / 2 / zoom;
+    r.camera.x = bw / 2 - (box.x + w / 2) / zoom;
+    r.camera.y = (layout.rows - 1) * CELL / 2 - (box.y + h / 2) / zoom;
   };
 
   // ponytail: redraws everything every frame (a few hundred paths on the largest seed). Cache the static
@@ -206,7 +207,8 @@ export function createRenderer(canvas) {
       });
       chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, COLORS.label); // 4 px wide, pointing in dir
       const [cx, cy] = g.centre, rr = g.extent + 4;
-      if (ui.armedSignal === sig.id) {
+      if (ui.refusedSignal === sig.id) ring(cx, cy, rr + 1, COLORS.lamp.R, 3); // NX refusal flash
+      else if (ui.armedSignal === sig.id) {
         ctx.globalAlpha = 0.55 + 0.45 * Math.sin((ui.now ?? 0) / 120);
         ring(cx, cy, rr + 1, WHITE, 2);
         ctx.globalAlpha = 1;

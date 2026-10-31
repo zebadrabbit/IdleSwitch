@@ -15,3 +15,4 @@ jobs:
           node-version: 22
       - run: node tests/test_gen.mjs
       - run: node tests/test_sim.mjs
+      - run: node tests/test_ui.mjs
