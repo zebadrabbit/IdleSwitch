@@ -471,7 +471,10 @@ function newEntry(sim, dir) {
 
 function canEnter(sim, q) {
   const st = sim.edgeState[forwardEdges(sim, entryPortalNode(sim, q.dir), q.dir)[0]];
-  if (st.occ.size || st.route !== null) return false;
+  const r = st.route === null ? null : sim.routes.get(st.route);
+  // Rule: the portal edge must be unoccupied and unrouted, except for an un-entered human route (trainId null),
+  // which the entering train adopts; otherwise a route lined from the portal before any train came blocks it for good.
+  if (st.occ.size || (r && (r.entered || r.trainId !== null))) return false;
   // A train still waiting at the portal for its first route occupies nothing: never stack another behind it.
   for (const t of sim.trains.values()) if (t.dir === q.dir && !t.path.length) return false;
   return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest));
@@ -520,7 +523,9 @@ function missions(sim) {
       logEvent(sim, `${t.name} arrived at ${tracks[at].name}`);
     }
     if (t.holdFor !== null) {
-      if (holdOver(sim, t)) {
+      // Rule: a hold also ends once the train's path no longer ends at a holding track: a human cancelled the hold
+      // route or lined it elsewhere (or out of the siding), and the operator skips trains with holdFor set.
+      if (holdOver(sim, t) || !holdingTracks(sim, t.dir).includes(at)) {
         t.holdFor = null;
         if (t.state === 'holding') Object.assign(t, { state: 'running', lastMoveTime: sim.time });
       } else if (t.state === 'stopped' && at !== null) t.state = 'holding';

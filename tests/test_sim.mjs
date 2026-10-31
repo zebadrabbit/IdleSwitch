@@ -676,6 +676,55 @@ for (const seed of ['lebanon', 's7', 's42']) {
   assert.equal(S.reserved.get(spur.id), F.id);
 }
 
+// a human route lined from the entry portal signal before any train is there: the next train enters and adopts it
+{
+  const S = createSim(L, 'portal');
+  S.nextSpawn = { 1: S.time, '-1': Infinity }; // one eastbound draw now
+  const sig = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const r = setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { human: true }).route;
+  step(S);
+  assert.equal(S.trains.size, 1, 'a train entered past the human route on the portal edge');
+  const T = [...S.trains.values()][0];
+  step(S);
+  assert.equal(r.trainId, T.id);
+  assert.ok(T.routes.includes(r.id) && r.entered);
+  // still refused while the portal edge is routed for another train
+  const U = createSim(L, 'portal2');
+  U.nextSpawn = { 1: U.time, '-1': Infinity };
+  setRoute(U, sig, U.routesFrom.get(sig)[0].exitNode, { trainId: 99 });
+  step(U);
+  assert.equal(U.trains.size, 0);
+}
+
+// overriding a hold by hand: the operator's un-entered hold route is cancelled and a human main route is set from
+// the same signal; the train drops the hold, takes the main and runs out, and nothing stalls. The awaited train is
+// a through X/Z (it never dwells or holds, and can't pass the holder now ahead of it on the main), so nothing but
+// the override itself can end the hold.
+{
+  const S = busySim('s7'), G = S.layout;
+  let T = null;
+  for (let i = 0; i < 2 * 3600 && !T; i++) {
+    step(S);
+    for (const U of S.trains.values()) {
+      const r = U.holdFor === null ? null : S.routes.get(U.routes.at(-1));
+      const h = r && (S.trains.get(U.holdFor) ?? S.queue[U.dir].find(q => q.id === U.holdFor));
+      if (!r || r.entered || !h || !['X', 'Z'].includes(h.type)) continue;
+      const main = S.routesFrom.get(r.signal).find(c => G.edges[c.edges.at(-1)].track === null);
+      assert.equal(cancelRoute(S, r.id), true);
+      if (setRoute(S, r.signal, main.exitNode, { human: true }).ok) { T = U; break; }
+      assert.equal(setRoute(S, r.signal, r.cand.exitNode, { trainId: U.id }).ok, true); // put the hold back; try later
+    }
+  }
+  assert.ok(T, 'the operator set a hold route');
+  for (let i = 0; i < 60 * 60 && S.trains.has(T.id); i++) {
+    step(S);
+    for (const U of S.trains.values()) assert.ok(!U.stalled && (U.state === 'dwelling' || U.state === 'holding' || S.time - U.lastMoveTime <= 30 * 60), `${U.name} stalled`);
+  }
+  assert.equal(T.holdFor, null);
+  assert.ok(!S.trains.has(T.id) && S.completed.some(c => c.name === T.name), `${T.name} still on the board (${T.state})`);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
+}
+
 // step: one sim second; the first spawn of each direction is due at 06:00 and the head enters at once
 {
   const S = busySim('lebanon');
@@ -699,16 +748,16 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   const S = busySim(seed), G = S.layout, dwelt = new Map();
   let entered = 0;
   for (let i = 0; i < 8 * 3600; i++) {
-    // any queued entry may enter (the first eligible, not only the head), so snapshot them all
-    const queued = [...S.queue[E], ...S.queue[W]].map(q => ({ q, free: q.dest === null || trackFree(S, q.dest) }));
+    // every train new after the step (queued earlier or drawn this very tick) is checked against the tracks before it
+    const free = G.tracks.map(t => trackFree(S, t.id)), before = new Set(S.trains.keys());
     step(S);
-    for (const { q, free } of queued) {
-      if (!S.trains.has(q.id)) continue;
+    for (const T of S.trains.values()) {
+      if (before.has(T.id)) continue;
       entered++;
-      if (q.dest === null) continue;
-      assert.ok(free, `${seed}: ${q.name} entered while ${G.tracks[q.dest].name} was not free`);
-      assert.equal(S.reserved.get(q.dest), q.id);
-      assert.ok(trackFree(S, q.dest, q.id));
+      if (T.dest === null) continue;
+      assert.ok(free[T.dest], `${seed}: ${T.name} entered while ${G.tracks[T.dest].name} was not free`);
+      assert.equal(S.reserved.get(T.dest), T.id);
+      assert.ok(trackFree(S, T.dest, T.id));
     }
     for (const st of S.edgeState) assert.ok(st.occ.size <= 1, `${seed}: two trains on one edge`);
     for (const T of S.trains.values()) {
