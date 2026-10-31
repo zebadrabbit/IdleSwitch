@@ -4,7 +4,8 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
-  trainBlocks, headNode } from '../src/sim.js';
+  trainBlocks, headNode,
+  DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent } from '../src/sim.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -533,3 +534,236 @@ for (const dir of [W, E]) {
 }
 }
 console.log('trains ok');
+
+// ---- Task 6: traffic + operator
+{
+const busySim = seed => { const S = createSim(generate(seed), seed, { density: 'busy' }); S.auto = true; return S; };
+const xOf = (S, n) => S.layout.nodes[n].x;
+
+// constants
+assert.deepEqual(DENSITY, { light: 12 * 60, normal: 7 * 60, busy: 4 * 60 });
+assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60 });
+
+// fits: nothing is 99 cells long; a P fits every platform (generator floors)
+{
+  const S = createSim(L, 'fits');
+  for (const t of L.tracks) assert.equal(fits(S, { len: 99 }, t.id), false);
+  for (const t of L.tracks.filter(k => k.cls === 'platform')) assert.equal(fits(S, { len: trainLength('P') }, t.id), true);
+}
+
+// trafficMenu: X3 Z2 M3 always; P6 per platform, spur trainType 2 per spur, L2 per yard track of that dir
+for (const seed of ['lebanon', 's7', 's42']) {
+  const S = createSim(generate(seed), seed), G = S.layout;
+  for (const dir of [E, W]) {
+    const mine = G.tracks.filter(t => t.dir === dir);
+    const want = [{ type: 'X', dest: null, weight: 3 }, { type: 'Z', dest: null, weight: 2 }, { type: 'M', dest: null, weight: 3 },
+      ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 })),
+      ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 })),
+      ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 }))];
+    const key = m => `${m.type}:${m.dest}:${m.weight}`;
+    assert.deepEqual(trafficMenu(S, dir).map(key).sort(), want.map(key).sort(), `${seed} ${dir}: menu`);
+    assert.deepEqual(holdingTracks(S, dir).sort(), mine.filter(t => t.cls === 'siding' || t.cls === 'yard').map(t => t.id).sort());
+  }
+}
+
+// trackFree: routed, occupied and reserved tracks are not free, except to the train holding them
+{
+  const S = createSim(L, 'free');
+  const sig = S.layout.signals.find(g => S.routesFrom.get(g.id).some(c => L.edges[c.edges.at(-1)].track !== null));
+  const c = S.routesFrom.get(sig.id).find(k => L.edges[k.edges.at(-1)].track !== null), t = L.edges[c.edges.at(-1)].track;
+  assert.equal(trackFree(S, t), true);
+  const r = setRoute(S, sig.id, c.exitNode, { trainId: 7 }).route;
+  assert.equal(trackFree(S, t), false);
+  assert.equal(trackFree(S, t, 7), true);
+  assert.equal(trackFree(S, t, 8), false);
+  cancelRoute(S, r.id);
+  S.edgeState[L.tracks[t].edges[1]].occ.add(9);
+  assert.equal(trackFree(S, t), false);
+  assert.equal(trackFree(S, t, 9), true);
+  S.edgeState[L.tracks[t].edges[1]].occ.clear();
+  S.reserved.set(t, 4);
+  assert.equal(trackFree(S, t), false);
+  assert.equal(trackFree(S, t, 4), true);
+}
+
+// findPath blockedCost (the operator's): blocked edges cost extra instead of being impassable, so a train ahead
+// doesn't hide the way; a free way round is still preferred
+{
+  const S = createSim(L, 'soft');
+  const from = entryPortalNode(S, W), to = { node: exitPortalNode(S, W) };
+  const straightW = sig => S.routesFrom.get(sig).find(k => !k.diverging && !k.slow);
+  const home = straightW(S.signalAt.get(`${from}:${W}`)).exitSignal, c = straightW(home);
+  const main = c.edges.reduce((a, b) => (L.edges[b].len > L.edges[a].len ? b : a)); // the main through the module
+  const plain = findPath(S, from, W, to);
+  assert.deepEqual(findPath(S, from, W, to, { blockedCost: 1000 }), plain, 'nothing blocked: same path');
+  const r = setRoute(S, home, c.exitNode, { trainId: 3 }).route;
+  assert.equal(findPath(S, from, W, to), null);
+  const soft = findPath(S, from, W, to, { blockedCost: 1000 });
+  assert.ok(soft && soft.includes(c.edges[0]), 'through a route held by train 3, at a cost');
+  cancelRoute(S, r.id);
+  S.edgeState[main].occ.add(9);
+  const round = findPath(S, from, W, to, { blockedCost: 1000 });
+  assert.ok(round && !round.includes(main), 'a free way round beats an occupied edge');
+  S.edgeState[main].occ.clear();
+}
+
+// despawnTrain: cancels an un-entered route still set for the train, drops its reservation, logs and records it
+{
+  const S = createSim(L, 'despawn');
+  const T = spawnTrain(S, { type: 'M', dir: W, name: 'M 9' });
+  T.sched = S.time + 125;
+  const sig = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`), far1 = S.routesFrom.get(sig)[0].exitSignal;
+  const stray = setRoute(S, far1, S.routesFrom.get(far1)[0].exitNode, { trainId: T.id }).route;
+  S.reserved.set(L.tracks[0].id, T.id);
+  S.time += 600;
+  despawnTrain(S, T);
+  assert.ok(!S.routes.has(stray.id) && allClear(S));
+  assert.equal(S.reserved.size, 0);
+  assert.deepEqual(S.completed, [{ name: 'M 9', type: 'M', delay: 475, spawnTime: T.spawnTime, exitTime: S.time, stops: 0 }]);
+  assert.equal(S.log.at(-1).text, `M 9 out via ${L.portals.find(p => p.dir === E).name} (+8 min)`);
+}
+
+// a human route that takes a train past its destination: it gives up the call (and its reservation) and runs out
+{
+  const S = createSim(L, 'missed');
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  const plat = L.tracks.find(t => t.cls === 'platform' && t.dir === E);
+  const home = L.signals.find(g => S.routesFrom.get(g.id).some(c => L.edges[c.edges.at(-1)].track === plat.id));
+  const through = S.routesFrom.get(home.id).find(c => L.edges[c.edges.at(-1)].track === null);
+  assert.equal(setRoute(S, home.id, through.exitNode, { human: true }).ok, true);
+  const P = spawnTrain(S, { type: 'P', dir: E, dest: plat.id, name: 'P 2' });
+  S.reserved.set(plat.id, P.id);
+  for (let i = 0; i < 3600 && S.trains.has(P.id); i++) step(S);
+  assert.equal(P.state, 'done');
+  assert.ok(!P.path.length && S.log.some(e => e.text === `P 2 missed ${plat.name}`));
+  assert.equal(S.reserved.size, 0);
+  assert.ok(allClear(S));
+}
+
+// signalLabel and logEvent
+{
+  const S = createSim(L, 'label');
+  const pw = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`), pe = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  assert.equal(signalLabel(S, pw), `W${L.cols - 1}`);
+  assert.equal(signalLabel(S, pe), 'E0');
+  const dw = L.signals.find(g => g.kind === 'dwarf');
+  assert.equal(signalLabel(S, dw.id), `${dw.dir === 1 ? 'E' : 'W'}${L.nodes[dw.node].x}d`);
+  for (let i = 0; i < 250; i++) logEvent(S, `line ${i}`);
+  assert.equal(S.log.length, 200);
+  assert.deepEqual(S.log.at(-1), { t: S.time, text: 'line 249' });
+  assert.equal(S.log[0].text, 'line 50');
+}
+
+// step: one sim second; the first spawn of each direction is due at 06:00 and the head enters at once
+{
+  const S = busySim('lebanon');
+  step(S);
+  assert.equal(S.time, 6 * 3600 + 1);
+  assert.equal(S.trains.size, 2, 'one train in from each portal');
+  const names = [...S.trains.values()].map(t => [t.dir, Number(t.name.split(' ')[1])]);
+  for (const [dir, n] of names) {
+    assert.equal(n % 2, dir === E ? 0 : 1, 'even eastbound, odd westbound');
+    assert.ok(n >= 100 && n <= 400);
+  }
+  assert.ok(S.log.some(e => / entered from /.test(e.text)));
+}
+
+// soak: 8 sim-hours busy over the brief's three seeds plus s47 (a local stood 45 min at a merge there before the
+// operator served long-standing trains first); never two trains on one edge, never a stall, and the spawn gate
+// (a queued train with a destination enters only while that track is free, and reserves it)
+const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
+const held = new Set(); // trains seen holding for an overtake, over all the seeds
+for (const seed of ['lebanon', 's7', 's42', 's47']) {
+  const S = busySim(seed), G = S.layout, dwelt = new Map();
+  let entered = 0;
+  for (let i = 0; i < 8 * 3600; i++) {
+    const heads = [E, W].map(d => S.queue[d][0]).filter(Boolean).map(q => ({ q, free: q.dest === null || trackFree(S, q.dest) }));
+    step(S);
+    for (const { q, free } of heads) {
+      if (!S.trains.has(q.id)) continue;
+      entered++;
+      if (q.dest === null) continue;
+      assert.ok(free, `${seed}: ${q.name} entered while ${G.tracks[q.dest].name} was not free`);
+      assert.equal(S.reserved.get(q.dest), q.id);
+      assert.ok(trackFree(S, q.dest, q.id));
+    }
+    for (const st of S.edgeState) assert.ok(st.occ.size <= 1, `${seed}: two trains on one edge`);
+    for (const T of S.trains.values()) {
+      if (T.state === 'dwelling') dwelt.set(T.name, G.tracks[T.dest].cls);
+      else if (T.state === 'holding') {
+        held.add(`${seed} ${T.name}`);
+        assert.ok(T.dest === null && T.prio <= 2 && T.holdFor !== null, `${seed}: ${T.name} may not hold`);
+        assert.ok(holdingTracks(S, T.dir).includes(G.edges[T.path.at(-1)].track));
+      } else assert.ok(S.time - T.lastMoveTime <= 30 * 60, `${seed}: ${T.name} stalled (${T.state})`);
+    }
+  }
+  assert.ok(entered > 0);
+  assert.ok(S.completed.length >= 20, `${seed}: only ${S.completed.length} trains completed`);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
+  if (G.tracks.some(t => t.cls === 'platform')) assert.ok(S.completed.some(c => dwelt.get(c.name) === 'platform'), `${seed}: no P called`);
+  if (G.tracks.some(t => t.cls === 'yard')) assert.ok(S.completed.some(c => ['yard', 'spur'].includes(dwelt.get(c.name))), `${seed}: no freight served the yard`);
+  for (const c of S.completed) {
+    assert.deepEqual(Object.keys(c).sort(), ['delay', 'exitTime', 'name', 'spawnTime', 'stops', 'type']);
+    assert.ok(c.exitTime > c.spawnTime);
+  }
+}
+assert.ok(held.size > 0, 'the overtake rule never held a train');
+
+// determinism: same seed, same day
+{
+  const [A, B] = [busySim('s7'), busySim('s7')];
+  for (let i = 0; i < 3600; i++) { step(A); step(B); }
+  assert.ok(A.completed.length > 0);
+  assert.equal(snap(A), snap(B));
+  const C = busySim('s42');
+  for (let i = 0; i < 3600; i++) step(C);
+  assert.notEqual(snap(A), snap(C));
+}
+
+// human override: an express on the main approaching a module with a holding track on its side is sent into it by
+// hand (the operator's un-entered route from that signal cancelled first); it takes the human route and still leaves
+{
+  const S = createSim(generate('override'), 'override'), G = S.layout;
+  S.auto = true;
+  let X = null, track = null;
+  for (let i = 0; i < 4 * 3600 && !track; i++) {
+    step(S);
+    for (const T of S.trains.values()) {
+      if (T.type !== 'X' || T.state !== 'running' || !T.path.length) continue;
+      const hx = pointAt(S, T, T.headDist).x;
+      for (const sig of G.signals.filter(g => g.dir === T.dir)) {
+        const ahead = (xOf(S, sig.node) - hx) * T.dir;
+        if (ahead < 8 || ahead > 30) continue;
+        const hc = S.routesFrom.get(sig.id).find(c => {
+          const t = G.edges[c.edges.at(-1)].track;
+          return t !== null && holdingTracks(S, T.dir).includes(t) && fits(S, T, t) && trackFree(S, t);
+        });
+        if (!hc) continue;
+        const r = routeFrom(S, sig.id);
+        if (r?.human) continue;
+        if (r) assert.equal(cancelRoute(S, r.id), true);
+        if (!setRoute(S, sig.id, hc.exitNode, { human: true }).ok) continue; // the operator re-sets next tick; try later
+        X = T; track = G.edges[hc.edges.at(-1)].track;
+        break;
+      }
+      if (track !== null) break;
+    }
+  }
+  assert.ok(X, 'an express approached a module with a free holding track');
+  const t0 = S.time, first = G.tracks[track].edges[0];
+  let adopted = false;
+  while (S.trains.has(X.id) && S.time - t0 < 60 * 60) {
+    step(S);
+    if (X.path.includes(first)) adopted = true;
+  }
+  assert.ok(adopted, `${X.name} never took the human route into ${G.tracks[track].name}`);
+  assert.ok(!S.trains.has(X.id), `${X.name} still on the board after an hour (${X.state})`);
+  assert.equal(X.state, 'done');
+  const done = S.completed.find(c => c.name === X.name);
+  assert.ok(done && done.delay === done.exitTime - X.sched);
+  const exitName = G.portals.find(p => p.dir === -X.dir).name;
+  assert.ok(S.log.some(e => e.text.startsWith(`${X.name} out via ${exitName} (`) && / min\)$/.test(e.text)));
+}
+}
+console.log('traffic ok');

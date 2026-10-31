@@ -1,10 +1,10 @@
-// Pure simulation: interlocking (routes, switches, locking), pathfinding, signal aspects and trains;
-// later tasks add traffic and the operator. Never touches window, document, Math.random or Date; randomness
-// comes only from sim.rng (makeRng(seed + ':sim')).
+// Pure simulation: interlocking (routes, switches, locking), pathfinding, signal aspects, trains, traffic and the
+// virtual operator; step(sim) advances it one sim second. Never touches window, document, Math.random or Date;
+// randomness comes only from sim.rng (makeRng(seed + ':sim')).
 //
 // Travel direction is decided by x alone, never by edge a->b order: a dir=+1 train leaves a node
 // through edges whose far node has greater x, dir=-1 through smaller x. Edge dirs must also allow it.
-import { makeRng } from './rng.js';
+import { makeRng, randInt } from './rng.js';
 
 const SLOW_CLS = new Set(['yard', 'siding', 'spur']);
 const far = (edge, n) => (edge.a === n ? edge.b : edge.a);
@@ -27,6 +27,8 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     rng: makeRng(seed + ':sim'), _aspects: new Map(),
   };
   for (const sig of layout.signals) sim.routesFrom.set(sig.id, candidates(sim, sig));
+  // Train numbers count up per direction from a seeded start in 100..400: even eastbound, odd westbound.
+  sim.nextName = { 1: 2 * randInt(sim.rng, 50, 200), '-1': 2 * randInt(sim.rng, 50, 199) + 1 };
   return sim;
 }
 
@@ -156,6 +158,8 @@ function blocked(sim, e, trainId) {
 
 // Dijkstra over forward edges. goal {node}: reach it. goal {track}: stop on the first edge of that track
 // (a virtual sink, so the returned list ends with that edge). penalty: {trainId?, [edgeId]: extraCost}.
+// Blocked edges are skipped, unless penalty.blockedCost is given: then they cost that much extra instead, so the
+// operator still sees its way past trains ahead and leaves "can the next route be set now" to setRoute.
 // ponytail: linear-scan priority queue, fine for generated layouts (< 200 nodes); a binary heap if they grow.
 export function findPath(sim, fromNode, dir, goal, penalty = {}) {
   const { edges } = sim.layout, SINK = -1;
@@ -171,10 +175,11 @@ export function findPath(sim, fromNode, dir, goal, penalty = {}) {
     }
     done.add(u);
     for (const e of forwardEdges(sim, u, dir)) {
-      if (blocked(sim, e, penalty.trainId)) continue;
+      const busy = blocked(sim, e, penalty.trainId);
+      if (busy && penalty.blockedCost == null) continue;
       const ed = edges[e];
       const v = goal.track != null && ed.track === goal.track ? SINK : far(ed, u);
-      const d = dist.get(u) + ed.len + (ed.cls === 'ladder' ? 1 : 0) + (penalty[e] ?? 0);
+      const d = dist.get(u) + ed.len + (ed.cls === 'ladder' ? 1 : 0) + (penalty[e] ?? 0) + (busy ? penalty.blockedCost : 0);
       if (!done.has(v) && (!dist.has(v) || d < dist.get(v))) { dist.set(v, d); prev.set(v, { from: u, edge: e }); }
     }
   }
@@ -239,8 +244,9 @@ export const trainLength = type => LOCO + TYPES[type].cars * CAR;
 
 // Head at the entry portal node with nothing occupied; its first adopted route gives it its first edges.
 // Positions are cumulative along the train's run from that portal: path[0] starts at pathOff.
-export function spawnTrain(sim, { type, dir, dest = null, name }) {
-  const id = sim.nextTrainId++, T = TYPES[type];
+// id: the spawner hands in the id it gave the queue entry, so a train holding for a queued one finds it later.
+export function spawnTrain(sim, { type, dir, dest = null, name, id = sim.nextTrainId++ }) {
+  const T = TYPES[type];
   const train = {
     id, name: name ?? `${type} ${id}`, type, dir, prio: T.prio, len: trainLength(type), maxSpeed: T.max * MPH,
     path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
@@ -344,7 +350,8 @@ function occupy(sim, train) {
   }
 }
 
-// Task 6 hooks the delay log here. Releases every edge the train still holds.
+// Releases every edge the train still holds, cancels any route set for it that it never entered, drops its
+// reservation, then logs its delay and records it in sim.completed.
 export function despawnTrain(sim, train) {
   for (const e of train.path) {
     sim.edgeState[e].occ.delete(train.id);
@@ -352,8 +359,14 @@ export function despawnTrain(sim, train) {
     train.pathOff += sim.layout.edges[e].len;
   }
   train.path = [];
+  for (const r of [...sim.routes.values()]) if (!r.entered && r.trainId === train.id) cancelRoute(sim, r.id);
+  for (const [t, id] of sim.reserved) if (id === train.id) sim.reserved.delete(t);
   train.state = 'done';
   sim.trains.delete(train.id);
+  const delay = sim.time - train.sched, m = Math.round(delay / 60);
+  const portal = sim.layout.portals.find(p => p.dir === -train.dir).name; // where the other direction enters
+  logEvent(sim, `${train.name} out via ${portal} (${m < 0 ? '−' : '+'}${Math.abs(m)} min)`);
+  sim.completed.push({ name: train.name, type: train.type, delay, spawnTime: train.spawnTime, exitTime: sim.time, stops: train.stops });
   clearAspects(sim);
 }
 
@@ -391,4 +404,198 @@ export function moveTrains(sim, dt = 1) {
     if (!held) train.state = v === 0 && remaining - adv <= 0.05 ? 'stopped' : 'running';
   }
   clearAspects(sim);
+}
+
+// ---- Traffic and the virtual operator (spec "Traffic", "The virtual operator")
+export const DENSITY = { light: 12 * 60, normal: 7 * 60, busy: 4 * 60 }; // mean spawn interval per direction, sim s
+export const DWELL = { P: 3 * 60, L: 15 * 60, industry: 25 * 60 };
+const STALL = 30 * 60, STARVE = 10 * 60, NEAR = 20; // stood this long: logged / served first; "behind within" cells
+
+export function logEvent(sim, text) {
+  sim.log.push({ t: sim.time, text });
+  if (sim.log.length > 200) sim.log.shift();
+}
+
+// E12, W41; a d suffix for dwarfs (W30d).
+export function signalLabel(sim, signalId) {
+  const s = sim.layout.signals[signalId];
+  return `${s.dir === 1 ? 'E' : 'W'}${sim.layout.nodes[s.node].x}${s.kind === 'dwarf' ? 'd' : ''}`;
+}
+
+export const fits = (sim, train, trackId) => train.len <= sim.layout.tracks[trackId].capacity;
+
+// ponytail: yard tracks must be clear like any other; the spec's optional Restricting entry onto an occupied yard
+// track is dropped.
+export function trackFree(sim, trackId, forTrainId = null) {
+  const mine = id => forTrainId !== null && id === forTrainId;
+  if (sim.reserved.has(trackId) && !mine(sim.reserved.get(trackId))) return false;
+  return sim.layout.tracks[trackId].edges.every(e => {
+    const st = sim.edgeState[e];
+    return [...st.occ].every(mine) && (st.route === null || mine(sim.routes.get(st.route).trainId));
+  });
+}
+
+export const holdingTracks = (sim, dir) =>
+  sim.layout.tracks.filter(t => t.dir === dir && (t.cls === 'siding' || t.cls === 'yard')).map(t => t.id);
+
+export function trafficMenu(sim, dir) {
+  const mine = sim.layout.tracks.filter(t => t.dir === dir);
+  const menu = [{ type: 'X', dest: null, weight: 3 }, { type: 'Z', dest: null, weight: 2 }, { type: 'M', dest: null, weight: 3 },
+    ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 })),
+    ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 })),
+    ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 }))];
+  // A train too long for its track would wedge the queue for good. The generator's capacity floors mean this
+  // drops nothing; the spawn gate checks fits again anyway.
+  return menu.filter(m => m.dest === null || fits(sim, { len: trainLength(m.type) }, m.dest));
+}
+
+const dwellFor = (sim, type, dest) => (dest === null ? 0 : sim.layout.tracks[dest].cls === 'spur' ? DWELL.industry : DWELL[type]);
+
+// The track whose signal the train's path ends at (its last edge is that track's first), or null.
+const trackAhead = (sim, train) => (train.path.length ? sim.layout.edges[train.path.at(-1)].track : null);
+
+// A queued train: drawn from the menu, named, scheduled and given its train id now. Its delay clock runs from
+// here, so waiting at the portal counts.
+function newEntry(sim, dir) {
+  const menu = trafficMenu(sim, dir);
+  let r = sim.rng() * menu.reduce((s, m) => s + m.weight, 0);
+  const { type, dest } = menu.find(m => (r -= m.weight) < 0) ?? menu.at(-1);
+  const name = `${type} ${sim.nextName[dir]}`;
+  sim.nextName[dir] += 2;
+  // One direction's main edges are exactly its portal-to-portal main.
+  const mainLen = sim.layout.edges.reduce((s, e) => s + (e.cls === 'main' && e.dirs.includes(dir) ? e.len : 0), 0);
+  const run = mainLen / (0.8 * TYPES[type].max * MPH);
+  return { id: sim.nextTrainId++, name, type, dir, dest, len: trainLength(type), spawnTime: sim.time,
+    sched: Math.round(sim.time + run + dwellFor(sim, type, dest) + 5 * 60) };
+}
+
+function canEnter(sim, q) {
+  const st = sim.edgeState[forwardEdges(sim, entryPortalNode(sim, q.dir), q.dir)[0]];
+  if (st.occ.size || st.route !== null) return false;
+  // A train still waiting at the portal for its first route occupies nothing: never stack another behind it.
+  for (const t of sim.trains.values()) if (t.dir === q.dir && !t.path.length) return false;
+  return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest));
+}
+
+function spawner(sim) {
+  for (const dir of [1, -1]) {
+    const queue = sim.queue[dir];
+    while (sim.time >= sim.nextSpawn[dir]) {
+      queue.push(newEntry(sim, dir));
+      sim.nextSpawn[dir] += -DENSITY[sim.density] * Math.log(1 - sim.rng()); // exponential gaps
+    }
+    if (!queue.length || !canEnter(sim, queue[0])) continue;
+    const q = queue.shift(), t = spawnTrain(sim, q);
+    t.spawnTime = q.spawnTime;
+    t.sched = q.sched;
+    if (q.dest !== null) sim.reserved.set(q.dest, t.id);
+    logEvent(sim, `${t.name} entered from ${sim.layout.portals.find(p => p.dir === dir).name}`);
+  }
+}
+
+// The held-for train has left (or never existed), or the routes set ahead of it already run past the holder's
+// signal (the holder's path ends there): it has the main, and the holder follows it out. A held-for train that
+// stopped to dwell or hold itself no longer counts as coming (as in trainBehind).
+function holdOver(sim, t) {
+  const h = sim.trains.get(t.holdFor), x = n => sim.layout.nodes[n].x;
+  if (!h) return !sim.queue[t.dir].some(q => q.id === t.holdFor);
+  return h.state === 'dwelling' || h.state === 'holding' || (x(headNode(sim, h)) - x(headNode(sim, t))) * t.dir > 0;
+}
+
+function missions(sim) {
+  const { tracks } = sim.layout;
+  for (const t of sim.trains.values()) {
+    const at = trackAhead(sim, t);
+    if (t.state === 'dwelling') {
+      if (sim.time >= t.dwellUntil) {
+        logEvent(sim, `${t.name} departed ${tracks[t.dest].name}`);
+        sim.reserved.delete(t.dest);
+        Object.assign(t, { dest: null, goal: { node: exitPortalNode(sim, t.dir) }, state: 'running', lastMoveTime: sim.time });
+      }
+    } else if (t.state === 'stopped' && t.dest !== null && at === t.dest) {
+      t.state = 'dwelling';
+      t.dwellUntil = sim.time + dwellFor(sim, t.type, at);
+      logEvent(sim, `${t.name} arrived at ${tracks[at].name}`);
+    }
+    if (t.holdFor !== null) {
+      if (holdOver(sim, t)) {
+        t.holdFor = null;
+        if (t.state === 'holding') Object.assign(t, { state: 'running', lastMoveTime: sim.time });
+      } else if (t.state === 'stopped' && at !== null) t.state = 'holding';
+    }
+    if (t.state !== 'dwelling' && t.state !== 'holding' && !t.stalled && sim.time - t.lastMoveTime >= STALL) {
+      t.stalled = true;
+      logEvent(sim, `STALL ${t.name}`);
+    }
+  }
+}
+
+// ponytail: "behind" is a proximity heuristic: same direction, higher priority, head node (where its routes end)
+// up to NEAR cells behind this one's, not dwelling or holding; or the head of that direction's portal queue, if
+// its destination is free (one waiting for a busy spur is not coming, and holding for it parked trains for an
+// hour in the soak). No lookahead on where the faster train is actually going.
+function trainBehind(sim, t) {
+  const x = n => sim.layout.nodes[n].x, xt = x(headNode(sim, t));
+  for (const h of sim.trains.values()) {
+    if (h.dir !== t.dir || h.prio <= t.prio || h.state === 'dwelling' || h.state === 'holding') continue;
+    const d = (xt - x(headNode(sim, h))) * t.dir;
+    if (d > 0 && d <= NEAR) return h;
+  }
+  const q = sim.queue[t.dir][0];
+  return q && TYPES[q.type].prio > t.prio && (q.dest === null || trackFree(sim, q.dest)) ? q : null;
+}
+
+// Overtake: route t from sig into a free holding track it fits, to wait there for the train behind.
+function hold(sim, t, sig, cands) {
+  const other = trainBehind(sim, t);
+  if (!other) return false;
+  const free = new Set(holdingTracks(sim, t.dir).filter(k => fits(sim, t, k) && trackFree(sim, k)));
+  const c = cands.find(k => free.has(sim.layout.edges[k.edges.at(-1)].track));
+  if (!c || !setRoute(sim, sig, c.exitNode, { trainId: t.id }).ok) return false;
+  t.holdFor = other.id;
+  logEvent(sim, `${t.name} holding at ${sim.layout.tracks[sim.layout.edges[c.edges.at(-1)].track].name} for ${other.name}`);
+  return true;
+}
+
+// Highest priority first, except that a train which has stood STARVE goes before any that hasn't: under busy
+// traffic a higher-priority main train is waiting every time the main frees, and a local at a merge starved past
+// STALL in the soak. A train whose path ends at a signal with no route from it gets the route to the next signal
+// along its pathfound way, when the interlocking allows; otherwise it waits and tries again next tick. Trains
+// ahead don't hide the way (blockedCost), and a way that dives into some other track to get round one means wait.
+// The operator never cancels anything, so human routes stand.
+const BLOCKED_COST = 1000;
+function operator(sim) {
+  const { edges, tracks } = sim.layout;
+  const rank = t => t.prio + (sim.time - t.lastMoveTime >= STARVE ? 10 : 0);
+  for (const t of [...sim.trains.values()].sort((a, b) => rank(b) - rank(a) || a.id - b.id)) {
+    if (t.state === 'dwelling' || t.state === 'holding' || t.holdFor !== null) continue; // holding or on its way in
+    const node = headNode(sim, t), sig = sim.signalAt.get(`${node}:${t.dir}`);
+    if (sig === undefined || routeFrom(sim, sig)) continue;
+    if (t.dest !== null && trackAhead(sim, t) === t.dest) continue; // arriving: it dwells before going on
+    const path = findPath(sim, node, t.dir, t.goal, { trainId: t.id, blockedCost: BLOCKED_COST });
+    if (!path) { // no way at all: a human route took it past its destination; give up the call, don't stand for ever
+      if (t.dest !== null) {
+        logEvent(sim, `${t.name} missed ${tracks[t.dest].name}`);
+        sim.reserved.delete(t.dest);
+        Object.assign(t, { dest: null, goal: { node: exitPortalNode(sim, t.dir) } });
+      }
+      continue;
+    }
+    const cands = sim.routesFrom.get(sig);
+    if (t.dest === null && t.prio <= 2 && hold(sim, t, sig, cands)) continue;
+    const cand = cands.find(c => c.edges.every((e, i) => path[i] === e));
+    const into = cand ? edges[cand.edges.at(-1)].track : null;
+    if (!cand || (into !== null && into !== t.dest)) continue; // a detour through some other track: wait instead
+    if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok) logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}`);
+  }
+}
+
+// One sim second.
+export function step(sim) {
+  clearAspects(sim);
+  if (sim.auto) operator(sim);
+  spawner(sim);
+  moveTrains(sim);
+  missions(sim);
+  sim.time += 1;
 }
