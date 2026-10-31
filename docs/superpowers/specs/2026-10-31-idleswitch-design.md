@@ -360,3 +360,29 @@ no-dependencies, screensaver.
 Efficiency score from the logged events. Bidirectional mains and
 wrong-main running. Stub spurs and reversing moves. Branch-line portals.
 Sound. Brand assets. Save/restore of a running day.
+
+## Amendments made during the build
+
+Decisions taken while building, each recorded with its reason in the
+implementation ledger and summarised here so this document stays true.
+
+- **Dead human routes are cleared.** "Human-set routes are never
+  overridden" has one exception: a human route that no train can ever
+  take (set from the exit signal of an empty track, or into a track the
+  waiting train does not fit) is cancelled by the operator after a
+  3-minute grace, with a log line. Otherwise one click could stop a
+  whole direction for good, and "must never sit dead because you walked
+  away" outranks the no-override rule.
+- **Human routes respect fit.** A train does not take a human route into
+  a track shorter than itself. The route then counts as dead (above).
+- **Portal queue admits the first eligible train**, not strictly the
+  head, so a freight waiting for a full spur does not hold the main.
+- **A switch is held by its trunk edge only.** Every route through a
+  switch uses the trunk, so this protects every conflicting move while
+  letting a train dwell on one yard track without locking its neighbours.
+- **Yard tracks must be clear** to receive a train; the optional
+  Restricting entry onto an occupied yard track was dropped.
+- **No crossovers between the mains** (dead track under directional
+  running); modules' tracks sit between the mains, split by side.
+- **Density is a fixed mean spawn interval** per setting, not derived
+  from terminal capacity.
