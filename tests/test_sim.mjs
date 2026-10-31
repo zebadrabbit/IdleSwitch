@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
 import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, switchLocked,
-  releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode } from '../src/sim.js';
+  releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom } from '../src/sim.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -191,6 +191,35 @@ assert.equal(r.ok, true);
 assert.ok(findPath(sim, from, W, to, { trainId: 7 }).includes(busy));
 assert.equal(findPath(sim, from, W, to), null, 'the home signal has no way past a route held by someone else');
 assert.equal(cancelRoute(sim, r.route.id), true);
+assert.ok(allClear(sim));
+
+// one un-entered route per signal; an entered route still clearing behind its train does not block the next.
+// The dwelling train's track edge must not touch a switch B has to throw: switchLocked counts every
+// incident edge (brief contract), so A is the track whose edge is clear of B's switches.
+const intoTrack = c => L.edges[c.edges.at(-1)].track !== null;
+const ends = e => [L.edges[e].a, L.edges[e].b];
+let probe = null;
+for (const [sig, cs] of sim.routesFrom) for (const A of cs.filter(intoTrack)) for (const B of cs.filter(intoTrack))
+  if (!probe && A !== B && !B.switches.some(s => ends(A.edges.at(-1)).includes(s.node))) probe = { sig, A, B };
+assert.ok(probe, 'some main signal routes into two tracks');
+const { sig: ps, A: cA, B: cB } = probe;
+assert.equal(routeFrom(sim, ps), null);
+r = setRoute(sim, ps, cA.exitNode, { trainId: 1 });
+assert.equal(r.ok, true);
+const RA = r.route;
+assert.equal(routeFrom(sim, ps), RA);
+assert.deepEqual(setRoute(sim, ps, cB.exitNode), { ok: false, reason: 'already set' }, 'un-entered route blocks a second');
+RA.entered = true; // train 1 has gone in ...
+assert.equal(routeFrom(sim, ps), null);
+for (const e of cA.edges.slice(0, -1)) releaseEdge(sim, e); // ... and stands dwelling on the track's first edge
+sim.edgeState[cA.edges.at(-1)].occ.add(1);
+assert.ok(sim.routes.has(RA.id), 'the dwelling train still holds its last edge');
+r = setRoute(sim, ps, cB.exitNode);
+assert.equal(r.ok, true, `second train into a free track: ${r.reason}`);
+assert.equal(routeFrom(sim, ps), r.route);
+assert.equal(cancelRoute(sim, r.route.id), true);
+releaseEdge(sim, cA.edges.at(-1));
+sim.edgeState[cA.edges.at(-1)].occ.delete(1);
 assert.ok(allClear(sim));
 
 console.log('sim core ok');

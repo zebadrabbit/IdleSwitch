@@ -90,13 +90,19 @@ export function throwSwitch(sim, node) {
   return true;
 }
 
+// The signal's un-entered route, or null. Entered routes still clearing behind their train don't count.
+export function routeFrom(sim, signalId) {
+  for (const r of sim.routes.values()) if (r.signal === signalId && !r.entered) return r;
+  return null;
+}
+
 export function setRoute(sim, signalId, exitNode, { human = false, trainId = null } = {}) {
   // ponytail: exitNode picks the first matching candidate; generated layouts never give one signal two
   // routes to the same exit. If they ever do, try each match (or take the candidate itself).
   const cand = (sim.routesFrom.get(signalId) ?? []).find(c => c.exitNode === exitNode);
   const fail = reason => ({ ok: false, reason });
   if (!cand) return fail('no such route');
-  if ([...sim.routes.values()].some(r => r.signal === signalId)) return fail('already set');
+  if (routeFrom(sim, signalId)) return fail('already set');
   if (cand.edges.some(e => sim.edgeState[e].occ.size > 0)) return fail('occupied');
   if (cand.edges.some(e => sim.edgeState[e].route !== null)) return fail('locked');
   if (cand.switches.some(s => sim.switchState.get(s.node).lie !== s.lie && switchLocked(sim, s.node))) return fail('switch busy');
