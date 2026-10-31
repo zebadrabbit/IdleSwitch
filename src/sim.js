@@ -18,6 +18,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     edgeState: layout.edges.map(() => ({ occ: new Set(), route: null })),
     switchState: new Map(layout.switches.map(s => [s.node, { lie: 'normal' }])),
     signalAt: new Map(layout.signals.map(s => [`${s.node}:${s.dir}`, s.id])),
+    switchAt: new Map(layout.switches.map(s => [s.node, s])), // node -> {node, trunk, normal, reverse}
     routesFrom: new Map(),
     routes: new Map(), nextRouteId: 1,
     trains: new Map(), reserved: new Map(),
@@ -25,8 +26,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     time: start, log: [], auto: false, density: opts.density ?? 'normal',
     rng: makeRng(seed + ':sim'), _aspects: new Map(),
   };
-  const switchAt = new Map(layout.switches.map(s => [s.node, s]));
-  for (const sig of layout.signals) sim.routesFrom.set(sig.id, candidates(sim, sig, switchAt));
+  for (const sig of layout.signals) sim.routesFrom.set(sig.id, candidates(sim, sig));
   return sim;
 }
 
@@ -46,12 +46,12 @@ export function forwardEdges(sim, node, dir) {
 
 // DFS from the signal in its direction; each branch ends at the first node carrying a signal for that
 // direction, or with nowhere further to go (the exit portal).
-function candidates(sim, sig, switchAt) {
+function candidates(sim, sig) {
   const { edges } = sim.layout, dir = sig.dir, out = [];
   const walk = (n, path, nodes) => {
     for (const e of forwardEdges(sim, n, dir)) {
       const next = far(edges[e], n), p = [...path, e], ns = [...nodes, next];
-      if (sim.signalAt.has(`${next}:${dir}`) || !forwardEdges(sim, next, dir).length) out.push(candidate(sim, dir, p, ns, switchAt));
+      if (sim.signalAt.has(`${next}:${dir}`) || !forwardEdges(sim, next, dir).length) out.push(candidate(sim, dir, p, ns));
       else walk(next, p, ns);
     }
   };
@@ -59,13 +59,13 @@ function candidates(sim, sig, switchAt) {
   return out;
 }
 
-function candidate(sim, dir, es, nodes, switchAt) {
+function candidate(sim, dir, es, nodes) {
   const { edges } = sim.layout, exitNode = nodes.at(-1);
   // A switch the route touches needs reverse if the route uses its reverse leg (facing or trailing),
   // normal if it uses the normal leg; touching only the trunk (at a route end) asks nothing of it.
   const switches = [];
   for (const n of nodes) {
-    const s = switchAt.get(n);
+    const s = sim.switchAt.get(n);
     if (s && es.includes(s.reverse)) switches.push({ node: n, lie: 'reverse' });
     else if (s && es.includes(s.normal)) switches.push({ node: n, lie: 'normal' });
   }
@@ -78,9 +78,13 @@ function candidate(sim, dir, es, nodes, switchAt) {
   };
 }
 
-// ponytail: no flank protection (spec). A switch is held only by its own three edges.
+// ponytail: a switch is held only by its trunk edge (occupied or routed); no flank protection (spec).
+// Every route through a switch uses its trunk, and a train standing on a leg is clear of the points:
+// trains stop FOUL short of signals and track capacity is edge length - 0.5, so a tail sits >= 0.2
+// cells off the ladder node. If train stopping ever changes, model fouling points instead.
 export function switchLocked(sim, node) {
-  return sim.adj.get(node).some(e => sim.edgeState[e].occ.size > 0 || sim.edgeState[e].route !== null);
+  const sw = sim.switchAt.get(node), st = sw && sim.edgeState[sw.trunk];
+  return !!st && (st.occ.size > 0 || st.route !== null);
 }
 
 export function throwSwitch(sim, node) {

@@ -106,12 +106,34 @@ assert.equal(switchLocked(sim, sw.node), false);
 assert.equal(throwSwitch(sim, sw.node), true);
 assert.notEqual(sim.switchState.get(sw.node).lie, sw.lie);
 
-// a switch lying wrong and held by an edge outside the route -> 'switch busy'
+// trunk rule: a train standing on a leg is clear of the points, so the switch still throws;
+// its trunk occupied (or routed, above) holds it
 const swDef = L.switches.find(s => s.node === sw.node);
-const flank = [swDef.trunk, swDef.normal, swDef.reverse].find(e => !c1.edges.includes(e));
-sim.edgeState[flank].occ.add(98);
-assert.deepEqual(setRoute(sim, home, c1.exitNode), { ok: false, reason: 'switch busy' });
-sim.edgeState[flank].occ.delete(98);
+const leg = [swDef.normal, swDef.reverse].find(e => !c1.edges.includes(e));
+sim.edgeState[leg].occ.add(98);
+assert.equal(switchLocked(sim, sw.node), false, 'only a leg occupied');
+assert.equal(throwSwitch(sim, sw.node), true);
+assert.equal(throwSwitch(sim, sw.node), true); // back to the wrong lie, for the setRoute check below
+sim.edgeState[leg].occ.delete(98);
+sim.edgeState[swDef.trunk].occ.add(98);
+assert.equal(switchLocked(sim, sw.node), true, 'trunk occupied');
+assert.equal(throwSwitch(sim, sw.node), false);
+sim.edgeState[swDef.trunk].occ.delete(98);
+assert.notEqual(sim.switchState.get(sw.node).lie, sw.lie);
+
+// 'switch busy' needs a route that meets a switch only on a leg, at the route's start. Generated layouts
+// never build one (every route through a switch uses its trunk, so 'occupied'/'locked' fire first), so a
+// hand-made wye: signal on the switch node 1, a train standing on the trunk 0-1, routes out to 2 or 3.
+const Y = createSim({
+  nodes: [[0, 0], [1, 0], [2, 0], [2, 1]].map(([x, y], id) => ({ id, x, y })),
+  edges: [[0, 1, 'main'], [1, 2, 'main'], [1, 3, 'ladder']].map(([a, b, cls], id) => ({ id, a, b, cls, dirs: [E], len: 1, track: null })),
+  switches: [{ node: 1, trunk: 0, normal: 1, reverse: 2 }],
+  signals: [{ id: 0, node: 0, dir: E, kind: 'high' }, { id: 1, node: 1, dir: E, kind: 'high' }],
+  portals: [],
+}, 'wye');
+Y.edgeState[0].occ.add(1);
+assert.deepEqual(setRoute(Y, 1, 3), { ok: false, reason: 'switch busy' });
+assert.equal(setRoute(Y, 1, 2).ok, true, 'a switch already lying right is not busy');
 
 // after cancelRoute the second setRoute succeeds, and sets its switches
 r = setRoute(sim, other.sig, other.c.exitNode);
@@ -193,16 +215,15 @@ assert.equal(findPath(sim, from, W, to), null, 'the home signal has no way past 
 assert.equal(cancelRoute(sim, r.route.id), true);
 assert.ok(allClear(sim));
 
-// one un-entered route per signal; an entered route still clearing behind its train does not block the next.
-// The dwelling train's track edge must not touch a switch B has to throw: switchLocked counts every
-// incident edge (brief contract), so A is the track whose edge is clear of B's switches.
-const intoTrack = c => L.edges[c.edges.at(-1)].track !== null;
-const ends = e => [L.edges[e].a, L.edges[e].b];
-let probe = null;
-for (const [sig, cs] of sim.routesFrom) for (const A of cs.filter(intoTrack)) for (const B of cs.filter(intoTrack))
-  if (!probe && A !== B && !B.switches.some(s => ends(A.edges.at(-1)).includes(s.node))) probe = { sig, A, B };
-assert.ok(probe, 'some main signal routes into two tracks');
-const { sig: ps, A: cA, B: cB } = probe;
+// one un-entered route per signal; an entered route still clearing behind its train does not block the next,
+// whichever track the first train dwells on (trunk rule: its track edge is only a leg of the ladder switch).
+// Every same-signal pair of routes into tracks, including lebanon's train dwelling on track 3 -> track 4.
+const trackOf = c => L.edges[c.edges.at(-1)].track;
+const pairs = [];
+for (const [sig, cs] of sim.routesFrom) for (const A of cs) for (const B of cs)
+  if (A !== B && trackOf(A) !== null && trackOf(B) !== null) pairs.push({ sig, A, B });
+assert.ok(pairs.some(q => trackOf(q.A) === 3 && trackOf(q.B) === 4), 'lebanon: one signal routes into tracks 3 and 4');
+for (const { sig: ps, A: cA, B: cB } of pairs) {
 assert.equal(routeFrom(sim, ps), null);
 r = setRoute(sim, ps, cA.exitNode, { trainId: 1 });
 assert.equal(r.ok, true);
@@ -215,11 +236,12 @@ for (const e of cA.edges.slice(0, -1)) releaseEdge(sim, e); // ... and stands dw
 sim.edgeState[cA.edges.at(-1)].occ.add(1);
 assert.ok(sim.routes.has(RA.id), 'the dwelling train still holds its last edge');
 r = setRoute(sim, ps, cB.exitNode);
-assert.equal(r.ok, true, `second train into a free track: ${r.reason}`);
+assert.equal(r.ok, true, `dwelling on track ${trackOf(cA)}, second train into track ${trackOf(cB)}: ${r.reason}`);
 assert.equal(routeFrom(sim, ps), r.route);
 assert.equal(cancelRoute(sim, r.route.id), true);
 releaseEdge(sim, cA.edges.at(-1));
 sim.edgeState[cA.edges.at(-1)].occ.delete(1);
 assert.ok(allClear(sim));
+}
 
 console.log('sim core ok');
