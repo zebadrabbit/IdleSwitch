@@ -336,6 +336,7 @@ function adopt(sim, train) {
     train.path.push(...route.cand.edges);
     train.routes.push(route.id);
     route.trainId = train.id;
+    train.events.push({ t: sim.time, kind: 'route', signal: signalLabel(sim, route.signal), ...(route.human ? { human: true } : {}) });
   }
 }
 
@@ -356,7 +357,8 @@ function occupy(sim, train) {
 }
 
 // Releases every edge the train still holds, cancels any route set for it that it never entered, drops its
-// reservation, then logs its delay and records it in sim.completed.
+// reservation, then logs its delay and records it in sim.completed with its distance (cells of path run, portal to
+// portal) and its event log.
 export function despawnTrain(sim, train) {
   for (const e of train.path) {
     sim.edgeState[e].occ.delete(train.id);
@@ -371,7 +373,9 @@ export function despawnTrain(sim, train) {
   const delay = sim.time - train.sched, m = Math.round(delay / 60);
   const portal = sim.layout.portals.find(p => p.dir === -train.dir).name; // where the other direction enters
   logEvent(sim, `${train.name} out via ${portal} (${m < 0 ? '−' : '+'}${Math.abs(m)} min)`);
-  sim.completed.push({ name: train.name, type: train.type, delay, spawnTime: train.spawnTime, exitTime: sim.time, stops: train.stops });
+  train.events.push({ t: sim.time, kind: 'out' });
+  sim.completed.push({ name: train.name, type: train.type, delay, spawnTime: train.spawnTime, exitTime: sim.time, stops: train.stops,
+    distance: train.pathOff, events: train.events });
   clearAspects(sim);
 }
 
@@ -500,6 +504,7 @@ function spawner(sim) {
     t.spawnTime = q.spawnTime;
     t.sched = q.sched;
     if (q.dest !== null) sim.reserved.set(q.dest, t.id);
+    t.events.push({ t: q.spawnTime, kind: 'queued' }, { t: sim.time, kind: 'entered' });
     logEvent(sim, `${t.name} entered from ${sim.layout.portals.find(p => p.dir === dir).name}`);
   }
 }
@@ -519,6 +524,7 @@ function missions(sim) {
     if (t.state === 'dwelling') {
       if (sim.time >= t.dwellUntil) {
         logEvent(sim, `${t.name} departed ${tracks[t.dest].name}`);
+        t.events.push({ t: sim.time, kind: 'departed', track: tracks[t.dest].name });
         sim.reserved.delete(t.dest);
         Object.assign(t, { dest: null, goal: { node: exitPortalNode(sim, t.dir) }, state: 'running', lastMoveTime: sim.time });
       }
@@ -526,6 +532,7 @@ function missions(sim) {
       t.state = 'dwelling';
       t.dwellUntil = sim.time + dwellFor(sim, t.type, at);
       logEvent(sim, `${t.name} arrived at ${tracks[at].name}`);
+      t.events.push({ t: sim.time, kind: 'arrived', track: tracks[at].name });
     }
     if (t.holdFor !== null) {
       // Rule: a hold also ends once the train's path no longer ends at a holding track: a human cancelled the hold
@@ -566,7 +573,9 @@ function hold(sim, t, sig, cands) {
   const c = cands.find(k => free.has(sim.layout.edges[k.edges.at(-1)].track));
   if (!c || !setRoute(sim, sig, c.exitNode, { trainId: t.id }).ok) return false;
   t.holdFor = other.id;
-  logEvent(sim, `${t.name} holding at ${sim.layout.tracks[sim.layout.edges[c.edges.at(-1)].track].name} for ${other.name}`);
+  const track = sim.layout.tracks[sim.layout.edges[c.edges.at(-1)].track].name;
+  logEvent(sim, `${t.name} holding at ${track} for ${other.name}`);
+  t.events.push({ t: sim.time, kind: 'holding', track, for: other.name });
   return true;
 }
 

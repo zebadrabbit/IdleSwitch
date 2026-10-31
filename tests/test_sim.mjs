@@ -619,7 +619,8 @@ for (const seed of ['lebanon', 's7', 's42']) {
   despawnTrain(S, T);
   assert.ok(!S.routes.has(stray.id) && allClear(S));
   assert.equal(S.reserved.size, 0);
-  assert.deepEqual(S.completed, [{ name: 'M 9', type: 'M', delay: 475, spawnTime: T.spawnTime, exitTime: S.time, stops: 0 }]);
+  assert.deepEqual(S.completed, [{ name: 'M 9', type: 'M', delay: 475, spawnTime: T.spawnTime, exitTime: S.time, stops: 0,
+    distance: 0, events: [{ t: S.time, kind: 'out' }] }]);
   assert.equal(S.log.at(-1).text, `M 9 out via ${L.portals.find(p => p.dir === E).name} (+8 min)`);
 }
 
@@ -775,8 +776,20 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   if (G.tracks.some(t => t.cls === 'platform')) assert.ok(S.completed.some(c => dwelt.get(c.name) === 'platform'), `${seed}: no P called`);
   if (G.tracks.some(t => t.cls === 'yard')) assert.ok(S.completed.some(c => ['yard', 'spur'].includes(dwelt.get(c.name))), `${seed}: no freight served the yard`);
   for (const c of S.completed) {
-    assert.deepEqual(Object.keys(c).sort(), ['delay', 'exitTime', 'name', 'spawnTime', 'stops', 'type']);
-    assert.ok(c.exitTime > c.spawnTime);
+    assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'name', 'spawnTime', 'stops', 'type']);
+    assert.ok(c.exitTime > c.spawnTime && c.distance > 0);
+    // the per-train log (spec "Delay"): queued at spawnTime, entered, ..., out at exitTime, in time order
+    assert.deepEqual([c.events[0], c.events[1].kind, c.events.at(-1)], [{ t: c.spawnTime, kind: 'queued' }, 'entered', { t: c.exitTime, kind: 'out' }]);
+    assert.ok(c.events.every((e, i) => !i || e.t >= c.events[i - 1].t), `${seed}: ${c.name} events out of time order`);
+  }
+  // a P that called at a platform: a route in, arrived, departed, a route on
+  if (G.tracks.some(t => t.cls === 'platform')) {
+    const P = S.completed.find(c => c.type === 'P' && dwelt.get(c.name) === 'platform'), kinds = P.events.map(e => e.kind);
+    const at = k => kinds.indexOf(k), arrived = P.events[at('arrived')];
+    assert.ok(at('entered') < at('route') && at('route') < at('arrived') && at('arrived') < at('departed')
+      && at('departed') < kinds.lastIndexOf('route'), `${seed}: ${P.name} events ${kinds}`);
+    assert.ok(G.tracks.some(t => t.cls === 'platform' && t.name === arrived.track), `${seed}: arrived at ${arrived.track}`);
+    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EW]\d+d?$/.test(e.signal)));
   }
 }
 assert.ok(held.size > 0, 'the overtake rule never held a train');
