@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
 import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, switchLocked,
   releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom,
-  ASPECT, aspectOf, signalHeads, lamps, clearAspects } from '../src/sim.js';
+  ASPECT, aspectOf, signalHeads, lamps, clearAspects,
+  MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
+  trainBlocks, headNode } from '../src/sim.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -342,3 +344,149 @@ assert.deepEqual(lamps(ASPECT.STOP, 'dwarf', 1), { top: 'R' });
 assert.deepEqual(lamps(ASPECT.SLOW_CLEAR, 'dwarf', 1), { top: 'G' });
 assert.deepEqual(lamps(ASPECT.CLEAR, 'dwarf', 1), { top: 'R' });
 console.log('aspects ok');
+
+// ---- Task 5: trains
+{
+const S = createSim(L, 'trains'), G = S.layout;
+const close = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
+const tick = () => { moveTrains(S); S.time++; };
+const straightOf = sig => S.routesFrom.get(sig).find(c => !c.diverging && !c.slow);
+const lenOf = e => G.edges[e].len;
+
+// constants, TYPES, train shape
+assert.deepEqual([MPH, CAR, LOCO, FOUL], [1 / 180, 0.6, 0.8, 0.3]);
+assert.deepEqual(Object.keys(TYPES), ['X', 'P', 'Z', 'M', 'C', 'G', 'I', 'L']);
+assert.deepEqual(TYPES.X, { name: 'Express', prio: 5, cars: 8, max: 60, acc: 1.0, dec: 1.5, passenger: true });
+assert.deepEqual(TYPES.L, { name: 'Local', prio: 0, cars: 6, max: 40, acc: 0.5, dec: 0.8 });
+for (const t of Object.keys(TYPES)) assert.ok(close(trainLength(t), LOCO + TYPES[t].cars * CAR));
+const X = spawnTrain(S, { type: 'X', dir: W, name: 'X 101' });
+const exitW = exitPortalNode(S, W);
+assert.equal(S.trains.get(X.id), X);
+assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, prio: 5, len: trainLength('X'), maxSpeed: 60 * MPH,
+  path: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { node: exitW }, dwellUntil: 0,
+  holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, events: [] });
+assert.equal(headNode(S, X), entryPortalNode(S, W));
+assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
+
+// set the straight route from the portal signal and every onward straight main route by hand
+const routes = [];
+for (let sig = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`); sig !== null;) {
+  const cand = straightOf(sig), res = setRoute(S, sig, cand.exitNode, { trainId: X.id });
+  assert.equal(res.ok, true, res.reason);
+  routes.push(res.route);
+  sig = cand.exitSignal;
+}
+assert.ok(routes.length >= 3);
+assert.equal(routes.at(-1).cand.exitNode, exitW);
+const home = routes[1], homeStart = routes[0].cand.len, homeEnd = homeStart + home.cand.len;
+assert.notEqual(aspectOf(S, home.signal), ASPECT.STOP);
+
+// occupancy is exactly the path edges overlapping (tail, head]; release is eager (path[0] still holds the tail)
+const occupancyRule = T => {
+  let s = T.pathOff;
+  for (const e of T.path) {
+    assert.equal(S.edgeState[e].occ.has(T.id), s <= T.headDist && s + lenOf(e) > T.headDist - T.len, `${T.name}: edge ${e}`);
+    s += lenOf(e);
+  }
+  S.edgeState.forEach((st, e) => { if (st.occ.has(T.id)) assert.ok(T.path.includes(e), `${T.name} occupies ${e} off its path`); });
+  if (T.path.length) assert.ok(T.pathOff + lenOf(T.path[0]) > T.headDist - T.len, 'tail left path[0] but it was not released');
+};
+
+let steps = 0, blocksChecked = false, homeCleared = false;
+while (S.trains.has(X.id) && steps < 2 * 3600) {
+  tick(); steps++;
+  for (const st of S.edgeState) assert.ok(st.occ.size <= 1);
+  assert.ok(X.speed <= 60 * MPH + 1e-9);
+  if (steps === 1) {
+    assert.deepEqual(X.path, routes.flatMap(r => r.cand.edges), 'adopted the whole chain');
+    assert.ok(routes.every(r => r.trainId === X.id));
+    assert.equal(headNode(S, X), exitW);
+    const portal = G.nodes[entryPortalNode(S, W)];
+    assert.deepEqual(pointAt(S, X, 0), { x: portal.x, y: portal.y });
+    assert.equal(pointAt(S, X, -0.01), null);
+    assert.equal(routes[0].entered, true, 'head on the portal edge');
+    assert.equal(aspectOf(S, routes[0].signal), ASPECT.STOP);
+  }
+  if (!S.trains.has(X.id)) break;
+  occupancyRule(X);
+  // a train entering a route drops its entrance signal to STOP
+  if (X.headDist >= homeStart) { assert.equal(home.entered, true); assert.equal(aspectOf(S, home.signal), ASPECT.STOP); }
+  else { assert.equal(home.entered, false); assert.notEqual(aspectOf(S, home.signal), ASPECT.STOP); }
+  // ... and once its tail has passed, the route is gone and its edges are free
+  if (!homeCleared && X.headDist - X.len >= homeEnd) {
+    assert.ok(!S.routes.has(home.id) && home.cand.edges.every(e => S.edgeState[e].route === null && S.edgeState[e].occ.size === 0));
+    homeCleared = true;
+  }
+  if (!blocksChecked && X.state === 'running' && X.headDist - X.len > X.pathOff && X.headDist < pathLength(S, X)) {
+    const b = trainBlocks(S, X), h = pointAt(S, X, X.headDist), t = pointAt(S, X, X.headDist - X.len);
+    assert.equal(b.length, 1 + TYPES.X.cars);
+    assert.deepEqual(b.map(k => k.kind), ['loco', ...Array(TYPES.X.cars).fill('car')]);
+    assert.deepEqual([b[0].x1, b[0].y1], [h.x, h.y]);
+    assert.ok(close(b.at(-1).x2, t.x) && close(b.at(-1).y2, t.y), 'last car ends at the tail');
+    b.slice(1).forEach((k, i) => assert.ok(close(k.x1, b[i].x2) && close(k.y1, b[i].y2), 'blocks are contiguous'));
+    // Main 1 is a straight westbound row: head end is west, block lengths are LOCO and CAR
+    assert.ok(b.every(k => k.y1 === 0 && k.y2 === 0 && k.x1 < k.x2));
+    b.forEach((k, i) => assert.ok(close(k.x2 - k.x1, i ? CAR : LOCO), `block ${i} length`));
+    blocksChecked = true;
+  }
+}
+assert.ok(blocksChecked && homeCleared);
+assert.equal(X.state, 'done');
+assert.ok(!S.trains.has(X.id));
+assert.ok(steps >= 2 * 60 && steps <= 12 * 60, `X took ${steps} sim-seconds`);
+assert.equal(X.stops, 0);
+assert.ok(routes.every(r => !S.routes.has(r.id)));
+assert.ok(allClear(S));
+
+// a P with no routes set stands at the portal, stopped, and never passes the portal signal
+const P = spawnTrain(S, { type: 'P', dir: E });
+for (let i = 0; i < 600; i++) { tick(); assert.ok(P.headDist <= 0, 'past the portal signal'); }
+assert.equal(P.state, 'stopped');
+assert.ok(Math.abs(pathLength(S, P) - P.headDist) <= FOUL + 0.05);
+assert.deepEqual([P.speed, P.stops, P.lastMoveTime], [0, 0, P.spawnTime]);
+assert.ok(S.edgeState.every(st => st.occ.size === 0), 'not on the board yet');
+
+// given only the portal route (no trainId: the train at the signal adopts it), it stops FOUL short of the home signal
+const pSig = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`), pc = straightOf(pSig);
+const pr = setRoute(S, pSig, pc.exitNode).route;
+for (let i = 0; i < 600; i++) { tick(); assert.ok(P.headDist <= pathLength(S, P) - FOUL + 1e-9, 'past the stop point'); occupancyRule(P); }
+assert.equal(pr.trainId, P.id);
+assert.equal(P.state, 'stopped');
+assert.ok(close(pathLength(S, P) - P.headDist, FOUL, 1e-6));
+assert.deepEqual([P.speed, P.stops], [0, 1]);
+assert.ok(P.lastMoveTime < S.time - 60);
+assert.equal(headNode(S, P), pc.exitNode);
+assert.equal(aspectOf(S, pSig), ASPECT.STOP);
+
+// route changes clear the aspect memo; a route cancelled in front of the train (not yet entered) drops off
+// its path and it stops short again
+const hSig = pc.exitSignal, hc = straightOf(hSig);
+assert.equal(aspectOf(S, hSig), ASPECT.STOP); // memoised
+const hr = setRoute(S, hSig, hc.exitNode).route;
+assert.notEqual(aspectOf(S, hSig), ASPECT.STOP, 'setRoute clears the memo');
+tick();
+assert.equal(hr.trainId, P.id);
+assert.deepEqual(P.path, [...pc.edges, ...hc.edges]);
+assert.ok(P.speed > 0 && !hr.entered);
+assert.notEqual(aspectOf(S, hSig), ASPECT.STOP);
+assert.equal(cancelRoute(S, hr.id), true);
+assert.equal(aspectOf(S, hSig), ASPECT.STOP, 'cancelRoute clears the memo');
+for (let i = 0; i < 120; i++) { tick(); assert.ok(P.headDist < pc.len, 'passed a cancelled route'); occupancyRule(P); }
+assert.deepEqual(P.path, pc.edges);
+assert.deepEqual([P.state, P.speed, P.stops], ['stopped', 0, 2]);
+assert.ok(hc.edges.every(e => S.edgeState[e].route === null && S.edgeState[e].occ.size === 0));
+
+// releaseEdge clears the memo too
+const hr2 = setRoute(S, hSig, hc.exitNode, { trainId: 99 }).route;
+assert.notEqual(aspectOf(S, hSig), ASPECT.STOP);
+hc.edges.forEach(e => releaseEdge(S, e));
+assert.ok(!S.routes.has(hr2.id));
+assert.equal(aspectOf(S, hSig), ASPECT.STOP, 'releaseEdge clears the memo');
+
+// despawnTrain releases everything the train holds
+despawnTrain(S, P);
+assert.equal(P.state, 'done');
+assert.ok(!S.trains.has(P.id));
+assert.ok(allClear(S));
+}
+console.log('trains ok');

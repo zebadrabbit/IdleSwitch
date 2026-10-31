@@ -1,5 +1,5 @@
-// Pure simulation: interlocking (routes, switches, locking), pathfinding; later tasks add signals,
-// trains, traffic and the operator. Never touches window, document, Math.random or Date; randomness
+// Pure simulation: interlocking (routes, switches, locking), pathfinding, signal aspects and trains;
+// later tasks add traffic and the operator. Never touches window, document, Math.random or Date; randomness
 // comes only from sim.rng (makeRng(seed + ':sim')).
 //
 // Travel direction is decided by x alone, never by edge a->b order: a dir=+1 train leaves a node
@@ -21,7 +21,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     switchAt: new Map(layout.switches.map(s => [s.node, s])), // node -> {node, trunk, normal, reverse}
     routesFrom: new Map(),
     routes: new Map(), nextRouteId: 1,
-    trains: new Map(), reserved: new Map(),
+    trains: new Map(), nextTrainId: 1, reserved: new Map(),
     queue: { 1: [], '-1': [] }, nextSpawn: { 1: start, '-1': start }, completed: [],
     time: start, log: [], auto: false, density: opts.density ?? 'normal',
     rng: makeRng(seed + ':sim'), _aspects: new Map(),
@@ -114,6 +114,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   const route = { id: sim.nextRouteId++, signal: signalId, cand, trainId, human, entered: false };
   for (const e of cand.edges) sim.edgeState[e].route = route.id;
   sim.routes.set(route.id, route);
+  clearAspects(sim);
   return { ok: true, route };
 }
 
@@ -122,6 +123,7 @@ export function cancelRoute(sim, routeId) {
   if (!route || route.entered) return false;
   for (const e of route.cand.edges) if (sim.edgeState[e].route === routeId) sim.edgeState[e].route = null;
   sim.routes.delete(routeId);
+  clearAspects(sim);
   return true;
 }
 
@@ -131,6 +133,7 @@ export function releaseEdge(sim, edgeId) {
   st.route = null;
   const route = sim.routes.get(id);
   if (route && !route.cand.edges.some(e => sim.edgeState[e].route === id)) sim.routes.delete(id);
+  clearAspects(sim);
 }
 
 // Drops the edges the tail has left from the front of train.path. Positions are cumulative along the
@@ -183,8 +186,8 @@ export const ASPECT = { STOP: 'STOP', RESTRICTING: 'RESTRICTING', APPROACH: 'APP
 
 export const clearAspects = sim => sim._aspects.clear();
 
-// Memoised in sim._aspects (step clears it each tick). Recursion follows exit signals along one direction's
-// DAG (x strictly increases), so it terminates.
+// Memoised in sim._aspects; route changes and moveTrains clear it. Recursion follows exit signals along one
+// direction's DAG (x strictly increases), so it terminates.
 export function aspectOf(sim, signalId) {
   const memo = sim._aspects;
   if (memo.has(signalId)) return memo.get(signalId);
@@ -216,4 +219,172 @@ export function lamps(aspect, kind, heads) {
   if (heads === 1) return { top: HIGH1[aspect] ?? 'R' };
   const [top, bottom] = HIGH2[aspect] ?? HIGH2.STOP;
   return { top, bottom };
+}
+
+// ---- Trains (spec "Trains", "Speeds"). Grid cells and sim seconds; MPH converts mph to cells/s.
+export const MPH = 1 / 180, CAR = 0.6, LOCO = 0.8, FOUL = 0.3;
+// acc/dec in mph per sim-second.
+export const TYPES = {
+  X: { name: 'Express', prio: 5, cars: 8, max: 60, acc: 1.0, dec: 1.5, passenger: true },
+  P: { name: 'Passenger', prio: 4, cars: 5, max: 60, acc: 1.0, dec: 1.5, passenger: true },
+  Z: { name: 'Priority intermodal', prio: 3, cars: 12, max: 60, acc: 0.5, dec: 0.8 },
+  M: { name: 'Manifest', prio: 2, cars: 14, max: 50, acc: 0.4, dec: 0.7 },
+  C: { name: 'Unit coal', prio: 1, cars: 20, max: 45, acc: 0.3, dec: 0.6 },
+  G: { name: 'Grain', prio: 1, cars: 16, max: 45, acc: 0.3, dec: 0.6 },
+  I: { name: 'Intermodal', prio: 1, cars: 12, max: 50, acc: 0.4, dec: 0.7 },
+  L: { name: 'Local', prio: 0, cars: 6, max: 40, acc: 0.5, dec: 0.8 },
+};
+
+export const trainLength = type => LOCO + TYPES[type].cars * CAR;
+
+// Head at the entry portal node with nothing occupied; its first adopted route gives it its first edges.
+// Positions are cumulative along the train's run from that portal: path[0] starts at pathOff.
+export function spawnTrain(sim, { type, dir, dest = null, name }) {
+  const id = sim.nextTrainId++, T = TYPES[type];
+  const train = {
+    id, name: name ?? `${type} ${id}`, type, dir, prio: T.prio, len: trainLength(type), maxSpeed: T.max * MPH,
+    path: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
+    goal: dest !== null ? { track: dest } : { node: exitPortalNode(sim, dir) },
+    dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, events: [],
+  };
+  sim.trains.set(id, train);
+  return train;
+}
+
+// The end of the edge in travel direction (edges always span x, so the x rule decides).
+function toNode(sim, edgeId, dir) {
+  const { nodes, edges } = sim.layout, e = edges[edgeId];
+  return (nodes[e.b].x - nodes[e.a].x) * dir > 0 ? e.b : e.a;
+}
+
+// Where the train's path ends: the entry portal before its first route, else the far end of its last edge.
+export function headNode(sim, train) {
+  return train.path.length ? toNode(sim, train.path.at(-1), train.dir) : entryPortalNode(sim, train.dir);
+}
+
+export const pathLength = (sim, train) => train.path.reduce((s, e) => s + sim.layout.edges[e].len, train.pathOff);
+
+// Grid coords at dist along the path; null before its start (released edges, or behind the portal) or past its end.
+export function pointAt(sim, train, dist) {
+  const { nodes, edges } = sim.layout;
+  if (dist < train.pathOff) return null;
+  let s = train.pathOff;
+  for (const id of train.path) {
+    const len = edges[id].len;
+    if (dist <= s + len) {
+      const b = nodes[toNode(sim, id, train.dir)], a = nodes[far(edges[id], b.id)], f = (dist - s) / len;
+      return { x: a.x + f * (b.x - a.x), y: a.y + f * (b.y - a.y) };
+    }
+    s += len;
+  }
+  if (dist !== s) return null;
+  const n = nodes[headNode(sim, train)];
+  return { x: n.x, y: n.y };
+}
+
+// Loco then cars, head first, each clipped to the path (dropped if wholly off it).
+// ponytail: a block spanning a bend draws as a straight chord; blocks are under a cell long.
+export function trainBlocks(sim, train) {
+  const out = [], start = train.pathOff, end = pathLength(sim, train);
+  for (let i = 0; i <= TYPES[train.type].cars; i++) {
+    const front = train.headDist - (i ? LOCO + (i - 1) * CAR : 0), back = front - (i ? CAR : LOCO);
+    const hi = Math.min(front, end), lo = Math.max(back, start);
+    if (hi <= lo) continue;
+    const p = pointAt(sim, train, hi), q = pointAt(sim, train, lo);
+    out.push({ x1: p.x, y1: p.y, x2: q.x, y2: q.y, kind: i ? 'car' : 'loco' });
+  }
+  return out;
+}
+
+// cancelRoute only takes un-entered routes. One cancelled ahead of a train drops off its path, with the train's
+// routes beyond it (they would be stranded), so the train brakes for the signal again.
+function dropCancelled(sim, train) {
+  const { edges } = sim.layout;
+  let s = train.pathOff;
+  const cut = train.path.findIndex(e => {
+    const id = sim.edgeState[e].route;
+    const gone = s > train.headDist && (id === null || sim.routes.get(id).trainId !== train.id);
+    s += edges[e].len;
+    return gone;
+  });
+  if (cut < 0) return;
+  for (const e of train.path.splice(cut)) {
+    const id = sim.edgeState[e].route;
+    if (id !== null && sim.routes.get(id).trainId === train.id) cancelRoute(sim, id);
+  }
+}
+
+// Take the un-entered route from the signal where the path ends (and the next, and so on).
+function adopt(sim, train) {
+  for (;;) {
+    const sig = sim.signalAt.get(`${headNode(sim, train)}:${train.dir}`);
+    const route = sig === undefined ? null : routeFrom(sim, sig);
+    if (!route || (route.trainId !== null && route.trainId !== train.id)) return;
+    train.path.push(...route.cand.edges);
+    route.trainId = train.id;
+  }
+}
+
+// Path edges overlapping (tail, headDist] are occupied: [s, e) overlaps it iff s <= head && e > tail. This is
+// the complement of sectionalRelease's e <= tail for everything the head has reached, so release and occupancy agree.
+function occupy(sim, train) {
+  const { edges } = sim.layout, tail = train.headDist - train.len;
+  let s = train.pathOff;
+  for (const e of train.path) {
+    if (s > train.headDist) break;
+    if (s + edges[e].len > tail) {
+      const st = sim.edgeState[e];
+      st.occ.add(train.id);
+      if (st.route !== null) sim.routes.get(st.route).entered = true; // the head is in: its signal drops to stop
+    }
+    s += edges[e].len;
+  }
+}
+
+// Task 6 hooks the delay log here. Releases every edge the train still holds.
+export function despawnTrain(sim, train) {
+  for (const e of train.path) {
+    sim.edgeState[e].occ.delete(train.id);
+    releaseEdge(sim, e);
+    train.pathOff += sim.layout.edges[e].len;
+  }
+  train.path = [];
+  train.state = 'done';
+  sim.trains.delete(train.id);
+  clearAspects(sim);
+}
+
+// One step of dt sim seconds for every train. Does not advance sim.time (step owns it).
+export function moveTrains(sim, dt = 1) {
+  const { edges } = sim.layout;
+  for (const train of [...sim.trains.values()]) {
+    dropCancelled(sim, train);
+    adopt(sim, train);
+    const runOff = train.path.length > 0 && headNode(sim, train) === exitPortalNode(sim, train.dir);
+    const acc = TYPES[train.type].acc * MPH, dec = TYPES[train.type].dec * MPH;
+    const held = train.state === 'dwelling' || train.state === 'holding';
+    // Limit: the head's edge, and every edge ahead braked down to from where the head is now.
+    // ponytail: speed limits read the head's edge only; a tail still on slower track doesn't hold the train.
+    let vAllowed = held ? 0 : train.maxSpeed, s = train.pathOff;
+    for (const e of train.path) {
+      const end = s + edges[e].len;
+      const ahead = Math.max(0, s - train.headDist), ve = edges[e].speed * MPH;
+      if (end > train.headDist) vAllowed = Math.min(vAllowed, Math.sqrt(ve * ve + 2 * dec * ahead));
+      s = end;
+    }
+    const remaining = runOff ? Infinity : s - train.headDist - FOUL; // to the stop point FOUL short of the path's end
+    vAllowed = Math.min(vAllowed, Math.sqrt(2 * dec * Math.max(0, remaining)));
+    // ponytail: brake curve is one-sided; fine for a panel sim
+    let v = Math.min(train.speed + acc * dt, vAllowed), adv = v * dt;
+    if (adv >= remaining) { adv = Math.max(0, remaining); v = 0; } // never past the stop point: arrive and stand
+    if (train.speed > 0 && v === 0) train.stops++;
+    train.speed = v;
+    train.headDist += adv;
+    if (v > 0) train.lastMoveTime = sim.time;
+    occupy(sim, train);
+    sectionalRelease(sim, train);
+    if (runOff && train.headDist - train.len >= pathLength(sim, train)) { despawnTrain(sim, train); continue; }
+    if (!held) train.state = v === 0 && remaining - adv <= 0.05 ? 'stopped' : 'running';
+  }
+  clearAspects(sim);
 }
