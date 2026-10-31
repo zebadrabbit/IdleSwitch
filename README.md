@@ -1,6 +1,6 @@
 # IdleSwitch
 
-Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itself on a dark dispatcher's panel: track lights red under trains, signals step green, yellow, red behind them, switches throw, a yard breathes in and out. A virtual operator sets the routes. When you feel like it, take the panel and route trains yourself, NX-style; walk away and the operator takes it back. Nothing needs you and nothing punishes you for leaving. The same seed gives the same terminal and the same day of traffic. Vanilla JS and canvas, no dependencies, no build step. Live at https://firetailfab.com/idleswitch/.
+Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itself on a dark dispatcher's panel: track lights red under trains, signals step green, yellow, red behind them, switches throw, a yard breathes in and out. A virtual operator sets the routes. When you feel like it, take the panel and route trains yourself, NX-style; walk away and the operator takes it back. Nothing needs you and nothing punishes you for leaving. The same seed gives the same terminal and the same day of traffic. Vanilla JS and canvas, no dependencies, no build step. Built to run at https://firetailfab.com/idleswitch/.
 
 ## Controls
 
@@ -16,7 +16,7 @@ Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itsel
 | ? | Toggle the legend |
 | N | New random seed |
 
-Mouse: drag to pan, wheel to zoom about the cursor. To route a train, click an entrance signal, then an exit signal; the route sets if the interlocking allows, otherwise the entrance signal flashes red and the log says why. Click a train to pre-arm its next signal. Click a set, unoccupied route to cancel it.
+Mouse: drag to pan, wheel to zoom about the cursor. To route a train, click an entrance signal, then an exit signal; the route sets if the interlocking allows, otherwise the entrance signal flashes red and the log says why. Click a train to pre-arm its next signal. Click a set, unoccupied route to cancel it. Click a free switch to throw it.
 
 ## What's on the panel
 

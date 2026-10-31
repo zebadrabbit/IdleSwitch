@@ -104,8 +104,6 @@ export function createRenderer(canvas) {
     canvas.height = Math.round(innerHeight * dpr);
   };
 
-  r.worldToScreen = (x, y) => ({ x: (x - r.camera.x) * r.camera.zoom, y: (y - r.camera.y) * r.camera.zoom });
-
   // Fits columns 0..cols-1 and rows -1..rows (the module names above Main 1, the portal labels beyond
   // both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes the
   // area its docked panels leave free).

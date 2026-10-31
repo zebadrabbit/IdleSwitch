@@ -35,7 +35,7 @@ const delayHTML = d => `<span class="delay ${d.cls}">${d.text}</span>`;
 
 // Board status words (spec: approaching / routed / holding / dwelling / departing; plus waiting at a red).
 export function trainStatus(t) {
-  if (t.state === 'entering') return 'approaching';
+  if (t.state === 'entering' || !t.path.length) return 'approaching'; // still at its portal, off the panel
   if (t.state === 'stopped') return 'waiting';
   if (t.state === 'running') return t.dwellUntil > 0 && t.dest === null ? 'departing' : 'routed';
   return t.state;
@@ -67,7 +67,7 @@ export function boardHTML(sim, selectedTrain) {
 
 // ---- Log: the last 60 entries, newest first.
 export const logHTML = sim => sim.log.slice(-60).reverse().map(e =>
-  `<div class="${/refused|STALL/.test(e.text) ? 'warn' : ''}"><span class="t">${formatClock(e.t)}</span> ${esc(e.text)}</div>`).join('')
+  `<div class="${/refused|STALL|ERROR/.test(e.text) ? 'warn' : ''}"><span class="t">${formatClock(e.t)}</span> ${esc(e.text)}</div>`).join('')
   || '<p class="dim">Nothing yet.</p>';
 
 // ---- Inspector: the selected train, signal or switch.

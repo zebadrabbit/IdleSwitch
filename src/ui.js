@@ -375,21 +375,31 @@ function uiFor(now) {
   };
 }
 
-let last = performance.now(), acc = 0, lastPanels = -Infinity;
+let last = performance.now(), acc = 0, lastPanels = -Infinity, failed = false;
+// A throw must not stop a screensaver: the first one goes to the console and the sim log, and the loop runs on. The
+// sim, the drawing and the panels are guarded apart, so one failing still leaves the others (and the logged error) on screen.
+function guarded(f) {
+  try { f(); } catch (err) {
+    if (!failed) { failed = true; console.error(err); logEvent(sim, `ERROR: ${err?.message ?? err}`); }
+  }
+}
 function frame(now) {
-  if (!state.paused) {
-    const t = tick(acc, now - last, state.speed, SIM_PER_SEC);
-    acc = t.acc;
-    for (let i = 0; i < t.steps; i++) step(sim);
-  }
+  const dt = now - last;
   last = now;
-  if (!sim.auto && settings.idleReturn && performance.now() - state.lastInput > IDLE_MS) {
-    sim.auto = true;
-    logEvent(sim, 'AUTO resumed (idle)');
-  }
-  if (state.selected?.kind === 'train' && !sim.trains.has(state.selected.id)) state.selected = state.armedSignal = null; // it left
-  r.draw(sim, uiFor(now));
-  if (now - lastPanels >= PANEL_MS) { lastPanels = now; refreshPanels(); }
+  guarded(() => {
+    if (!state.paused) {
+      const t = tick(acc, dt, state.speed, SIM_PER_SEC);
+      acc = t.acc;
+      for (let i = 0; i < t.steps; i++) step(sim);
+    }
+    if (!sim.auto && settings.idleReturn && performance.now() - state.lastInput > IDLE_MS) {
+      sim.auto = true;
+      logEvent(sim, 'AUTO resumed (idle)');
+    }
+    if (state.selected?.kind === 'train' && !sim.trains.has(state.selected.id)) state.selected = state.armedSignal = null; // it left
+  });
+  guarded(() => r.draw(sim, uiFor(now)));
+  if (now - lastPanels >= PANEL_MS) { lastPanels = now; guarded(refreshPanels); }
   requestAnimationFrame(frame);
 }
 
