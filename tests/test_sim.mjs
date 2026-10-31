@@ -363,7 +363,7 @@ const X = spawnTrain(S, { type: 'X', dir: W, name: 'X 101' });
 const exitW = exitPortalNode(S, W);
 assert.equal(S.trains.get(X.id), X);
 assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, prio: 5, len: trainLength('X'), maxSpeed: 60 * MPH,
-  path: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { node: exitW }, dwellUntil: 0,
+  path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { node: exitW }, dwellUntil: 0,
   holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, events: [] });
 assert.equal(headNode(S, X), entryPortalNode(S, W));
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
@@ -449,8 +449,17 @@ assert.ok(S.edgeState.every(st => st.occ.size === 0), 'not on the board yet');
 // given only the portal route (no trainId: the train at the signal adopts it), it stops FOUL short of the home signal
 const pSig = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`), pc = straightOf(pSig);
 const pr = setRoute(S, pSig, pc.exitNode).route;
-for (let i = 0; i < 600; i++) { tick(); assert.ok(P.headDist <= pathLength(S, P) - FOUL + 1e-9, 'past the stop point'); occupancyRule(P); }
+let movedAt = null; // sim.time of the last step the head advanced in; the arrival step (speed 0 after it) counts
+for (let i = 0; i < 600; i++) {
+  const t = S.time, h = P.headDist;
+  tick();
+  if (P.headDist > h) movedAt = t;
+  assert.ok(P.headDist <= pathLength(S, P) - FOUL + 1e-9, 'past the stop point');
+  occupancyRule(P);
+}
+assert.equal(P.lastMoveTime, movedAt);
 assert.equal(pr.trainId, P.id);
+assert.deepEqual(P.routes, [pr.id]);
 assert.equal(P.state, 'stopped');
 assert.ok(close(pathLength(S, P) - P.headDist, FOUL, 1e-6));
 assert.deepEqual([P.speed, P.stops], [0, 1]);
@@ -488,5 +497,39 @@ despawnTrain(S, P);
 assert.equal(P.state, 'done');
 assert.ok(!S.trains.has(P.id));
 assert.ok(allClear(S));
+
+// cancel an adopted home route and, before the next tick, set another from the same signal for the same train.
+// Routes from one signal share their leading edge, so the path must be cut at the route boundary (the signal), not at
+// the switch where they split; the train then adopts the new route, stops FOUL short of its red exit, and once the
+// way on is set it runs out.
+for (const dir of [W, E]) {
+  const T = spawnTrain(S, { type: 'L', dir });
+  const sig0 = S.signalAt.get(`${entryPortalNode(S, dir)}:${dir}`), c0 = straightOf(sig0), hs = c0.exitSignal;
+  const R0 = setRoute(S, sig0, c0.exitNode).route, R = setRoute(S, hs, straightOf(hs).exitNode).route;
+  tick();
+  assert.deepEqual(T.routes, [R0.id, R.id]);
+  assert.equal(R.trainId, T.id);
+  assert.ok(!R.entered && T.path.includes(R.cand.edges.at(-1)));
+  assert.equal(cancelRoute(S, R.id), true);
+  const c2 = S.routesFrom.get(hs).find(c => c !== R.cand && c.edges[0] === R.cand.edges[0] && c.exitSignal !== null);
+  assert.ok(c2, 'a second route from the home signal sharing its first edge');
+  const R2 = setRoute(S, hs, c2.exitNode, { trainId: T.id }).route;
+  tick();
+  assert.deepEqual(T.path, [...c0.edges, ...c2.edges], `${dir}: cut at the home signal, all of R2 adopted`);
+  assert.deepEqual(T.routes, [R0.id, R2.id]);
+  for (let i = 0; i < 30 * 60 && !(T.state === 'stopped' && T.stops > 0); i++) { tick(); occupancyRule(T); }
+  assert.equal(T.state, 'stopped', `${dir}: train stuck in ${T.state}`);
+  assert.equal(headNode(S, T), c2.exitNode);
+  assert.ok(close(pathLength(S, T) - T.headDist, FOUL, 1e-6), `${dir}: stopped FOUL short of R2's exit`);
+  assert.deepEqual(T.path, c2.edges.slice(c2.edges.length - T.path.length), 'what is left of R2 (the rest released behind it)');
+  for (let sig = c2.exitSignal; sig !== null;) { // the way on: any non-slow route from each signal to the exit portal
+    const c = S.routesFrom.get(sig).find(k => !k.slow), res = setRoute(S, sig, c.exitNode);
+    assert.equal(res.ok, true, res.reason);
+    sig = c.exitSignal;
+  }
+  for (let i = 0; i < 30 * 60 && S.trains.has(T.id); i++) { tick(); occupancyRule(T); }
+  assert.equal(T.state, 'done', `${dir}: ${T.state}`);
+  assert.ok(allClear(S), `${dir}: everything released`);
+}
 }
 console.log('trains ok');

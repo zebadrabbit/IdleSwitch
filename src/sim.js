@@ -243,7 +243,7 @@ export function spawnTrain(sim, { type, dir, dest = null, name }) {
   const id = sim.nextTrainId++, T = TYPES[type];
   const train = {
     id, name: name ?? `${type} ${id}`, type, dir, prio: T.prio, len: trainLength(type), maxSpeed: T.max * MPH,
-    path: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
+    path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
     goal: dest !== null ? { track: dest } : { node: exitPortalNode(sim, dir) },
     dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, events: [],
   };
@@ -297,20 +297,22 @@ export function trainBlocks(sim, train) {
 }
 
 // cancelRoute only takes un-entered routes. One cancelled ahead of a train drops off its path, with the train's
-// routes beyond it (they would be stranded), so the train brakes for the signal again.
+// routes beyond it (they would be stranded), so the train brakes for the signal again. The cut is the first edge
+// not carrying one of train.routes (the routes it adopted), which is the cancelled route's first edge, at its
+// signal: routes from one signal share leading edges, so a new route set there since must not count as the old one.
 function dropCancelled(sim, train) {
   const { edges } = sim.layout;
+  train.routes = train.routes.filter(id => sim.routes.has(id)); // drops cancelled and fully released routes
   let s = train.pathOff;
   const cut = train.path.findIndex(e => {
-    const id = sim.edgeState[e].route;
-    const gone = s > train.headDist && (id === null || sim.routes.get(id).trainId !== train.id);
+    const gone = s > train.headDist && !train.routes.includes(sim.edgeState[e].route);
     s += edges[e].len;
     return gone;
   });
   if (cut < 0) return;
   for (const e of train.path.splice(cut)) {
     const id = sim.edgeState[e].route;
-    if (id !== null && sim.routes.get(id).trainId === train.id) cancelRoute(sim, id);
+    if (train.routes.includes(id)) { cancelRoute(sim, id); train.routes = train.routes.filter(r => r !== id); }
   }
 }
 
@@ -321,6 +323,7 @@ function adopt(sim, train) {
     const route = sig === undefined ? null : routeFrom(sim, sig);
     if (!route || (route.trainId !== null && route.trainId !== train.id)) return;
     train.path.push(...route.cand.edges);
+    train.routes.push(route.id);
     route.trainId = train.id;
   }
 }
@@ -376,11 +379,12 @@ export function moveTrains(sim, dt = 1) {
     vAllowed = Math.min(vAllowed, Math.sqrt(2 * dec * Math.max(0, remaining)));
     // ponytail: brake curve is one-sided; fine for a panel sim
     let v = Math.min(train.speed + acc * dt, vAllowed), adv = v * dt;
-    if (adv >= remaining) { adv = Math.max(0, remaining); v = 0; } // never past the stop point: arrive and stand
+    // Never past the stop point: arrive and stand. Rounding leaves ~1e-16 of remaining once there; that is not a move.
+    if (adv >= remaining) { adv = remaining > 1e-9 ? remaining : 0; v = 0; }
     if (train.speed > 0 && v === 0) train.stops++;
     train.speed = v;
     train.headDist += adv;
-    if (v > 0) train.lastMoveTime = sim.time;
+    if (adv > 0) train.lastMoveTime = sim.time;
     occupy(sim, train);
     sectionalRelease(sim, train);
     if (runOff && train.headDist - train.len >= pathLength(sim, train)) { despawnTrain(sim, train); continue; }
