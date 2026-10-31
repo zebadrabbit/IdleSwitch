@@ -1,0 +1,25 @@
+:root { --bg:#0b1020; --panel:#121a2e; --panel-border:#243052; --text:#cfd6ea; --dim:#7d88a6;
+  --accent:#5aa9ff; --green:#39d353; --amber:#f0b429; --red:#ff4d4f; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; color: var(--text);
+  font: 13px/1.45 system-ui, sans-serif; }
+canvas#map { position: fixed; inset: 0; display: block; }
+
+#hud { position: fixed; top: 0; left: 0; right: 0; height: 32px; display: flex; align-items: center;
+  gap: 14px; padding: 0 12px; background: rgba(18,26,46,.88); border-bottom: 1px solid var(--panel-border); z-index: 10; }
+#hud .wordmark { font-weight: 600; color: var(--accent); letter-spacing: 1px; }
+#hud .spacer { flex: 1; }
+button { background: var(--panel); color: var(--accent); border: 1px solid var(--panel-border);
+  border-radius: 4px; padding: 2px 8px; cursor: pointer; font: inherit; }
+button:hover { border-color: var(--accent); }
+
+.panel { position: fixed; min-width: 220px; background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 6px; font: 12px/1.4 system-ui, monospace; z-index: 5; display: flex; flex-direction: column; }
+.panel.hidden { display: none; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px;
+  border-bottom: 1px solid var(--panel-border); color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+.panel-body { flex: 1; overflow: auto; padding: 6px 8px; }
+.panel.dock-left { top: 32px; bottom: 0; left: 0; width: 260px; }
+.panel.dock-right { top: 32px; bottom: 0; right: 0; width: 260px; }
+.panel.dock-bottom { left: 0; right: 0; bottom: 0; height: 200px; }
+body.bare #hud, body.bare .panel { display: none; }
