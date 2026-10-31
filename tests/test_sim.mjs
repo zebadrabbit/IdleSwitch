@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
 import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, switchLocked,
-  releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom } from '../src/sim.js';
+  releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom,
+  ASPECT, aspectOf, signalHeads, lamps, clearAspects } from '../src/sim.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -245,3 +246,99 @@ assert.ok(allClear(sim));
 }
 
 console.log('sim core ok');
+
+// ---- Task 4: aspects
+let L4;
+for (let i = 0; i < 100 && !L4; i++) {
+  const g = generate(`s${i}`);
+  if (g.modules.some(m => m.kind === 'station') && g.modules.some(m => m.kind === 'yard')) L4 = g;
+}
+assert.ok(L4, 'a seed with station and yard');
+const S4 = createSim(L4, 'asp');
+const sigs = L4.signals;
+const trk = c => L4.tracks[L4.edges[c.edges.at(-1)].track];
+const plain = c => !c.diverging && !c.slow;
+const A = id => { clearAspects(S4); return aspectOf(S4, id); };
+const set = (sig, c) => { const r = setRoute(S4, sig, c.exitNode); assert.equal(r.ok, true, r.reason); return r.route; };
+const undo = r => cancelRoute(S4, r.id);
+
+for (const s of sigs) assert.equal(A(s.id), ASPECT.STOP, 'fresh sim: every signal STOP');
+
+// straight main: next STOP -> APPROACH; next also set -> CLEAR (its own next is the open exit: CLEAR)
+{
+  const s1 = sigs.find(s => s.kind === 'high' && S4.routesFrom.get(s.id).some(c => plain(c) && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain)));
+  assert.ok(s1);
+  const c1 = S4.routesFrom.get(s1.id).find(c => plain(c) && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain));
+  const r1 = set(s1.id, c1);
+  assert.equal(A(s1.id), ASPECT.APPROACH);
+  const c2 = S4.routesFrom.get(c1.exitSignal).find(plain);
+  const r2 = set(c1.exitSignal, c2);
+  assert.equal(A(c1.exitSignal), c2.exitSignal === null ? ASPECT.CLEAR : ASPECT.APPROACH);
+  if (c2.exitSignal === null) assert.equal(A(s1.id), ASPECT.CLEAR);
+  undo(r2); undo(r1);
+}
+
+// into a platform: DIVERGING_APPROACH; into yard/siding/spur: RESTRICTING
+{
+  let plat = 0, slow = 0;
+  for (const s of sigs.filter(s => s.kind === 'high')) for (const c of S4.routesFrom.get(s.id)) {
+    const t = trk(c);
+    if (c.slow && SLOW.includes(t?.cls)) {
+      const r = set(s.id, c); assert.equal(A(s.id), ASPECT.RESTRICTING); assert.equal(signalHeads(S4, s.id), 2); undo(r); slow++;
+    } else if (c.diverging && t?.cls === 'platform') {
+      const r = set(s.id, c); assert.equal(A(s.id), ASPECT.DIVERGING_APPROACH); undo(r); plat++;
+    }
+  }
+  assert.ok(plat > 0 && slow > 0, 'platform and slow routes exercised');
+}
+
+// dwarf: next STOP -> RESTRICTING; onward main route set -> SLOW_CLEAR
+{
+  const d = sigs.find(s => s.kind === 'dwarf' && S4.routesFrom.get(s.id).some(c => !c.slow && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain)));
+  assert.ok(d);
+  assert.equal(signalHeads(S4, d.id), 1);
+  const c = S4.routesFrom.get(d.id).find(c => !c.slow && c.exitSignal !== null && S4.routesFrom.get(c.exitSignal).some(plain));
+  const r1 = set(d.id, c);
+  assert.equal(A(d.id), ASPECT.RESTRICTING);
+  const r2 = set(c.exitSignal, S4.routesFrom.get(c.exitSignal).find(plain));
+  assert.equal(A(d.id), ASPECT.SLOW_CLEAR);
+  undo(r2); undo(r1);
+}
+
+// chain A -> B -> C set, C's next STOP: C APPROACH, B and A ADVANCE_APPROACH
+{
+  let chain = null;
+  for (const a of sigs) for (const ca of S4.routesFrom.get(a.id)) {
+    if (chain || !plain(ca) || ca.exitSignal === null) continue;
+    for (const cb of S4.routesFrom.get(ca.exitSignal)) {
+      if (chain || !plain(cb) || cb.exitSignal === null) continue;
+      for (const cc of S4.routesFrom.get(cb.exitSignal)) if (!chain && plain(cc) && cc.exitSignal !== null) chain = [[a.id, ca], [ca.exitSignal, cb], [cb.exitSignal, cc]];
+    }
+  }
+  assert.ok(chain, 'three consecutive straight routes');
+  const rs = chain.map(([s, c]) => set(s, c));
+  assert.equal(A(chain[2][0]), ASPECT.APPROACH);
+  assert.equal(A(chain[1][0]), ASPECT.ADVANCE_APPROACH);
+  assert.equal(A(chain[0][0]), ASPECT.ADVANCE_APPROACH);
+  rs.forEach(undo);
+}
+assert.ok(allClear(S4));
+
+// lamps
+assert.deepEqual(lamps(ASPECT.DIVERGING_CLEAR, 'high', 2), { top: 'R', bottom: 'G' });
+assert.deepEqual(lamps(ASPECT.RESTRICTING, 'dwarf', 1), { top: 'FR' });
+assert.deepEqual(lamps(ASPECT.ADVANCE_APPROACH, 'high', 1), { top: 'FY' });
+assert.deepEqual(lamps(ASPECT.CLEAR, 'high', 2), { top: 'G', bottom: 'R' });
+assert.deepEqual(lamps(ASPECT.APPROACH, 'high', 2), { top: 'Y', bottom: 'R' });
+assert.deepEqual(lamps(ASPECT.ADVANCE_APPROACH, 'high', 2), { top: 'FY', bottom: 'R' });
+assert.deepEqual(lamps(ASPECT.DIVERGING_APPROACH, 'high', 2), { top: 'R', bottom: 'Y' });
+assert.deepEqual(lamps(ASPECT.RESTRICTING, 'high', 2), { top: 'R', bottom: 'FR' });
+assert.deepEqual(lamps(ASPECT.STOP, 'high', 2), { top: 'R', bottom: 'R' });
+assert.deepEqual(lamps(ASPECT.CLEAR, 'high', 1), { top: 'G' });
+assert.deepEqual(lamps(ASPECT.APPROACH, 'high', 1), { top: 'Y' });
+assert.deepEqual(lamps(ASPECT.STOP, 'high', 1), { top: 'R' });
+assert.deepEqual(lamps(ASPECT.DIVERGING_CLEAR, 'high', 1), { top: 'R' });
+assert.deepEqual(lamps(ASPECT.STOP, 'dwarf', 1), { top: 'R' });
+assert.deepEqual(lamps(ASPECT.SLOW_CLEAR, 'dwarf', 1), { top: 'G' });
+assert.deepEqual(lamps(ASPECT.CLEAR, 'dwarf', 1), { top: 'R' });
+console.log('aspects ok');

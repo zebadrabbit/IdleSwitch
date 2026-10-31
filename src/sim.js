@@ -176,3 +176,44 @@ export function findPath(sim, fromNode, dir, goal, penalty = {}) {
     }
   }
 }
+
+// ---- Signal aspects (American, spec "Signals")
+export const ASPECT = { STOP: 'STOP', RESTRICTING: 'RESTRICTING', APPROACH: 'APPROACH', ADVANCE_APPROACH: 'ADVANCE_APPROACH',
+  CLEAR: 'CLEAR', DIVERGING_CLEAR: 'DIVERGING_CLEAR', DIVERGING_APPROACH: 'DIVERGING_APPROACH', SLOW_CLEAR: 'SLOW_CLEAR' };
+
+export const clearAspects = sim => sim._aspects.clear();
+
+// Memoised in sim._aspects (step clears it each tick). Recursion follows exit signals along one direction's
+// DAG (x strictly increases), so it terminates.
+export function aspectOf(sim, signalId) {
+  const memo = sim._aspects;
+  if (memo.has(signalId)) return memo.get(signalId);
+  let a = ASPECT.STOP;
+  const route = routeFrom(sim, signalId);
+  if (route) {
+    const c = route.cand, next = c.exitSignal !== null ? aspectOf(sim, c.exitSignal) : ASPECT.CLEAR;
+    if (sim.layout.signals[signalId].kind === 'dwarf') a = c.slow || next === ASPECT.STOP ? ASPECT.RESTRICTING : ASPECT.SLOW_CLEAR;
+    else if (c.slow) a = ASPECT.RESTRICTING;
+    else if (c.diverging) a = next === ASPECT.STOP || next === ASPECT.RESTRICTING ? ASPECT.DIVERGING_APPROACH : ASPECT.DIVERGING_CLEAR;
+    else a = next === ASPECT.STOP ? ASPECT.APPROACH : next === ASPECT.CLEAR ? ASPECT.CLEAR : ASPECT.ADVANCE_APPROACH;
+  }
+  memo.set(signalId, a);
+  return a;
+}
+
+export function signalHeads(sim, signalId) {
+  if (sim.layout.signals[signalId].kind !== 'high') return 1;
+  return sim.routesFrom.get(signalId).some(c => c.diverging || c.slow) ? 2 : 1;
+}
+
+// F prefix = flashing. ponytail: a 1-head high signal asked for a diverging/restricting aspect shows stop.
+const HIGH2 = { CLEAR: ['G', 'R'], APPROACH: ['Y', 'R'], ADVANCE_APPROACH: ['FY', 'R'], DIVERGING_CLEAR: ['R', 'G'],
+  DIVERGING_APPROACH: ['R', 'Y'], RESTRICTING: ['R', 'FR'], STOP: ['R', 'R'] };
+const HIGH1 = { CLEAR: 'G', APPROACH: 'Y', ADVANCE_APPROACH: 'FY' };
+const DWARF = { RESTRICTING: 'FR', SLOW_CLEAR: 'G' };
+export function lamps(aspect, kind, heads) {
+  if (kind === 'dwarf') return { top: DWARF[aspect] ?? 'R' };
+  if (heads === 1) return { top: HIGH1[aspect] ?? 'R' };
+  const [top, bottom] = HIGH2[aspect] ?? HIGH2.STOP;
+  return { top, bottom };
+}
