@@ -83,7 +83,8 @@ function candidate(sim, dir, es, nodes) {
 // ponytail: a switch is held only by its trunk edge (occupied or routed); no flank protection (spec).
 // Every route through a switch uses its trunk, and a train standing on a leg is clear of the points:
 // trains stop FOUL short of signals and track capacity is edge length - 0.5, so a tail sits >= 0.2
-// cells off the ladder node. If train stopping ever changes, model fouling points instead.
+// cells off the ladder node (adopt never takes a train into a track it doesn't fit). If train stopping ever
+// changes, model fouling points instead.
 export function switchLocked(sim, node) {
   const sw = sim.switchAt.get(node), st = sw && sim.edgeState[sw.trunk];
   return !!st && (st.occ.size > 0 || st.route !== null);
@@ -113,7 +114,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   if (cand.edges.some(e => sim.edgeState[e].route !== null)) return fail('locked');
   if (cand.switches.some(s => sim.switchState.get(s.node).lie !== s.lie && switchLocked(sim, s.node))) return fail('switch busy');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
-  const route = { id: sim.nextRouteId++, signal: signalId, cand, trainId, human, entered: false };
+  const route = { id: sim.nextRouteId++, signal: signalId, cand, trainId, human, entered: false, setAt: sim.time };
   for (const e of cand.edges) sim.edgeState[e].route = route.id;
   sim.routes.set(route.id, route);
   clearAspects(sim);
@@ -328,6 +329,10 @@ function adopt(sim, train) {
     const sig = sim.signalAt.get(`${headNode(sim, train)}:${train.dir}`);
     const route = sig === undefined ? null : routeFrom(sim, sig);
     if (!route || (route.trainId !== null && route.trainId !== train.id)) return;
+    // ponytail: never into a track the train doesn't fit (a human route can ask it; the operator checks fits). This is
+    // what keeps switchLocked's trunk-only rule true: only a train that fits stands clear of the points at both ends.
+    const into = sim.layout.edges[route.cand.edges.at(-1)].track;
+    if (into !== null && !fits(sim, train, into)) return;
     train.path.push(...route.cand.edges);
     train.routes.push(route.id);
     route.trainId = train.id;
@@ -565,14 +570,43 @@ function hold(sim, t, sig, cands) {
   return true;
 }
 
+// Rule: the operator clears a human route no train can take, GRACE after it was set. The spec says the operator never
+// cancels human routes, but also that the panel "must never sit dead because you walked away mid-route", and one such
+// route holds its module's exit for that direction for good. Dead: un-entered, not taken (trainId null), and either
+// - out of a track (from its exit signal) that holds no train, that no route runs into, and that no train still moving
+//   is bound for. Queued trains don't count: none can enter while the route holds the track. Nor does one that has
+//   stood STARVE: it is stuck, most likely behind a train this very route blocks. Counting either wedged the line in
+//   probes; or
+// - into a track the train at its signal doesn't fit: adopt refuses it, and nothing can pass that train.
+const GRACE = 3 * 60;
+function deadRoute(sim, r) {
+  const { edges, tracks, signals } = sim.layout;
+  if (!r.human || r.entered || r.trainId !== null || sim.time - r.setAt < GRACE) return false;
+  const from = edges[r.cand.edges[0]].track, into = edges[r.cand.edges.at(-1)].track, trains = [...sim.trains.values()];
+  if (from === null) {
+    const sig = signals[r.signal];
+    return into !== null && trains.some(t => t.dir === sig.dir && headNode(sim, t) === sig.node && !fits(sim, t, into));
+  }
+  return tracks[from].edges.every(e => sim.edgeState[e].occ.size === 0)
+    && [...sim.routes.values()].every(o => edges[o.cand.edges.at(-1)].track !== from)
+    && !trains.some(t => t.dest === from && sim.time - t.lastMoveTime < STARVE);
+}
+
 // A train whose path ends at a signal with no route from it gets the route to the next signal along its pathfound
-// way, when the interlocking allows; otherwise it waits and tries again next tick. The operator never cancels
-// anything, so human routes stand.
+// way, when the interlocking allows; otherwise it waits and tries again next tick. The operator cancels nothing but
+// dead human routes (deadRoute), so a human route any train can still take stands.
 // Rule: trains ahead don't hide the way: a blocked edge costs BLOCKED_COST, and setRoute decides if the route sets now.
 // ponytail: 1000 outweighs any detour on generated layouts (under 100 columns); raise it if layouts reach ~1000 cells.
 const BLOCKED_COST = 1000;
 function operator(sim) {
   const { edges, tracks } = sim.layout;
+  for (const r of [...sim.routes.values()]) {
+    if (!deadRoute(sim, r)) continue;
+    cancelRoute(sim, r.id);
+    const c = r.cand, to = c.exitSignal !== null ? signalLabel(sim, c.exitSignal)
+      : sim.layout.portals.find(p => p.dir === -sim.layout.signals[r.signal].dir).name; // where the other direction enters
+    logEvent(sim, `AUTO: cleared route ${signalLabel(sim, r.signal)} → ${to} (no train can take it)`);
+  }
   // Rule: highest priority first, but a train that has stood STARVE (10 min) goes before any that hasn't; under
   // busy traffic a higher-priority main train waits every time the main frees, and a local at a merge starved.
   // ponytail: a fixed threshold, not aging; worst stand 16.8 min over 60 busy seeds. Age it if denser traffic starves.

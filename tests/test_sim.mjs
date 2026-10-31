@@ -75,7 +75,7 @@ const c0 = straight(portalSig);
 let r = setRoute(sim, portalSig, c0.exitNode);
 assert.equal(r.ok, true);
 const R0 = r.route;
-assert.deepEqual(R0, { id: R0.id, signal: portalSig, cand: c0, trainId: null, human: false, entered: false });
+assert.deepEqual(R0, { id: R0.id, signal: portalSig, cand: c0, trainId: null, human: false, entered: false, setAt: sim.time });
 assert.equal(sim.routes.get(R0.id), R0);
 assert.ok(c0.edges.every(e => sim.edgeState[e].route === R0.id));
 assert.deepEqual(setRoute(sim, portalSig, entryPortalNode(sim, W)), { ok: false, reason: 'no such route' });
@@ -835,6 +835,62 @@ assert.ok(held.size > 0, 'the overtake rule never held a train');
   assert.ok(done && done.delay === done.exitTime - X.sched);
   const exitName = G.portals.find(p => p.dir === -X.dir).name;
   assert.ok(S.log.some(e => e.text.startsWith(`${X.name} out via ${exitName} (`) && / min\)$/.test(e.text)));
+}
+
+// a human route lined from an empty track's exit signal: only a train in that track could take it, and none is coming
+// (a queued one can't enter while the route holds the track). Left alone it locks that direction's exit from the
+// module for good; the operator clears it after the 3-minute grace and traffic runs on. s91: a siding (nothing is
+// ever bound for one); lebanon: a platform (P trains call there).
+for (const [seed, cls] of [['s91', 'siding'], ['lebanon', 'platform']]) {
+  const S = busySim(seed), G = S.layout, odd = n => Number(n.split(' ')[1]) % 2;
+  for (let i = 0; i < 20 * 60; i++) step(S); // traffic about
+  let r = null;
+  for (let i = 0; i < 3600 && !r; i++) {
+    for (const t of G.tracks.filter(k => k.cls === cls)) {
+      if (r || !trackFree(S, t.id)) continue; // empty, nothing routed in or out, no train holding it
+      const sig = G.signals.find(g => S.routesFrom.get(g.id).some(c => c.edges[0] === t.edges[1])).id; // its exit signal
+      r = setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { human: true }).route ?? null;
+    }
+    if (!r) step(S);
+  }
+  assert.ok(r, `${seed}: no ${cls} free to line a route out of`);
+  const dir = S.layout.signals[r.signal].dir, done0 = S.completed.length;
+  const text = `AUTO: cleared route ${signalLabel(S, r.signal)} → ${signalLabel(S, r.cand.exitSignal)} (no train can take it)`;
+  let gone = null;
+  for (let i = 0; i < 2 * 3600; i++) {
+    step(S);
+    if (gone === null && !S.routes.has(r.id)) {
+      gone = S.time;
+      assert.ok(S.log.some(e => e.text === text), `${seed}: no "${text}" in the log`);
+    }
+    for (const T of S.trains.values()) assert.ok(!T.stalled, `${seed}: STALL ${T.name}`);
+  }
+  const out = S.completed.slice(done0).filter(c => odd(c.name) === (dir === E ? 0 : 1)).length;
+  assert.ok(gone !== null && gone - r.setAt <= 180 + 3, `${seed}: the dead route stood ${gone === null ? 'for good' : gone - r.setAt + ' s'} (${out} out that way)`);
+  assert.ok(gone - r.setAt >= 180, `${seed}: cleared before the grace was up`);
+  assert.ok(out >= 10, `${seed}: only ${out} trains out that way in 2 h`);
+}
+
+// a human route into a track the train at its signal does not fit is not taken (its tail would foul the points); no
+// train can take it, so the operator clears it after the grace and routes the train on
+{
+  const S = createSim(L, 'fit'), G = S.layout;
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  const plat = G.tracks.find(t => t.cls === 'platform' && !fits(S, { len: trainLength('M') }, t.id));
+  const home = G.signals.find(g => S.routesFrom.get(g.id).some(c => G.edges[c.edges.at(-1)].track === plat.id)).id;
+  const c = S.routesFrom.get(home).find(k => G.edges[k.edges.at(-1)].track === plat.id);
+  const r = setRoute(S, home, c.exitNode, { human: true }).route;
+  const M = spawnTrain(S, { type: 'M', dir: plat.dir, name: 'M 4' });
+  let gone = null;
+  for (let i = 0; i < 3600 && S.trains.has(M.id); i++) {
+    step(S);
+    assert.ok(!plat.edges.some(e => M.path.includes(e)), `M 4 took a route into platform ${plat.name}, ${plat.capacity} long`);
+    if (gone === null && !S.routes.has(r.id)) gone = S.time;
+  }
+  assert.ok(gone !== null && gone - r.setAt >= 180, 'cleared before the grace was up');
+  assert.equal(M.state, 'done');
+  assert.ok(S.log.some(e => e.text === `AUTO: cleared route ${signalLabel(S, home)} → ${signalLabel(S, c.exitSignal)} (no train can take it)`));
 }
 }
 console.log('traffic ok');

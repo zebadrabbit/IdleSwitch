@@ -60,6 +60,7 @@ Higher priority wins when two trains want the same track.
 - Every track is a through track. Nothing reverses, so a train keeps its direction and ID from portal to portal.
 - A switch is held only by its trunk edge (occupied or routed); there is no flank protection.
 - Yard tracks must be clear to receive a train.
+- Human routes stand until a train takes them or you cancel them, with one exception: in AUTO the operator clears a human route no train can take (out of an empty track no train is bound for, or into a track the train waiting at it doesn't fit) 3 sim minutes after it was set.
 - Trains wait off-screen in a portal queue until a destination fits; the first eligible train in the queue enters, so one waiting for a full spur does not block the rest.
 
 ## Layout
