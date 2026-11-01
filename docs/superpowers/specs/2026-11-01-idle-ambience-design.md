@@ -178,8 +178,11 @@ cam.reset()                                      // forget the current shot (on 
 
 - `fit` is the fitted overview camera `{ x, y, zoom }`, `box` the dock-centre rect in screen px,
   `lag(train)` the renderer's interpolation lag so the camera tracks the drawn position, `active` whether
-  the idle camera may run (setting on, not paused, idle for `IDLE_CAM_MS = 60000`). When not active,
-  `update` returns null and the camera eases home (below) before the UI stops calling it.
+  the idle camera may run (setting on, not paused, idle for `IDLE_CAM_MS = 60000`), and `camera` the
+  renderer's current camera so idle mode starts from where the user left the view. When not active,
+  `update` returns `{ x: null, y: null, zoom: null, caption }` while a caption is still fading out and
+  null once it is gone; the UI eases the camera home itself. `update` copies every camera object it is
+  given (the UI mutates `r.camera` in place).
 - **Shots.** The camera alternates `overview` and a close shot. Overview holds `25–45 s` (uniform, from
   `rng`). A close shot is `follow` with probability 0.6 if a candidate exists, else `signal`, else overview
   again. A shot that loses its subject ends early.
@@ -188,14 +191,17 @@ cam.reset()                                      // forget the current shot (on 
     travel; zoom `clamp(3 × fit.zoom, fit.zoom, 3)`. Ends when the train leaves, has stood (`speed === 0`)
     for `8 s`, or after `40 s`.
   - `signal`: candidate signals are high signals on a main row (`mainRow[1]` or `mainRow[-1]`) with a
-    route set from them or a train of their direction whose head is within `12` cells and approaching.
+    *moving* train of their direction, head on the signal's row, approaching within `12` cells. (Amended
+    2026-11-01: a route set from the signal no longer qualifies on its own, and a standing train never does;
+    both gave 45 s shots of nothing.)
     Target: centre on the signal node, zoom `clamp(2.5 × fit.zoom, fit.zoom, 2.5)`. Ends `6 s` after any
     train's head passes the node (its head x crosses the node x in its direction of travel), or after `45 s`.
   - **Drift** while a shot holds: the centre moves on a slow Lissajous, `x += 0.6 cell × sin(2π t / 23 s)`,
     `y += 0.35 cell × sin(2π t / 31 s)`, and zoom scales by `1 + 0.04 × sin(2π t / 37 s)`, `t` seconds
     since the shot began. Overview drifts too, at a third of these amplitudes. Nothing is still.
-- **Moves.** Every change of target (shot to shot, and the return home on input) tweens `x`, `y` and
-  `log(zoom)` with smoothstep over `MOVE_MS = 1000` (ruling: half a second between the overview and a 3×
+- **Moves.** Every change of target (shot to shot, and the return home on input) tweens with smoothstep
+  over `MOVE_MS = 1000`: the world point under a screen *pivot* (the box centre) moves linearly and
+  `log(zoom)` linearly, so a zoom does not bend sideways; `tween(from, to, startMs, pivot)` (ruling: half a second between the overview and a 3×
   close-up reads as a lurch; the half-second rule applies to crossfades, and the caption crossfades in
   `400 ms`). While following, the target itself moves; the camera chases it with an exponential approach,
   `τ = 500 ms`, after the initial tween lands, so it glides rather than tracks rigidly.
