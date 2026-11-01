@@ -1,6 +1,7 @@
 // Panel bodies as HTML strings built from sim state (no DOM). ui.js puts them in place and wires the buttons
 // through their data-* attributes. Everything from the sim or the URL goes through esc().
-import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitNodes, switchLocked } from './sim.js';
+import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitNodes, switchLocked,
+  isWrongMain } from './sim.js';
 import { COLORS } from './render.js';
 import { SPEEDS, formatClock, formatDelay } from './ui-util.js';
 
@@ -33,8 +34,10 @@ function aspectHTML(sim, sig) {
 const swatch = color => `<i class="sw" style="background:${color}"></i>`;
 const delayHTML = d => `<span class="delay ${d.cls}">${d.text}</span>`;
 
-// Board status words (spec: approaching / routed / holding / dwelling / departing; plus waiting at a red).
-export function trainStatus(t) {
+// Board status words (spec: approaching / routed / holding / dwelling / departing; plus waiting at a red), and
+// ' · wrong main' while the train is.
+export const trainStatus = (t, sim) => status(t) + (isWrongMain(sim, t) ? ' · wrong main' : '');
+function status(t) {
   if (t.state === 'entering' || !t.path.length) return 'approaching'; // still at its portal, off the panel
   if (t.state === 'stopped') return 'waiting';
   if (t.state === 'running') return t.dwellUntil > 0 && t.dest === null ? 'departing' : 'routed';
@@ -55,7 +58,7 @@ export function boardHTML(sim, selectedTrain) {
     ...[1, -1].flatMap(dir => sim.queue[dir].map(q =>
       row('queued', null, q.name, q.type, dir, dest(q.dest), `holding at ${portal(L, dir)}`, formatDelay(sim.time - q.sched)))),
     ...[...sim.trains.values()].map(t =>
-      row(t.id === selectedTrain ? 'sel' : '', t.id, t.name, t.type, t.dir, dest(t.dest), trainStatus(t), formatDelay(sim.time - t.sched))),
+      row(t.id === selectedTrain ? 'sel' : '', t.id, t.name, t.type, t.dir, dest(t.dest), trainStatus(t, sim), formatDelay(sim.time - t.sched))),
     // ponytail: completed records carry no dir; the sim numbers trains even eastbound, odd westbound.
     ...sim.completed.slice(-5).reverse().map(c =>
       row('done', null, c.name, c.type, Number(c.name.match(/\d+$/)?.[0]) % 2 ? -1 : 1, '–', `out ${formatClock(c.exitTime)}`, formatDelay(c.delay, true))),
@@ -95,7 +98,7 @@ function signalHTML(sim, sig, armed) {
 
 function trainHTML(sim, t, armed) {
   const L = sim.layout, ahead = sim.signalAt.get(`${headNode(sim, t)}:${t.dir}`);
-  let state = trainStatus(t);
+  let state = trainStatus(t, sim);
   if (t.holdFor !== null) state += ` for ${trainLabel(sim, t.holdFor)}`;
   return kv([['Train', `${swatch(COLORS.types[t.type])}<b class="mono">${esc(t.name)}</b>`], ['Type', esc(TYPES[t.type].name)],
     ['Direction', t.dir > 0 ? `eastbound to ${esc(portal(L, -1))}` : `westbound to ${esc(portal(L, 1))}`],

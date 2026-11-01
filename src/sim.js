@@ -13,6 +13,9 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
   const adj = new Map(layout.nodes.map(n => [n.id, []]));
   for (const e of layout.edges) { adj.get(e.a).push(e.id); adj.get(e.b).push(e.id); }
   const start = 6 * 3600; // 06:00
+  // The far end of both mains for dir, its home main first: both rows run on off the panel as a two-track main.
+  const { nodes, cols, mainRow } = layout, x = dir => (dir > 0 ? cols - 1 : 0);
+  const ends = dir => [mainRow[dir], mainRow[-dir]].map(y => nodes.find(n => n.x === x(dir) && n.y === y).id);
   const sim = {
     layout, adj,
     edgeState: layout.edges.map(() => ({ occ: new Set(), route: null })),
@@ -20,14 +23,17 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     signalAt: new Map(layout.signals.map(s => [`${s.node}:${s.dir}`, s.id])),
     switchAt: new Map(layout.switches.map(s => [s.node, s])), // node -> {node, trunk, normal, reverse}
     routesFrom: new Map(), sectionEdges: new Map(), // section -> its main edge ids
+    exits: { 1: ends(1), '-1': ends(-1) }, // dir -> exitNodes
     routes: new Map(), nextRouteId: 1,
     trains: new Map(), nextTrainId: 1, reserved: new Map(),
     queue: { 1: [], '-1': [] }, nextSpawn: { 1: start, '-1': start }, completed: [],
     time: start, log: [], auto: false, density: opts.density ?? 'normal',
     rng: makeRng(seed + ':sim'), _aspects: new Map(),
   };
-  for (const e of layout.edges)
-    if (e.section != null) sim.sectionEdges.set(e.section, [...(sim.sectionEdges.get(e.section) ?? []), e.id]);
+  for (const e of layout.edges) if (e.section != null) {
+    if (!sim.sectionEdges.has(e.section)) sim.sectionEdges.set(e.section, []);
+    sim.sectionEdges.get(e.section).push(e.id);
+  }
   for (const sig of layout.signals) sim.routesFrom.set(sig.id, candidates(sim, sig));
   // Train numbers count up per direction from a seeded start in 100..400: even eastbound, odd westbound.
   sim.nextName = { 1: 2 * randInt(sim.rng, 50, 200), '-1': 2 * randInt(sim.rng, 50, 199) + 1 };
@@ -36,11 +42,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
 
 export const entryPortalNode = (sim, dir) => sim.layout.portals.find(p => p.dir === dir).node;
 
-// The far end of both mains for dir, its home main first: both rows run on off the panel as a two-track main.
-export function exitNodes(sim, dir) {
-  const { nodes, cols, mainRow } = sim.layout, x = dir > 0 ? cols - 1 : 0;
-  return [mainRow[dir], mainRow[-dir]].map(y => nodes.find(n => n.x === x && n.y === y).id);
-}
+export const exitNodes = (sim, dir) => sim.exits[dir]; // home main first (createSim)
 
 export function forwardEdges(sim, node, dir) {
   const { nodes, edges } = sim.layout, x = nodes[node].x;
@@ -49,7 +51,8 @@ export function forwardEdges(sim, node, dir) {
 }
 
 // DFS from the signal in its direction; each branch ends at the first node carrying a signal for that
-// direction, or with nowhere further to go (an exit node).
+// direction, or with nowhere further to go (an exit node). Over and back inside one crossover pair (two crossover
+// edges) is dropped: it ends where the straight route does, so each candidate has its own exit node.
 function candidates(sim, sig) {
   const { edges } = sim.layout, dir = sig.dir, out = [];
   const walk = (n, path, nodes) => {
@@ -60,7 +63,7 @@ function candidates(sim, sig) {
     }
   };
   walk(sig.node, [], [sig.node]);
-  return out;
+  return out.filter(c => c.edges.filter(e => edges[e].cls === 'crossover').length < 2);
 }
 
 function candidate(sim, dir, es, nodes) {
@@ -124,9 +127,8 @@ function opposing(sim, cand, dir) {
 }
 
 export function setRoute(sim, signalId, exitNode, { human = false, trainId = null } = {}) {
-  // ponytail: exitNode picks the first matching candidate. Generated layouts give one signal two routes to the same
-  // exit only over and back through a crossover pair, and DFS meets the straight one first (main edges come first in
-  // adj). If that ever changes, try each match (or take the candidate itself).
+  // ponytail: exitNode names the candidate; candidates() drops the only duplicates generated layouts make (over and
+  // back inside a crossover pair). If a layout ever gives one signal two routes to one exit, take the candidate itself.
   const cand = (sim.routesFrom.get(signalId) ?? []).find(c => c.exitNode === exitNode), sig = sim.layout.signals[signalId];
   const fail = reason => ({ ok: false, reason });
   if (!cand) return fail('no such route');
@@ -137,7 +139,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   if (opposing(sim, cand, sig.dir)) return fail('opposing');
   // One wrong-main train at a time; the one at this signal (or the one the route is for) may go on or home. An untaken
   // human wrong-main route at another signal counts as one: some train will take it.
-  const untaken = r => r.signal !== signalId && r.trainId === null && !r.entered && r.cand.wrongMain;
+  const untaken = r => r.trainId === null && !r.entered && r.cand.wrongMain; // one at this signal returned 'already set'
   if (cand.wrongMain && (wrongMainTrains(sim).some(t => t.id !== trainId && headNode(sim, t) !== sig.node)
     || [...sim.routes.values()].some(untaken))) return fail('wrong main');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
@@ -377,7 +379,8 @@ function adopt(sim, train) {
     train.path.push(...route.cand.edges);
     train.routes.push(route.id);
     route.trainId = train.id;
-    train.events.push({ t: sim.time, kind: 'route', signal: signalLabel(sim, route.signal), ...(route.human ? { human: true } : {}) });
+    train.events.push({ t: sim.time, kind: 'route', signal: signalLabel(sim, route.signal), ...(route.human ? { human: true } : {}),
+      ...(route.cand.wrongMain ? { wrongMain: true } : {}) });
   }
 }
 
@@ -631,16 +634,17 @@ function hold(sim, t, sig, cands) {
 //   is bound for. Queued trains don't count: none can enter while the route holds the track. Nor does one that has
 //   stood STARVE: it is stuck, most likely behind a train this very route blocks. Counting either wedged the line in
 //   probes; or
-// - into a track the train at its signal doesn't fit: adopt refuses it, and nothing can pass that train.
+// - into a track the train at its signal doesn't fit: adopt refuses it, and nothing can pass that train; or
+// - wrong main (onto the other main, or from a signal on it) with no train of its direction at its signal. It counts
+//   as the one wrong-main train and locks the other direction's home main against it.
 const GRACE = 3 * 60;
 function deadRoute(sim, r) {
-  const { edges, tracks, signals } = sim.layout;
+  const { edges, tracks, signals, nodes, mainRow } = sim.layout;
   if (!r.human || r.entered || r.trainId !== null || sim.time - r.setAt < GRACE) return false;
   const from = edges[r.cand.edges[0]].track, into = edges[r.cand.edges.at(-1)].track, trains = [...sim.trains.values()];
-  if (from === null) {
-    const sig = signals[r.signal];
-    return into !== null && trains.some(t => t.dir === sig.dir && headNode(sim, t) === sig.node && !fits(sim, t, into));
-  }
+  const sig = signals[r.signal], at = trains.filter(t => t.dir === sig.dir && headNode(sim, t) === sig.node);
+  if ((r.cand.wrongMain || nodes[sig.node].y === mainRow[-sig.dir]) && !at.length) return true;
+  if (from === null) return into !== null && at.some(t => !fits(sim, t, into));
   return tracks[from].edges.every(e => sim.edgeState[e].occ.size === 0)
     && [...sim.routes.values()].every(o => edges[o.cand.edges.at(-1)].track !== from)
     && !trains.some(t => t.dest === from && sim.time - t.lastMoveTime < STARVE);
@@ -649,10 +653,14 @@ function deadRoute(sim, r) {
 // A train whose path ends at a signal with no route from it gets the route to the next signal along its pathfound
 // way, when the interlocking allows; otherwise it waits and tries again next tick. The operator cancels nothing but
 // dead human routes (deadRoute), so a human route any train can still take stands.
-// Rule: trains ahead don't hide the way: a blocked edge costs extra, and setRoute decides if the route sets now. Behind
-// a moving train (MOVING_COST) the main beats a detour round a module (~20-30: WRONG_MAIN_COST a main edge); a train
-// stood PASS_WAIT (STANDING_COST) is passed on the other main.
-export const WRONG_MAIN_COST = 3, MOVING_COST = 10, STANDING_COST = 60;
+// Rule: trains ahead don't hide the way, and setRoute decides if the next route sets now. An edge held by a route or a
+// moving train costs nothing extra (MOVING_COST): the train follows. One held by a train stood PASS_WAIT costs
+// STANDING_COST, above a detour round a module (~20-25: WRONG_MAIN_COST a wrong-main edge, two crossovers), so the
+// standing train is passed on the other main.
+// ponytail: on the four busy soak seeds STANDING_COST is flat from 25 to 1000 (a wrong-main train on the panel 0-5 % of
+// ticks, worst stand 13 min); below one module's detour (~23) passing stops. PASS_WAIT moves the share (30 s: up to
+// 8 %). If passing should be smarter, price a stand by how long the train ahead will stay.
+export const WRONG_MAIN_COST = 3, MOVING_COST = 0, STANDING_COST = 60;
 function operator(sim) {
   const { edges, tracks } = sim.layout;
   for (const r of [...sim.routes.values()]) {
@@ -687,9 +695,12 @@ function operator(sim) {
     const cand = cands.find(c => c.edges.every((e, i) => path[i] === e));
     const into = cand ? edges[cand.edges.at(-1)].track : null;
     // Rule: never into a track that isn't its destination (holds go through hold()); a way round through one = wait.
-    // ponytail: sound while mains are one-way with no crossovers (every way round is a track); not for bidirectional CTC.
+    // Wrong-main candidates are fine: the way round a train on the main is over the crossovers.
+    // ponytail: findPath doesn't price tracks, so a way round through one can still beat the other main and the train
+    // waits. Price tracks other than the goal in findPath if passing ever looks too rare.
     if (!cand || (into !== null && into !== t.dest)) continue;
-    if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok) logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}`);
+    if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok)
+      logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${cand.wrongMain ? ' (wrong main)' : ''}`);
   }
 }
 

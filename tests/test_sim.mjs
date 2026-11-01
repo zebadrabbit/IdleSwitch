@@ -6,6 +6,7 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
   trainBlocks, headNode,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent } from '../src/sim.js';
+import { trainStatus } from '../src/panels.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -50,6 +51,9 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
   for (const sig of G.signals) {
     const cs = S.routesFrom.get(sig.id);
     assert.ok(cs.length >= 1, `${seed}: signal ${sig.id} has no candidates`);
+    // over and back inside one crossover pair is dropped: it ends where the straight route does
+    assert.equal(new Set(cs.map(c => c.exitNode)).size, cs.length, `${seed}: signal ${sig.id} has two candidates to one exit`);
+    assert.ok(cs.every(c => c.edges.filter(e => G.edges[e].cls === 'crossover').length < 2), `${seed}: over and back in one pair`);
     for (const c of cs) {
       const ns = walk(G, sig.node, c.edges), last = G.edges[c.edges.at(-1)];
       ns.slice(1).forEach((n, i) => assert.equal(Math.sign(G.nodes[n].x - G.nodes[ns[i]].x), sig.dir, `${seed}: candidate runs against dir`));
@@ -136,7 +140,7 @@ const Y = createSim({
   edges: [[0, 1, 'main'], [1, 2, 'main'], [1, 3, 'ladder']].map(([a, b, cls], id) => ({ id, a, b, cls, dirs: [E], len: 1, track: null })),
   switches: [{ node: 1, trunk: 0, normal: 1, reverse: 2 }],
   signals: [{ id: 0, node: 0, dir: E, kind: 'high' }, { id: 1, node: 1, dir: E, kind: 'high' }],
-  portals: [],
+  portals: [], cols: 3, mainRow: { 1: 0, '-1': 0 },
 }, 'wye');
 Y.edgeState[0].occ.add(1);
 assert.deepEqual(setRoute(Y, 1, 3), { ok: false, reason: 'switch busy' });
@@ -839,9 +843,10 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // (a queued train with a destination enters only while that track is free, and reserves it)
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
+let sawWrongMain = false;
 for (const seed of ['lebanon', 's7', 's42', 's47']) {
   const S = busySim(seed), G = S.layout, dwelt = new Map();
-  let entered = 0;
+  let entered = 0, wrongTicks = 0;
   for (let i = 0; i < 8 * 3600; i++) {
     // every train new after the step (queued earlier or drawn this very tick) is checked against the tracks before it
     const free = G.tracks.map(t => trackFree(S, t.id)), before = new Set(S.trains.keys());
@@ -860,6 +865,15 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       if (st.occ.size === 1 && st.route !== null) assert.equal(S.routes.get(st.route).trainId, [...st.occ][0], `${seed}: edge ${e} routed for another train`);
     });
     assert.ok(S.queue[1].length <= 8 && S.queue[-1].length <= 8, `${seed}: queue ${S.queue[1].length} / ${S.queue[-1].length}`);
+    // traffic locking: no section holds trains of both directions; one wrong-main train at a time
+    for (const [sec, es] of S.sectionEdges) {
+      const dirs = new Set(es.flatMap(e => [...S.edgeState[e].occ].map(id => S.trains.get(id)?.dir)));
+      dirs.delete(undefined);
+      assert.ok(dirs.size <= 1, `${seed}: opposing trains in section ${sec}`);
+    }
+    const wrong = wrongMainTrains(S).length;
+    assert.ok(wrong <= 1, `${seed}: two wrong-main trains`);
+    if (wrong) { wrongTicks++; sawWrongMain = true; }
     for (const T of S.trains.values()) {
       if (T.state === 'dwelling') dwelt.set(T.name, G.tracks[T.dest].cls);
       else if (T.state === 'holding') {
@@ -870,6 +884,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
     }
   }
   assert.ok(entered > 0);
+  assert.ok(wrongTicks / (8 * 3600) <= 0.30, `${seed}: a wrong-main train on the panel ${(wrongTicks / 288).toFixed(1)} % of ticks`);
   assert.ok(S.completed.length >= 20, `${seed}: only ${S.completed.length} trains completed`);
   assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
   if (G.tracks.some(t => t.cls === 'platform')) assert.ok(S.completed.some(c => dwelt.get(c.name) === 'platform'), `${seed}: no P called`);
@@ -892,6 +907,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   }
 }
 assert.ok(held.size > 0, 'the overtake rule never held a train');
+assert.ok(sawWrongMain, 'no wrong-main run in 32 busy hours: the feature is dormant');
 
 // determinism: same seed, same day
 {
@@ -1003,6 +1019,90 @@ for (const [seed, cls] of [['s91', 'siding'], ['lebanon', 'platform']]) {
   assert.ok(gone !== null && gone - r.setAt >= 180, 'cleared before the grace was up');
   assert.equal(M.state, 'done');
   assert.ok(S.log.some(e => e.text === `AUTO: cleared route ${signalLabel(S, home)} → ${signalLabel(S, c.exitSignal)} (no train can take it)`));
+}
+
+// passing: M 2 stands at the end of the first module on its home main. Stood PASS_WAIT, the express behind is routed
+// round it on the other main from the portal (a crossover, logged and evented wrong main); still moving, it is followed.
+for (const moving of [false, true]) {
+  const S = createSim(L, 'pass'), G = S.layout;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  const M = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const home = S.routesFrom.get(ps).find(c => !c.wrongMain);
+  assert.equal(setRoute(S, ps, home.exitNode, { trainId: M.id }).ok, true);
+  assert.equal(setRoute(S, home.exitSignal, S.routesFrom.get(home.exitSignal).find(c => !c.diverging).exitNode, { trainId: M.id }).ok, true);
+  for (let i = 0; i < 3600 && M.state !== 'stopped'; i++) step(S);
+  assert.equal(M.state, 'stopped');
+  M.lastMoveTime = moving ? S.time : S.time - PASS_WAIT;
+  S.auto = true;
+  const X = spawnTrain(S, { type: 'X', dir: E, name: 'X 4' });
+  step(S);
+  const r = S.routes.get(X.routes[0]), ev = X.events.find(e => e.kind === 'route');
+  assert.ok(r && ev && r.signal === ps, 'X 4 got the portal route');
+  assert.equal(r.cand.wrongMain, !moving, moving ? 'passed a moving train' : 'followed a standing train');
+  assert.equal(X.path.some(e => G.edges[e].cls === 'crossover'), !moving);
+  assert.equal(ev.wrongMain, moving ? undefined : true);
+  const line = `AUTO: ${signalLabel(S, ps)} → X 4${moving ? '' : ' (wrong main)'}`;
+  assert.ok(S.log.some(e => e.text === line), `no "${line}" line`);
+}
+
+// exit on the wrong row: the home main's last section held for good (a foreign id), an eastbound still leaves, over the
+// last pair and off the end of Main 1 through the westbound entry; a westbound queued meanwhile enters after it
+{
+  const S = createSim(L, 'wrongrow'), G = S.layout;
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  for (const e of S.sectionEdges.get(G.edges[S.adj.get(exitNodes(S, E)[0])[0]].section)) S.edgeState[e].occ.add(999);
+  const X = spawnTrain(S, { type: 'X', dir: E, name: 'X 6' }), pw = forwardEdges(S, entryPortalNode(S, W), W)[0];
+  let q = null;
+  for (let i = 0; i < 3600 && S.trains.has(X.id); i++) {
+    step(S);
+    assert.ok(S.edgeState.every(st => st.occ.size <= 1), 'two trains on one edge');
+    if (q) assert.ok(!S.trains.has(q.id), 'the westbound entered under the eastbound');
+    else if (X.path.includes(pw)) S.queue[W].push(q = { id: S.nextTrainId++, name: 'M 7', type: 'M', dir: W, dest: null,
+      len: trainLength('M'), spawnTime: S.time, sched: S.time });
+  }
+  assert.ok(q, 'X 6 never routed off the end of Main 1');
+  assert.ok(!S.trains.has(X.id) && S.completed.some(c => c.name === 'X 6'), 'X 6 still on the board');
+  for (let i = 0; i < 60 && !S.trains.has(q.id); i++) step(S);
+  assert.ok(S.trains.has(q.id), 'the westbound never entered');
+}
+
+// dead wrong-main human routes: one lined onto the other main, one from a signal on the other main. No train of their
+// direction is at either signal, so the operator clears both after GRACE; a home-main human route stands.
+{
+  const S = createSim(L, 'deadwm'), G = S.layout;
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  const all = [...S.routesFrom].flatMap(([sig, cs]) => cs.map(c => ({ sig, c }))).filter(k => k.c.exitSignal !== null);
+  const dir = k => G.signals[k.sig].dir, onOther = k => G.nodes[G.signals[k.sig].node].y === G.mainRow[-dir(k)];
+  const apart = (k, ...ks) => ks.every(o => dir(o) === dir(k) && !o.c.edges.some(e => k.c.edges.includes(e)));
+  const a = all.find(k => k.c.wrongMain && !onOther(k));
+  const b = all.find(k => onOther(k) && !k.c.wrongMain && apart(k, a));
+  const c = all.find(k => !onOther(k) && !k.c.wrongMain && G.edges[k.c.edges[0]].track === null && apart(k, a, b));
+  const [ra, rb, rc] = [a, b, c].map(k => setRoute(S, k.sig, k.c.exitNode, { human: true }).route);
+  assert.ok(ra && rb && rc, 'three human routes set');
+  const gone = new Map();
+  for (let i = 0; i < 300; i++) { step(S); for (const r of [ra, rb]) if (!gone.has(r) && !S.routes.has(r.id)) gone.set(r, S.time); }
+  for (const r of [ra, rb]) {
+    assert.ok(gone.get(r) - r.setAt >= 180 && gone.get(r) - r.setAt <= 183, `cleared after ${gone.get(r) - r.setAt} s`);
+    const text = `AUTO: cleared route ${signalLabel(S, r.signal)} → ${signalLabel(S, r.cand.exitSignal)} (no train can take it)`;
+    assert.ok(S.log.some(e => e.text === text), `no "${text}" in the log`);
+  }
+  assert.ok(S.routes.has(rc.id), 'a home-main human route was cleared');
+}
+
+// board status: ' · wrong main' while the train is
+{
+  const S = createSim(L, 'status'), G = S.layout, ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const T = spawnTrain(S, { type: 'M', dir: E });
+  T.state = 'running';
+  T.path = [...S.routesFrom.get(ps).find(c => c.wrongMain).edges];
+  assert.equal(trainStatus(T, S), 'routed · wrong main');
+  T.state = 'stopped';
+  assert.equal(trainStatus(T, S), 'waiting · wrong main');
+  T.path = [...S.routesFrom.get(ps).find(c => !c.wrongMain).edges];
+  assert.ok(T.path.every(e => G.edges[e].main !== W));
+  assert.equal(trainStatus(T, S), 'waiting');
 }
 }
 console.log('traffic ok');
