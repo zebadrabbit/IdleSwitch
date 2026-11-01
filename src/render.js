@@ -52,9 +52,9 @@ export function createRenderer(canvas) {
   const Y = gy => (gy * CELL - r.camera.y) * r.camera.zoom;
   const lineW = () => Math.max(2, 3 * r.camera.zoom);
 
-  // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', '<signal>:<head>' lamps and 'h<signal>:<head>' their
-  // halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'slow' label. First sight snaps to the target;
-  // an id not drawn in a frame is dropped.
+  // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', 'stub:<edge>:<node>', '<signal>:<head>' lamps and
+  // 'h<signal>:<head>' their halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'slow' label. First
+  // sight snaps to the target; an id not drawn in a frame is dropped.
   const fade = new Map(), seen = new Set();
   let dt = 0, lastNow = -Infinity, lastSlow = null;
   function eased(id, to, tau) {
@@ -164,21 +164,24 @@ export function createRenderer(canvas) {
     ctx.fillStyle = P.bg; ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
     // 2. Edges, idle first so routes and occupancy win at shared nodes. The unselected leg of each switch
-    // is dim for its first STUB cells at the points, so the lie reads without dimming a whole track.
-    const dimAt = new Map(); // edge id -> nodes where it is the unselected leg
+    // is dim for its first STUB cells at the points, so the lie reads without dimming a whole track; the stub fades
+    // (colour and width) when the switch throws.
+    const legAt = new Map(); // edge id -> [node, unselected] per switch it is a leg of
     for (const [node, sw] of sim.switchAt) {
-      const leg = sim.switchState.get(node).lie === 'normal' ? sw.reverse : sw.normal;
-      dimAt.set(leg, [...(dimAt.get(leg) ?? []), node]);
+      const off = sim.switchState.get(node).lie === 'normal' ? sw.reverse : sw.normal;
+      for (const leg of [sw.normal, sw.reverse]) legAt.set(leg, [...(legAt.get(leg) ?? []), [node, leg === off]]);
     }
     const rank = c => (c === COLORS.occupied ? 2 : c === COLORS.route || c === COLORS.human ? 1 : 0);
     for (const pass of [0, 1, 2]) for (const e of edges) {
       const color = edgeColor(sim, e.id, P.track);
       if (rank(color) !== pass) continue;
-      const a = nodes[e.a], b = nodes[e.b], dims = dimAt.get(e.id) ?? [], f = Math.min(0.5, STUB / e.len);
-      const t0 = dims.includes(e.a) ? f : 0, t1 = dims.includes(e.b) ? 1 - f : 1;
+      const a = nodes[e.a], b = nodes[e.b], legs = legAt.get(e.id) ?? [], f = Math.min(0.5, STUB / e.len);
+      const t0 = legs.some(([nd]) => nd === e.a) ? f : 0, t1 = legs.some(([nd]) => nd === e.b) ? 1 - f : 1;
       const px = t => X(a.x + t * (b.x - a.x)), py = t => Y(a.y + t * (b.y - a.y));
-      if (t0) line(px(0), py(0), px(t0), py(t0), COLORS.trackDim, 2, 'butt');
-      if (t1 < 1) line(px(t1), py(t1), px(1), py(1), COLORS.trackDim, 2, 'butt');
+      for (const [nd, off] of legs) { // [r, g, b, dimness]: dim is trackDim at 2 px, else the edge's colour and width
+        const st = eased(`stub:${e.id}:${nd}`, [...rgb(off ? COLORS.trackDim : color), off ? 1 : 0], 120), [u, v] = nd === e.a ? [0, t0] : [t1, 1];
+        line(px(u), py(u), px(v), py(v), rgba(st, 1), lerp(lw, 2, st[3]), 'butt');
+      }
       line(px(t0), py(t0), px(t1), py(t1), faded(e.id, color), lw);
     }
 
@@ -210,14 +213,14 @@ export function createRenderer(canvas) {
     ctx.letterSpacing = '1px'; // names lifted 6 px clear of a row-0 label or platform box at tight zooms
     for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y) - 6, `13px ${SANS}`, P.label);
     ctx.letterSpacing = '0px';
-    // Slow order: SLOW 20 at the section's midpoint, outside its main (above Main 1, below Main 2). The last order is
-    // kept so its label fades out with the amber.
+    // Slow order: SLOW 20 at the section's midpoint, outside its main (above Main 1, below Main 2) a line beyond the
+    // padlocks. The last order is kept so its label fades out with the amber.
     if (sim.slowOrder) lastSlow = sim.slowOrder;
     const sa = eased('slow', [sim.slowOrder ? 1 : 0], 120)[0];
     if (lastSlow && sa > 0.01) {
       const v = lastSlow.main === 1 ? -1 : 1;
       ctx.globalAlpha = sa;
-      text(`SLOW ${SLOW_ORDER.mph}`, X((lastSlow.x0 + lastSlow.x1) / 2), Y(L.mainRow[v]) + v * (lw / 2 + 9), `11px ${SANS}`, '#f0b429');
+      text(`SLOW ${SLOW_ORDER.mph}`, X((lastSlow.x0 + lastSlow.x1) / 2), Y(L.mainRow[v]) + v * (lw / 2 + 21), `11px ${SANS}`, '#f0b429');
       ctx.globalAlpha = 1;
     }
 
@@ -280,8 +283,8 @@ export function createRenderer(canvas) {
       else if (ui.hoverSignal === sig.id) ring(cx, cy, rr, P.dim, 1.5);
     }
 
-    // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; a red marker on the tail
-    // blinking with flashing aspects (steady when they're off); tags on top.
+    // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; a red marker on the tail,
+    // outlined like a lamp, blinking with flashing aspects (steady when they're off); tags on top.
     // ponytail: no collision avoidance; tags draw after everything else on the panel, so they stay readable.
     const tw = Math.max(4, 5 * z), tags = [];
     for (const [t, bl] of drawn) {
@@ -297,7 +300,7 @@ export function createRenderer(canvas) {
         ctx.globalAlpha = 1;
       }
       ctx.globalAlpha = eased(`eot:${t.id}`, [ui.blink ? 1 : 0], 60)[0];
-      disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R);
+      disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
       ctx.globalAlpha = 1;
       tags.push({ t, col, sel, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
     }
