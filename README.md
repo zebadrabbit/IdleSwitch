@@ -1,6 +1,6 @@
 # IdleSwitch
 
-Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itself on a dark dispatcher's panel: track lights red under trains, signals step green, yellow, red behind them, switches throw, a yard breathes in and out. A virtual operator sets the routes. When you feel like it, take the panel and route trains yourself, NX-style; walk away and the operator takes it back. Nothing needs you and nothing punishes you for leaving. The same seed gives the same terminal and the same day of traffic. Vanilla JS and canvas, no dependencies, no build step. Built to run at https://firetailfab.com/idleswitch/.
+Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itself on a dark dispatcher's panel: track lights red under trains, signals step green, yellow, red behind them, switches throw, a yard breathes in and out. A virtual operator sets the routes. When you feel like it, take the panel and route trains yourself, NX-style; walk away and the operator takes it back. Nothing needs you and nothing punishes you for leaving. The same seed gives the same terminal and, at the same density and day length, the same day of traffic. Vanilla JS and canvas, no dependencies, no build step. Built to run at https://firetailfab.com/idleswitch/.
 
 ## Controls
 
@@ -18,7 +18,7 @@ Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itsel
 
 Mouse: drag to pan, wheel to zoom about the cursor. The HUD's − and + zoom about the middle of the map and ⌖ resets the view; they glide rather than jump, as F and 0 do. Click the seed in the HUD to type one in and load it (Enter), roll a new one or copy this one; Escape or a click elsewhere closes it. Drag the inner edge of a dock to resize it (double-click the edge for the default size); dock sizes are saved with the layout, and a floating panel resizes from its corner until reload.
 
-Leave it alone for a minute and the idle camera takes over: it holds the overview, then follows a passing train or watches a mainline signal as trains run up to it, easing between shots with a caption in the corner. Any key, click or mouse move eases it home to the overview.
+Leave it alone for a minute and the idle camera takes over: it holds the overview, then follows a passing train or watches a mainline signal as trains run up to it, easing between shots with a caption in the corner. Any key, click or mouse move eases it home to the overview; the key or click that wakes it does nothing else.
 
 To route a train, click an entrance signal, then an exit signal; the route sets if the interlocking allows, otherwise the entrance signal flashes red and the log says why. Click a train to pre-arm its next signal. Click a set, unoccupied route to cancel it. Click a free switch to throw it.
 
@@ -62,7 +62,7 @@ Higher priority wins when two trains want the same track.
 
 ## Seeds
 
-`?seed=anything` loads that seed; the HUD shows the current one (click it to load another, roll a new one or copy it) and N rolls a new one. Same seed, same terminal, same day of traffic. Density (light / normal / busy) is a setting in the HUD. `?ff=N` fast-forwards N sim seconds at boot (debug; used for headless screenshots).
+`?seed=anything` loads that seed; the HUD shows the current one (click it to load another, roll a new one or copy it) and N rolls a new one. Same seed, same terminal; at the same density and day length, the same day of traffic. Density (light / normal / busy) is a setting in the HUD. `?ff=N` fast-forwards N sim seconds at boot (debug; used for headless screenshots).
 
 ## Settings
 

@@ -18,7 +18,8 @@ less, no hard cuts.**
 ## Goals
 
 - A lighting cycle of a few minutes with dusk and dawn, driven by the sim clock so a seed still gives
-  the same day; the whole page (canvas and chrome) darkens slightly at night.
+  the same day (at the same density and day length: the night level weights the traffic mix); the whole
+  page (canvas and chrome) darkens slightly at night.
 - Glows: headlights ahead of every moving loco, halos on lit signal lamps, a warm band of light along
   platforms at night, all stronger at night. A blinking red end-of-train marker on the last car.
 - Nothing on the canvas changes colour in a single frame: track occupancy, routes, switch dots and
@@ -32,8 +33,8 @@ less, no hard cuts.**
 - An idle camera that, after a minute without input, alternates between the fitted overview and close
   shots (following a train; watching a mainline signal), with eased moves, a slow drift while locked, and
   a crossfaded caption. Any input hands the camera straight back.
-- Every existing invariant holds: same seed same day, no double occupancy, no passed red, no stall in
-  the soak (now with slow orders active).
+- Every existing invariant holds: same seed same day (at the same density and day length), no double
+  occupancy, no passed red, no stall in the soak (now with slow orders active).
 
 ## Non-goals
 
@@ -71,10 +72,15 @@ The HUD clock is untouched: the cycle is ambient lighting, not the time of day (
 
 `ui.js` sets `--bg` and `--panel` on `:root` when `n` moves by more than 0.01 since the last set (the HUD and
 panels use them already). Routes, occupancy, lamp colours and train colours do not dim: they are the lights.
+(Amended 2026-11-01: what the page shows is an eased copy of `n`. The renderer eases it per frame, id `night`,
+`τ = 150 ms`, seeded at the raw level so boot does not fade in and set exactly once within 0.001, and exposes it as
+`r.night`; the canvas palette and glows, `--bg`/`--panel` and the HUD sky, its dusk/dawn title included, read that, so
+changing Day length crossfades the page instead of snapping it. `trafficMenu` reads the raw level.)
 
 **Traffic mix.** In `trafficMenu`, weights scale by the night level `n` at draw time: passenger types
 (`X`, `P`) × `(1 - 0.7 n)`, freight (`Z`, `M`, and every spur's industry type) × `(1 + 0.7 n)`, `L`
-unchanged. The spawn *rate* is unchanged.
+unchanged. The spawn *rate* is unchanged. So a seed gives the same day of traffic only at the same density and
+day length (amended 2026-11-01).
 
 ## Glows and fades (renderer)
 
@@ -92,7 +98,8 @@ colour fade below rather than popping. A loco's front is `trainBlocks(...)[0]` e
 
 **End-of-train marker.** A red disc (`COLORS.lamp.R`, radius `max(1.5, 1.6 × zoom)`) at the tail end
 of the last block, blinking 1 Hz in step with `ui.blink`; obeys the "flashing aspects flash" setting
-(steady when off). Drawn after the train blocks, before the tags.
+(steady when off). Drawn after the train blocks, before the tags. (Amended 2026-11-01: outlined in the background
+colour like a lamp, and it fades in from nothing when the train enters, as the headlight does.)
 
 **Fades.** The renderer keeps a per-id colour state and eases it toward its target every frame with
 `c += (target - c) × (1 - exp(-dt / τ))`:
@@ -103,6 +110,13 @@ of the last block, blinking 1 Hz in step with `ui.blink`; obeys the "flashing as
 | switch dot | node id | 120 ms |
 | signal lamp (lit colour or `LAMP_OFF`) | `${signal}:${head}` | 60 ms |
 | headlight alpha (on/off with motion) | train id | 200 ms |
+
+(Amended 2026-11-01, the ids as built: edges by id, `sw:<node>`, lamps `<signal>:<head>` and their halos
+`h<signal>:<head>`, headlight `hl:<train>` (fades in on entry, seeded 0). Added: the dim stub of a switch's unset leg
+`stub:<edge>:<node>`, colour and width, 120 ms; tail marker `eot:<train>`, 60 ms, fades in on entry; train tag
+`tag:<train>`, 120 ms, fades in on entry; padlock `lock:<node>`, 120 ms, from 0 on first lock and out when unlocked;
+`SLOW 20` label `slow`, 120 ms; the night level `night`, 150 ms. A halo whose eased colour is near black, every
+channel under 8, is skipped rather than drawn.)
 
 `τ = 120 ms` reaches 95 % in 360 ms: inside the half-second rule. Flashing lamps still toggle at 1 Hz;
 the 60 ms lamp fade just softens the edge like a filament. State for ids that vanish (trains that left)
@@ -118,21 +132,32 @@ crossover pairs, from the bidirectional-mains spec). Constants in `sim.js`:
 SLOW_ORDER = { gap: 20 * 60, min: 5 * 60, max: 10 * 60, mph: 20 }   // sim s; mean gap, duration range
 ```
 
+(Amended 2026-11-01: `SLOW_ORDER.minLen = 6`: only sections at least 6 cells long carry an order. A 1-cell order
+meant nothing and its label crossed the crossover diagonals.)
+
 - `sim.slowOrder` is `null` or `{ section, until }`; `sim.nextSlowOrder` is the sim time of the next
   one (first at `start + gap × (-ln(1 - u))`, exponential like spawns; after one lifts, the next gap is
   drawn the same way). Draws use `sim.extras`, a second rng stream `makeRng(seed + ':extras')`, so the
-  day's traffic is unchanged by slow orders being on or off.
+  day's traffic is unchanged by slow orders being on or off. (Amended 2026-11-01: at light and normal density.
+  At busy the portal queues can fill, and a train slowed by an order changes which queued train enters, so traffic
+  can differ. Toggling slow orders also changes the later operator names: shift changes draw from the same
+  `sim.extras` stream.)
 - When due and `sim.slowOrders` is true, pick a section uniformly from `sim.sectionEdges` keys; duration
   uniform in `[min, max]`. Log `Slow order: <main> <x0>–<x1>, 20 mph until HH:MM` (`main` is `Main 1` for
   row `mainRow[-1]`, `Main 2` otherwise; `x0`, `x1` the section's column span) and, when lifted,
   `Slow order lifted: <main> <x0>–<x1>`. Each section's main and span are what `sectionEdges` gives.
 - `export const edgeSpeed = (sim, e)`: the edge's speed, or `SLOW_ORDER.mph` when its `section` is the
   active slow order's. `moveTrains` reads speed limits through it. Aspects are unchanged (a slow order is
-  a bulletin, not a signal indication). `findPath` is unchanged (costs are lengths).
+  a bulletin, not a signal indication). `findPath` is unchanged (costs are lengths). (Amended 2026-11-01: a speed
+  limit never brakes a train faster than its `dec`, so an order set under a running train brakes it at its own rate
+  instead of snapping it to 20 mph. Stop points stay absolute, so a red still stops it exactly. A train braking for a
+  limit ahead enters it at most about 2 mph over.)
 - Renderer: idle edges of the slow-order section take colour `#b8862b` (amber, dimmer than `--amber`)
   through the fade; routed and occupied colours still win. A small `SLOW 20` label in `#f0b429`,
   `11px` sans, sits on the section's outer side (above Main 1, below Main 2) at its midpoint, `lw/2 + 9`
-  px off the track, drawn once per active order. Legend gains a `slow order` bar.
+  px off the track, drawn once per active order. Legend gains a `slow order` bar. (Amended 2026-11-01: the label
+  sits at the section's midpoint in the row between the mains, which holds nothing but crossovers in the gaps
+  between sections; both outer offsets collided with padlocks or signals. It fades in and out with the amber.)
 - Setting `slowOrders` (boolean, default true) → `sim.slowOrders`. Turning it off while one is active
   lets that one run out.
 
@@ -160,6 +185,9 @@ SLOW_ORDER = { gap: 20 * 60, min: 5 * 60, max: 10 * 60, mph: 20 }   // sim s; me
   shown when its dock has a visible panel. Pointer capture drag changes the size live (the map refits every
   move when `state.fitted`), clamped to `[200, 0.6 × innerWidth]` for sides and `[80, 0.7 × innerHeight]`
   for the bottom; release saves the layout. Double-click a handle resets that dock to its default size.
+- (Amended 2026-11-01: the side docks clamp against each other. A side dock's maximum is
+  `min(0.6 × innerWidth, innerWidth − the other side dock − 240)`, so they never overlap or squeeze the map under
+  240 px. A window resize clamps what is shown without saving it, so a larger window gets the saved size back.)
 - Floating panels: `.panel:not(#docks .panel) { resize: both; overflow: hidden; min-width: 220px;
   min-height: 60px; }`. Body keeps scrolling. Not persisted.
 - Board default side width drops from `clamp(280px, 33vw, 480px)` to the fixed 420 px default above;
@@ -172,7 +200,7 @@ timing and the renderer camera and calls it each frame.
 
 ```
 createIdleCamera({ rng })                       -> cam
-cam.update(sim, now, { fit, box, lag, active }) -> { x, y, zoom, caption } | null
+cam.update(sim, now, { fit, box, lag, active, camera, simSpeed }) -> { x, y, zoom, caption, shot } | null
 cam.reset()                                      // forget the current shot (on input)
 ```
 
@@ -182,14 +210,17 @@ cam.reset()                                      // forget the current shot (on 
   renderer's current camera so idle mode starts from where the user left the view. When not active,
   `update` returns `{ x: null, y: null, zoom: null, caption }` while a caption is still fading out and
   null once it is gone; the UI eases the camera home itself. `update` copies every camera object it is
-  given (the UI mutates `r.camera` in place).
+  given (the UI mutates `r.camera` in place). (Amended 2026-11-01: `simSpeed` is sim seconds per real second,
+  `SIM_PER_SEC × state.speed` from the UI, default 10; an active update also returns `shot: { kind, since }`.)
 - **Shots.** The camera alternates `overview` and a close shot. Overview holds `25–45 s` (uniform, from
   `rng`). A close shot is `follow` with probability 0.6 if a candidate exists, else `signal`, else overview
   again. A shot that loses its subject ends early.
   - `follow`: candidate trains have `speed > 15 mph`, a non-empty path, and a head at least 6 cells from
-    their exit end. Target: centre on the head point (through `lag`) led by `3` cells in the direction of
-    travel; zoom `clamp(3 × fit.zoom, fit.zoom, 3)`. Ends when the train leaves, has stood (`speed === 0`)
-    for `8 s`, or after `40 s`.
+    their exit end. (Amended 2026-11-01: the margin is time, not cells. A candidate has at least 8 real seconds of
+    running before its exit end at its current speed, `cellsToExit / (speed × simSpeed) ≥ 8`. At 4× and 8× the
+    fixed 6 cells gave follows of half a second to two seconds.) Target: centre on the head point (through
+    `lag`) led by `3` cells in the direction of travel; zoom `clamp(3 × fit.zoom, fit.zoom, 3)`. Ends when the
+    train leaves, has stood (`speed === 0`) for `8 s`, or after `40 s`.
   - `signal`: candidate signals are high signals on a main row (`mainRow[1]` or `mainRow[-1]`) with a
     *moving* train of their direction, head on the signal's row, approaching within `12` cells. (Amended
     2026-11-01: a route set from the signal no longer qualifies on its own, and a standing train never does;
@@ -205,14 +236,27 @@ cam.reset()                                      // forget the current shot (on 
   close-up reads as a lurch; the half-second rule applies to crossfades, and the caption crossfades in
   `400 ms`). While following, the target itself moves; the camera chases it with an exponential approach,
   `τ = 500 ms`, after the initial tween lands, so it glides rather than tracks rigidly.
+  (Amended 2026-11-01: every move carries the velocity the camera had, so a shot boundary never stops it dead (at
+  4× it went from 25 px/frame to 0). `camera.js` keeps the last frame's velocity `v` of the box-centre world point
+  and of `log(zoom)`. A new tween starts from a moving point, `from + v·τ·(1 − e^(−t/τ))` with `τ = 500 ms`, which
+  the smoothstep blends into the target as before: `tween(from, to, startMs, pivot, v)`. The move starts at the
+  previous frame's time, so its first frame already moves. `ui.js` tracks the velocity of the camera it steers
+  (idle shots and glides) and passes it to its glides, so the hand-back home and chained zoom glides carry it too.
+  A gap of more than 100 ms between frames, such as a background tab, is a pause. The camera's clocks (shot times,
+  tweens, drift, caption) and `ui.js` glides skip all of it but 16 ms, so they pick up where they left off.)
 - **Caption.** `caption` is `{ text, alpha }`: `following P 326 · eastbound to Hartford` or
   `watching E12C` (signal label) or null on overview; alpha crossfades over 400 ms (old text fades out
-  while the new fades in). The renderer draws it bottom-left of `box`, `12px` sans, `COLORS.dim`, 16 px
-  in from the edges, as `ui.caption`. It draws in bare mode too.
+  while the new fades in). (Amended 2026-11-01: out then in, one text at a time: the old text fades out over
+  400 ms, then the new one fades in. The caption keeps the box it was first shown in until it has faded out or
+  changes text, so a panel toggled during its fade does not jump it.) The renderer draws it bottom-left of
+  `box`, `12px` sans, `COLORS.dim`, 16 px in from the edges, as `ui.caption`. It draws in bare mode too.
 - **Input.** Any pointer, wheel or key input (what `touch()` sees) calls `cam.reset()`; `ui.js` then tweens
   the camera back to the fitted overview over `MOVE_MS` and sets `state.fitted` true; a drag or wheel during
   that tween takes over immediately (the tween is abandoned where it is, `state.fitted` false). Idle camera
-  never runs while `state.paused`.
+  never runs while `state.paused`. (Amended 2026-11-01: the click on the map or the key that wakes the idle
+  camera only wakes it and does nothing else. Any other map click acts on what was under the cursor at the press,
+  even if a glide moves the map before the release. The glide home runs from the frame loop even if
+  `cam.update` throws.)
 - **Setting** `idleCamera` (boolean) defaults to true, or false when
   `matchMedia('(prefers-reduced-motion: reduce)').matches` at first run (the default is computed once by
   `ui.js` and passed to `cleanSettings` as the default; a saved value wins).
@@ -246,7 +290,8 @@ It is a generator-and-interlocking project, not an ambience item, and follows th
 
 ## Settings panel
 
-An **Ambient** group after Density: `Day length` select (`2 min`, `4 min`, `8 min`, `off`), checkbox
+An **Ambient** group after Density (amended 2026-11-01: after the flash row, which keeps the general toggles
+together): `Day length` select (`2 min`, `4 min`, `8 min`, `off`), checkbox
 `slow orders`, checkbox `idle camera after 1 idle minute`. `cleanSettings` validates all three;
 `DEFAULT_SETTINGS` gains `dayLength: 4, slowOrders: true, idleCamera: true`.
 
@@ -264,7 +309,12 @@ An **Ambient** group after Density: `Day length` select (`2 min`, `4 min`, `8 mi
   midpoint zoom is the geometric mean; with no moving train and no live signal, `update` returns overview;
   with a moving train the follow target leads its head by 3 cells in its direction; the follow ends when the
   train is removed from `sim.trains`; `reset()` then `update` with `active: false` returns null; caption
-  alpha crossfades (two consecutive calls 200 ms apart give 0.5 ± 0.1).
+  alpha crossfades (two consecutive calls 200 ms apart give 0.5 ± 0.1). (Amended 2026-11-01: 200 ms of 16 ms
+  frames, since a single 200 ms gap is now a pause. Also: a tween starts at the velocity it is given and still
+  lands exactly; the follow margin is 8 real seconds at the given `simSpeed`; a 5 s gap between updates gives
+  the camera and caption that a 16 ms gap does; the 5-minute no-cuts sweep runs at 1× and 4× and asserts the
+  velocity change at every shot boundary stays under the bound. `test_ui` checks the renderer's fades on a
+  recording canvas: the eased night level, the caption's box, tag and padlock fades, and skipped dark halos.)
 
 ## Rulings made without the user (they said "start with those ideas")
 

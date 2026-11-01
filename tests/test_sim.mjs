@@ -877,8 +877,10 @@ assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5
   assert.equal(S2.slowOrder, null, 'none when off');
   while (S1.time < S2.time) step(S1); // compared at one sim time: S1 stopped when its order lifted
   while (S2.time < S1.time) step(S2);
-  const names = S => [...S.queue[E], ...S.queue[W], ...S.trains.values(), ...S.completed].map(t => t.name).sort();
-  assert.deepEqual(names(S1).slice(0, 20), names(S2).slice(0, 20), 'traffic unchanged by slow orders');
+  const num = name => Number(name.split(' ')[1]); // train number: unique, in the order the spawner named them
+  const names = S => [...S.queue[E], ...S.queue[W], ...S.trains.values(), ...S.completed].map(t => t.name).sort((a, b) => num(a) - num(b));
+  assert.ok(names(S1).length >= 20);
+  assert.deepEqual(names(S1), names(S2), 'traffic unchanged by slow orders');
 }
 
 // A slow order set under a train at speed brakes it at its own rate, never in one step, down to 20 mph on the section
