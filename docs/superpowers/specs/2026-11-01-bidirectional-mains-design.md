@@ -57,8 +57,10 @@ direction has exactly one way across in each pair. `MARGIN = 8`, `GAP = 9` (port
 entry signal). Switches stay 3-edge nodes found by the existing rule.
 
 **Edges.** Main edges: `dirs [1, -1]`, `main` = the direction whose home main it is (-1 on row T, +1 on
-row T+2), `section` = an integer; sections split at every switch node along the row (crossover and
-ladder nodes), so a section is the stretch of one main between two sets of points. Crossover edges have
+row T+2), `section` = an integer; sections split only at crossover nodes, so a section is the stretch of
+one main between two control points (crossover pairs). Splitting at ladder nodes too was tried
+and wedges: a wrong-main train at one boundary of a module and a home train lined to the other
+boundary each refuse the other's next route for good. Crossover edges have
 `main: null, section: null`. Other edges unchanged.
 
 **Signals.** At each module boundary column (`x0-1`, `x1+1`) four signals: both directions on both
@@ -115,7 +117,7 @@ Both apply to human routes. `routesFrom` candidates gain `wrongMain`.
 
 - `test_gen`: existing invariants (no diamond, no overlap, ≤3 edges, switches, determinism, every
   track reachable from its portal) plus: every main edge has `dirs [1,-1]`, `main` and `section`;
-  sections are contiguous runs split exactly at switch nodes; every gap and both margins contain one pair
+  sections are contiguous runs split exactly at crossover-end nodes; every gap and both margins contain one pair
   with the geometry above; four high signals per boundary column; `mainRow` matches the portals; from
   each portal the far end of *both* rows is reachable.
 - `test_sim`: `'opposing'` and `'wrong main'` refusals with hand-set occupancy and routes; a nose-to-nose
