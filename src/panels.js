@@ -153,12 +153,12 @@ export function settingsHTML(settings, seed) {
   const day = m => `<option value="${m}"${m === settings.dayLength ? ' selected' : ''}>${m ? `${m} min` : 'off'}</option>`;
   return `<div class="row"><span class="k">Speed</span>${SPEEDS.map(radio).join(' ')}</div>`
     + `<div class="row"><span class="k">Density</span><select name="density">${densityOptions(settings.density)}</select></div>`
+    + `<div class="row">${check('idleReturn', 'return to AUTO after 2 idle minutes')}</div>`
+    + `<div class="row">${check('flash', 'flashing aspects flash')}</div>`
     + '<div class="sub">Ambient</div>'
     + `<div class="row"><label>Day length <select name="dayLength">${DAY_LENGTHS.map(day).join('')}</select></label></div>`
     + `<div class="row">${check('slowOrders', 'slow orders')}</div>`
     + `<div class="row">${check('idleCamera', 'idle camera after 1 idle minute')}</div>`
-    + `<div class="row">${check('idleReturn', 'return to AUTO after 2 idle minutes')}</div>`
-    + `<div class="row">${check('flash', 'flashing aspects flash')}</div>`
     + '<div class="row"><button data-act="reset">Reset layout</button></div>'
     + `<div class="row"><span class="k">Seed</span><input name="seed" value="${esc(seed)}" spellcheck="false" autocomplete="off">`
     + '<button data-act="load">Load</button> <button data-act="new">New seed</button></div>';
