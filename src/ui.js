@@ -371,6 +371,7 @@ function uiFor(now) {
     refusedSignal: f && Math.floor((f.until - now) / 250) % 2 === 1 ? f.signal : null,
     hoverSignal: state.hover,
     blink: !settings.flash || Math.floor(now / 500) % 2 === 0,
+    alpha: acc, // fraction of the next sim step already elapsed; the renderer interpolates train positions with it
     now,
   };
 }

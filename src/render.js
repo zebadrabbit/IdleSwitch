@@ -216,8 +216,9 @@ export function createRenderer(canvas) {
     // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; tags on top.
     // ponytail: no collision avoidance; tags draw after everything else on the panel, so they stay readable.
     const tw = Math.max(4, 5 * z), tags = [];
+    const lagOf = t => (1 - (ui.alpha ?? 1)) * (t.adv ?? 0); // interpolate between sim steps
     for (const t of sim.trains.values()) {
-      const bl = trainBlocks(sim, t);
+      const bl = trainBlocks(sim, t, lagOf(t));
       if (!bl.length) continue;
       const col = COLORS.types[t.type] ?? COLORS.label, sel = ui.selectedTrain === t.id;
       for (const b of bl) {
@@ -230,7 +231,7 @@ export function createRenderer(canvas) {
         line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
         ctx.globalAlpha = 1;
       }
-      tags.push({ t, col, sel, x: (X(bl[0].x1) + X(bl[0].x2)) / 2, y: (Y(bl[0].y1) + Y(bl[0].y2)) / 2 });
+      tags.push({ t, col, sel, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
     }
     ctx.font = `11px ${MONO}`;
     const gap = Math.max(10, tw / 2 + 5);

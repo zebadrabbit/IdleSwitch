@@ -492,6 +492,8 @@ while (S.trains.has(X.id) && steps < 2 * 3600) {
     // Main 1 is a straight westbound row: head end is west, block lengths are LOCO and CAR
     assert.ok(b.every(k => k.y1 === G.mainRow[W] && k.y2 === G.mainRow[W] && k.x1 < k.x2));
     b.forEach((k, i) => assert.ok(close(k.x2 - k.x1, i ? CAR : LOCO), `block ${i} length`));
+    // lag draws the train that far behind its head (the renderer's between-step interpolation); adv is the last step's advance
+    assert.ok(X.adv > 0 && close(trainBlocks(S, X, X.adv)[0].x1, pointAt(S, X, X.headDist - X.adv).x), 'lagged head sits adv behind');
     blocksChecked = true;
   }
 }

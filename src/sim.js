@@ -334,10 +334,12 @@ export function pointAt(sim, train, dist) {
 
 // Loco then cars, head first, each clipped to the path (dropped if wholly off it).
 // ponytail: a block spanning a bend draws as a straight chord; blocks are under a cell long.
-export function trainBlocks(sim, train) {
-  const out = [], start = train.pathOff, end = pathLength(sim, train);
+// lag (cells) draws the train that far behind its head: the renderer passes the unelapsed part of the last step's
+// advance so motion is smooth between 1 s sim steps.
+export function trainBlocks(sim, train, lag = 0) {
+  const out = [], start = train.pathOff, end = pathLength(sim, train), head = train.headDist - lag;
   for (let i = 0; i <= TYPES[train.type].cars; i++) {
-    const front = train.headDist - (i ? LOCO + (i - 1) * CAR : 0), back = front - (i ? CAR : LOCO);
+    const front = head - (i ? LOCO + (i - 1) * CAR : 0), back = front - (i ? CAR : LOCO);
     const hi = Math.min(front, end), lo = Math.max(back, start);
     if (hi <= lo) continue;
     const p = pointAt(sim, train, hi), q = pointAt(sim, train, lo);
@@ -450,6 +452,7 @@ export function moveTrains(sim, dt = 1) {
     if (train.speed > 0 && v === 0) train.stops++;
     train.speed = v;
     train.headDist += adv;
+    train.adv = adv;
     if (adv > 0) Object.assign(train, { lastMoveTime: sim.time, stalled: false });
     occupy(sim, train);
     sectionalRelease(sim, train);
