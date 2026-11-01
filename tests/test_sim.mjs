@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
 import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, switchLocked,
-  releaseEdge, sectionalRelease, entryPortalNode, exitPortalNode, routeFrom,
+  releaseEdge, sectionalRelease, entryPortalNode, exitNodes, routeFrom, isWrongMain, wrongMainTrains, PASS_WAIT,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
   trainBlocks, headNode,
@@ -31,17 +31,19 @@ assert.deepEqual(sim.completed, []);
 assert.deepEqual([...sim.switchState.keys()].sort(), L.switches.map(s => s.node).sort());
 assert.ok([...sim.switchState.values()].every(s => s.lie === 'normal'));
 
-// portals and forwardEdges: x rule plus dirs (Main 1 runs westbound only even though it has east neighbours)
+// portals and forwardEdges: x rule plus dirs; exits at the far end of both mains, home main first
 assert.deepEqual([E, W].map(d => entryPortalNode(sim, d)), [L.portals.find(p => p.dir === E).node, L.portals.find(p => p.dir === W).node]);
-assert.deepEqual([L.nodes[exitPortalNode(sim, E)].x, L.nodes[exitPortalNode(sim, E)].y], [L.cols - 1, L.rows - 1]);
-assert.deepEqual([L.nodes[exitPortalNode(sim, W)].x, L.nodes[exitPortalNode(sim, W)].y], [0, 0]);
+assert.deepEqual(exitNodes(sim, E).map(n => [L.nodes[n].x, L.nodes[n].y]), [[L.cols - 1, L.mainRow[1]], [L.cols - 1, L.mainRow[-1]]]);
+assert.deepEqual(exitNodes(sim, W).map(n => [L.nodes[n].x, L.nodes[n].y]), [[0, L.mainRow[-1]], [0, L.mainRow[1]]]);
 for (const d of [E, W]) {
   assert.equal(forwardEdges(sim, entryPortalNode(sim, d), d).length, 1);
-  assert.deepEqual(forwardEdges(sim, exitPortalNode(sim, d), d), []);
-  assert.deepEqual(forwardEdges(sim, exitPortalNode(sim, d), -d), [], 'mains are one-way (dirs), though x allows it');
+  for (const n of exitNodes(sim, d)) {
+    assert.deepEqual(forwardEdges(sim, n, d), []);
+    assert.equal(forwardEdges(sim, n, -d).length, 1, 'the main runs both ways');
+  }
 }
 
-// every signal has >= 1 candidate; candidates end at a node that has a signal of that dir or is the exit portal
+// every signal has >= 1 candidate; candidates end at a node that has a signal of that dir or is an exit node
 for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]) {
   const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
   const swAt = new Map(G.switches.map(s => [s.node, s]));
@@ -55,7 +57,7 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
       assert.equal(c.exitNode, ns.at(-1));
       const exitSig = S.signalAt.get(`${c.exitNode}:${sig.dir}`) ?? null;
       assert.equal(c.exitSignal, exitSig);
-      if (exitSig === null) assert.equal(c.exitNode, exitPortalNode(S, sig.dir), `${seed}: candidate ends at neither a signal nor the exit portal`);
+      if (exitSig === null) assert.ok(exitNodes(S, sig.dir).includes(c.exitNode), `${seed}: candidate ends at neither a signal nor an exit`);
       assert.ok(ns.slice(1, -1).every(n => !S.signalAt.has(`${n}:${sig.dir}`)), `${seed}: candidate runs past a signal`);
       assert.ok(Math.abs(c.len - c.edges.reduce((s, e) => s + G.edges[e].len, 0)) < 1e-9);
       assert.equal(c.slow, SLOW.includes(last.cls));
@@ -83,7 +85,8 @@ assert.deepEqual(setRoute(sim, portalSig, c0.exitNode), { ok: false, reason: 'al
 
 // a second setRoute over a shared edge -> {ok:false, reason:'locked'}. No other candidate can reach the
 // portal's one-edge route, so the shared-edge pair is the next route on: the home signal's straight run
-// through the first module, and a route from another signal that merges into it (a track exit).
+// through the first module, and a route from another westbound signal that merges into it (a track exit; an eastbound
+// one on Main 1 shares edges too, but R0 makes it 'opposing').
 const home = c0.exitSignal;
 const c1 = straight(home);
 r = setRoute(sim, home, c1.exitNode, { human: true });
@@ -93,7 +96,7 @@ assert.equal(R1.human, true);
 assert.notEqual(R1.id, R0.id);
 let other = null;
 for (const [sig, cs] of sim.routesFrom) for (const c of cs)
-  if (!other && sig !== home && c.edges.some(e => c1.edges.includes(e))) other = { sig, c };
+  if (!other && sig !== home && L.signals[sig].dir === W && c.edges.some(e => c1.edges.includes(e))) other = { sig, c };
 assert.ok(other, 'some route shares an edge with the home straight route');
 assert.deepEqual(setRoute(sim, other.sig, other.c.exitNode), { ok: false, reason: 'locked' });
 
@@ -185,12 +188,14 @@ assert.ok(!sim.routes.has(R4.id));
 assert.equal(cancelRoute(sim, R0.id), true);
 assert.ok(allClear(sim), 'everything released');
 
-// findPath from west entry portal to the east exit portal node returns edges with strictly increasing x
-const p = findPath(sim, entryPortalNode(sim, E), E, { node: exitPortalNode(sim, E) });
-assert.ok(p && p.length > 0);
-const pn = walk(L, entryPortalNode(sim, E), p);
-pn.slice(1).forEach((n, i) => assert.ok(L.nodes[n].x > L.nodes[pn[i]].x, 'x strictly increasing'));
-assert.equal(pn.at(-1), exitPortalNode(sim, E));
+// findPath {exit: true} from each entry portal returns edges with strictly increasing (decreasing) x, ending at an exit
+for (const d of [E, W]) {
+  const p = findPath(sim, entryPortalNode(sim, d), d, { exit: true });
+  assert.ok(p && p.length > 0);
+  const pn = walk(L, entryPortalNode(sim, d), p);
+  pn.slice(1).forEach((n, i) => assert.equal(Math.sign(L.nodes[n].x - L.nodes[pn[i]].x), d, 'x strictly monotonic'));
+  assert.ok(exitNodes(sim, d).includes(pn.at(-1)));
+}
 
 // findPath to {track: id of first platform} ends inside that track's edges (at its first edge)
 const plat = L.tracks.find(t => t.cls === 'platform');
@@ -202,7 +207,7 @@ assert.equal(findPath(sim, entryPortalNode(sim, -plat.dir), -plat.dir, { track: 
 
 // a manually occupied edge (edgeState[e].occ.add(99)) makes setRoute over it return reason 'occupied' and findPath avoid it
 const busy = c1.edges.reduce((a, b) => (lenOf(b) > lenOf(a) ? b : a)); // the main through the first module
-const from = entryPortalNode(sim, W), to = { node: exitPortalNode(sim, W) };
+const from = entryPortalNode(sim, W), to = { exit: true };
 assert.ok(findPath(sim, from, W, to).includes(busy), 'shortest path takes the main');
 assert.ok(!findPath(sim, from, W, to, { [busy]: 1000 }).includes(busy), 'penalty steers off it');
 sim.edgeState[busy].occ.add(99);
@@ -215,9 +220,24 @@ sim.edgeState[busy].occ.delete(99);
 r = setRoute(sim, home, c1.exitNode, { trainId: 7 });
 assert.equal(r.ok, true);
 assert.ok(findPath(sim, from, W, to, { trainId: 7 }).includes(busy));
-assert.equal(findPath(sim, from, W, to), null, 'the home signal has no way past a route held by someone else');
+const roundIt = findPath(sim, from, W, to);
+assert.ok(roundIt && !roundIt.some(e => c1.edges.includes(e)) && roundIt.some(e => L.edges[e].cls === 'crossover'),
+  'no way past a route held by someone else: round it on the other main');
 assert.equal(cancelRoute(sim, r.route.id), true);
 assert.ok(allClear(sim));
+
+// wrongMainCost keeps a westbound off Main 2 while Main 1 is clear. The section at the home signal occupied: a train
+// stood PASS_WAIT there is passed on the other main (a crossover), one still moving is followed.
+{
+  const S = createSim(L, 'pass'), G = S.layout, cost = { standingCost: 60, blockedCost: 10, wrongMainCost: 3 };
+  assert.ok(!findPath(S, from, W, to, { wrongMainCost: 3 }).some(e => G.edges[e].main === E), 'Main 1 clear: stays on it');
+  const M = spawnTrain(S, { type: 'M', dir: W }), sec = G.edges[c1.edges[0]].section;
+  for (const e of S.sectionEdges.get(sec)) S.edgeState[e].occ.add(M.id);
+  M.lastMoveTime = S.time - PASS_WAIT;
+  assert.ok(findPath(S, from, W, to, cost).some(e => G.edges[e].cls === 'crossover'), 'round a standing train');
+  M.lastMoveTime = S.time;
+  assert.ok(!findPath(S, from, W, to, cost).some(e => G.edges[e].cls === 'crossover'), 'behind a moving one');
+}
 
 // one un-entered route per signal; an entered route still clearing behind its train does not block the next,
 // whichever track the first train dwells on (trunk rule: its track edge is only a leg of the ladder switch).
@@ -248,6 +268,34 @@ sim.edgeState[cA.edges.at(-1)].occ.delete(1);
 assert.ok(allClear(sim));
 }
 
+// opposing: a westbound occupying an edge of a section refuses an eastbound route into that section, and vice versa
+{ const S = createSim(L, 'opp'), G = S.layout;
+  const sigE = G.signals.find(s => s.dir === E && G.nodes[s.node].y === G.mainRow[-1] && S.routesFrom.get(s.id).some(c => !c.diverging));
+  const c = S.routesFrom.get(sigE.id).find(k => !k.diverging), sec = G.edges[c.edges[0]].section;
+  const other = S.sectionEdges.get(sec).find(e => !c.edges.includes(e)) ?? c.edges.at(-1);
+  const w = spawnTrain(S, { type: 'M', dir: W }); S.edgeState[other].occ.add(w.id);
+  assert.equal(setRoute(S, sigE.id, c.exitNode).reason, 'opposing');
+  S.edgeState[other].occ.clear();
+  assert.equal(setRoute(S, sigE.id, c.exitNode).ok, true); }
+// nose to nose: routes toward one boundary node from both sides; the second is refused
+{ const S = createSim(L, 'nose'), G = S.layout, T = G.mainRow[-1];
+  const node = G.signals.find(s => G.nodes[s.node].y === T && G.signals.filter(o => o.node === s.node).length === 2).node;
+  const into = d => [...S.routesFrom].flatMap(([id, cs]) => cs.filter(c => c.exitNode === node && G.signals[id].dir === d).map(c => ({ id, c })))[0];
+  const a = into(E), b = into(W);
+  assert.equal(setRoute(S, a.id, a.c.exitNode).ok, true);
+  assert.equal(setRoute(S, b.id, b.c.exitNode).reason, 'opposing'); }
+// wrong main: only one train at a time; the train at the signal is exempt
+{ const S = createSim(L, 'wm'), G = S.layout;
+  const [sigA, sigB] = G.signals.filter(s => S.routesFrom.get(s.id).some(c => c.wrongMain));
+  const cA = S.routesFrom.get(sigA.id).find(c => c.wrongMain), cB = S.routesFrom.get(sigB.id).find(c => c.wrongMain);
+  const t = spawnTrain(S, { type: 'M', dir: sigA.dir }); t.path = [...cA.edges]; // standing on the wrong main
+  assert.equal(isWrongMain(S, t), true); assert.deepEqual(wrongMainTrains(S), [t]);
+  assert.equal(setRoute(S, sigB.id, cB.exitNode).reason, 'wrong main');
+  const next = S.signalAt.get(`${headNode(S, t)}:${t.dir}`), cN = S.routesFrom.get(next).find(c => c.wrongMain);
+  if (cN) assert.equal(setRoute(S, next, cN.exitNode, { trainId: t.id }).ok, true, 'the wrong-main train may continue'); }
+// signalLabel unique over 50 seeds
+for (let i = 0; i < 50; i++) { const S = createSim(generate(`lab${i}`), 'x'); const ls = S.layout.signals.map(s => signalLabel(S, s.id)); assert.equal(new Set(ls).size, ls.length, `lab${i}`); }
+
 console.log('sim core ok');
 
 // ---- Task 4: aspects
@@ -276,7 +324,7 @@ for (const dir of [E, W]) {
     chain.push(set(sig, c));
     sig = c.exitSignal;
   }
-  assert.ok(chain.length >= 3 && chain.at(-1).cand.exitNode === exitPortalNode(S4, dir));
+  assert.ok(chain.length >= 3 && exitNodes(S4, dir).includes(chain.at(-1).cand.exitNode));
   assert.deepEqual(chain.map(r => A(r.signal)), chain.map(() => ASPECT.CLEAR), `${dir}: full chain`);
   const last = chain.pop();
   undo(last);
@@ -366,10 +414,10 @@ assert.deepEqual(TYPES.X, { name: 'Express', prio: 5, cars: 8, max: 60, acc: 1.0
 assert.deepEqual(TYPES.L, { name: 'Local', prio: 0, cars: 6, max: 40, acc: 0.5, dec: 0.8 });
 for (const t of Object.keys(TYPES)) assert.ok(close(trainLength(t), LOCO + TYPES[t].cars * CAR));
 const X = spawnTrain(S, { type: 'X', dir: W, name: 'X 101' });
-const exitW = exitPortalNode(S, W);
+const exitW = exitNodes(S, W)[0];
 assert.equal(S.trains.get(X.id), X);
 assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, prio: 5, len: trainLength('X'), maxSpeed: 60 * MPH,
-  path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { node: exitW }, dwellUntil: 0,
+  path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { exit: true }, dwellUntil: 0,
   holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false, events: [] });
 assert.equal(headNode(S, X), entryPortalNode(S, W));
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
@@ -431,7 +479,7 @@ while (S.trains.has(X.id) && steps < 2 * 3600) {
     assert.ok(close(b.at(-1).x2, t.x) && close(b.at(-1).y2, t.y), 'last car ends at the tail');
     b.slice(1).forEach((k, i) => assert.ok(close(k.x1, b[i].x2) && close(k.y1, b[i].y2), 'blocks are contiguous'));
     // Main 1 is a straight westbound row: head end is west, block lengths are LOCO and CAR
-    assert.ok(b.every(k => k.y1 === 0 && k.y2 === 0 && k.x1 < k.x2));
+    assert.ok(b.every(k => k.y1 === G.mainRow[W] && k.y2 === G.mainRow[W] && k.x1 < k.x2));
     b.forEach((k, i) => assert.ok(close(k.x2 - k.x1, i ? CAR : LOCO), `block ${i} length`));
     blocksChecked = true;
   }
@@ -481,13 +529,15 @@ const hr = setRoute(S, hSig, hc.exitNode).route;
 assert.notEqual(aspectOf(S, hSig), ASPECT.STOP, 'setRoute clears the memo');
 tick();
 assert.equal(hr.trainId, P.id);
-assert.deepEqual(P.path, [...pc.edges, ...hc.edges]);
+assert.ok(P.path.length > hc.edges.length); // what is left of pc (the crossover pair's short edges release behind it), then hc
+assert.deepEqual(P.path, [...pc.edges, ...hc.edges].slice(-P.path.length));
 assert.ok(P.speed > 0 && !hr.entered);
 assert.notEqual(aspectOf(S, hSig), ASPECT.STOP);
 assert.equal(cancelRoute(S, hr.id), true);
 assert.equal(aspectOf(S, hSig), ASPECT.STOP, 'cancelRoute clears the memo');
 for (let i = 0; i < 120; i++) { tick(); assert.ok(P.headDist < pc.len, 'passed a cancelled route'); occupancyRule(P); }
-assert.deepEqual(P.path, pc.edges);
+assert.ok(P.path.length > 0);
+assert.deepEqual(P.path, pc.edges.slice(-P.path.length));
 assert.deepEqual([P.state, P.speed, P.stops], ['stopped', 0, 2]);
 assert.ok(hc.edges.every(e => S.edgeState[e].route === null && S.edgeState[e].occ.size === 0));
 
@@ -528,7 +578,7 @@ for (const dir of [W, E]) {
   assert.equal(headNode(S, T), c2.exitNode);
   assert.ok(close(pathLength(S, T) - T.headDist, FOUL, 1e-6), `${dir}: stopped FOUL short of R2's exit`);
   assert.deepEqual(T.path, c2.edges.slice(c2.edges.length - T.path.length), 'what is left of R2 (the rest released behind it)');
-  for (let sig = c2.exitSignal; sig !== null;) { // the way on: any non-slow route from each signal to the exit portal
+  for (let sig = c2.exitSignal; sig !== null;) { // the way on: any non-slow route from each signal to an exit
     const c = S.routesFrom.get(sig).find(k => !k.slow), res = setRoute(S, sig, c.exitNode);
     assert.equal(res.ok, true, res.reason);
     sig = c.exitSignal;
@@ -595,19 +645,19 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // doesn't hide the way; a free way round is still preferred
 {
   const S = createSim(L, 'soft');
-  const from = entryPortalNode(S, W), to = { node: exitPortalNode(S, W) };
+  const from = entryPortalNode(S, W), to = { exit: true };
   const straightW = sig => S.routesFrom.get(sig).find(k => !k.diverging && !k.slow);
-  const home = straightW(S.signalAt.get(`${from}:${W}`)).exitSignal, c = straightW(home);
+  const ps = S.signalAt.get(`${from}:${W}`), c0 = straightW(ps), c = straightW(c0.exitSignal);
   const main = c.edges.reduce((a, b) => (L.edges[b].len > L.edges[a].len ? b : a)); // the main through the module
   const plain = findPath(S, from, W, to);
   assert.deepEqual(findPath(S, from, W, to, { blockedCost: 1000 }), plain, 'nothing blocked: same path');
-  const r = setRoute(S, home, c.exitNode, { trainId: 3 }).route;
+  const r = setRoute(S, ps, c0.exitNode, { trainId: 3 }).route; // over the portal edge: no way round it
   assert.equal(findPath(S, from, W, to), null);
   const soft = findPath(S, from, W, to, { blockedCost: 1000 });
-  assert.ok(soft && soft.includes(c.edges[0]), 'through a route held by train 3, at a cost');
+  assert.ok(soft && soft.includes(c0.edges[0]), 'through a route held by train 3, at a cost');
   cancelRoute(S, r.id);
-  S.edgeState[main].occ.add(9);
-  const round = findPath(S, from, W, to, { blockedCost: 1000 });
+  S.edgeState[main].occ.add(9); // not a train on the board: standing
+  const round = findPath(S, from, W, to, { blockedCost: 1000, standingCost: 1000 });
   assert.ok(round && !round.includes(main), 'a free way round beats an occupied edge');
   S.edgeState[main].occ.clear();
 }
@@ -651,10 +701,11 @@ for (const seed of ['lebanon', 's7', 's42']) {
 {
   const S = createSim(L, 'label');
   const pw = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`), pe = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
-  assert.equal(signalLabel(S, pw), `W${L.cols - 1}`);
-  assert.equal(signalLabel(S, pe), 'E0');
+  const row = y => String.fromCharCode(65 + y); // A = row 0
+  assert.equal(signalLabel(S, pw), `W${L.cols - 1}${row(L.mainRow[W])}`);
+  assert.equal(signalLabel(S, pe), `E0${row(L.mainRow[E])}`);
   const dw = L.signals.find(g => g.kind === 'dwarf');
-  assert.equal(signalLabel(S, dw.id), `${dw.dir === 1 ? 'E' : 'W'}${L.nodes[dw.node].x}d`);
+  assert.equal(signalLabel(S, dw.id), `${dw.dir === 1 ? 'E' : 'W'}${L.nodes[dw.node].x}${row(L.nodes[dw.node].y)}d`);
   for (let i = 0; i < 250; i++) logEvent(S, `line ${i}`);
   assert.equal(S.log.length, 200);
   assert.deepEqual(S.log.at(-1), { t: S.time, text: 'line 249' });
@@ -751,7 +802,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
   const S = createSim(L, 'stall');
   S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
   spawnTrain(S, { type: 'M', dir: E, name: 'M 6' });
-  const ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`), pc = S.routesFrom.get(ps)[0], home = pc.exitSignal;
+  const ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
   const block = sig => setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { trainId: 99 }).route;
   const stalls = () => S.log.filter(e => e.text === 'STALL M 6').length, r = block(ps);
   for (let i = 0; i < 40 * 60; i++) step(S);
@@ -759,8 +810,8 @@ for (const seed of ['lebanon', 's7', 's42']) {
   S.auto = true;
   step(S);
   assert.equal(stalls(), 1, 'stood 40 min in AUTO, not logged');
-  block(home);
-  cancelRoute(S, r.id); // the operator routes M 6 up to the home signal, where it stands again
+  for (const c of S.routesFrom.get(ps)) block(c.exitSignal); // both ways on: up the home main, or over the crossovers
+  cancelRoute(S, r.id); // the operator routes M 6 up to one of them, where it stands again
   for (let i = 0; i < 40 * 60; i++) step(S);
   assert.equal(stalls(), 2, 'a second stand, after moving, not logged');
 }
@@ -831,7 +882,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
     assert.ok(at('entered') < at('route') && at('route') < at('arrived') && at('arrived') < at('departed')
       && at('departed') < kinds.lastIndexOf('route'), `${seed}: ${P.name} events ${kinds}`);
     assert.ok(G.tracks.some(t => t.cls === 'platform' && t.name === arrived.track), `${seed}: arrived at ${arrived.track}`);
-    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EW]\d+d?$/.test(e.signal)));
+    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EW]\d+[A-Z]d?$/.test(e.signal)));
   }
 }
 assert.ok(held.size > 0, 'the overtake rule never held a train');

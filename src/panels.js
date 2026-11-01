@@ -1,6 +1,6 @@
 // Panel bodies as HTML strings built from sim state (no DOM). ui.js puts them in place and wires the buttons
 // through their data-* attributes. Everything from the sim or the URL goes through esc().
-import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitPortalNode, switchLocked } from './sim.js';
+import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitNodes, switchLocked } from './sim.js';
 import { COLORS } from './render.js';
 import { SPEEDS, formatClock, formatDelay } from './ui-util.js';
 
@@ -17,10 +17,10 @@ export const trackName = (L, id) => (L.tracks[id].cls === 'platform' ? `Platform
 export const switchLabel = (sim, node) => `${sim.layout.nodes[node].x}.${sim.layout.nodes[node].y}`;
 const trainLabel = (sim, id) => esc(sim.trains.get(id)?.name ?? sim.queue[1].concat(sim.queue[-1]).find(q => q.id === id)?.name ?? `#${id}`);
 
-// Where a candidate route ends: its exit signal, else the exit portal (or a buffer stop).
+// Where a candidate route ends: its exit signal, else off the panel at either main (or a buffer stop).
 export function exitLabel(sim, c) {
   if (c.exitSignal !== null) return signalLabel(sim, c.exitSignal);
-  for (const d of [1, -1]) if (c.exitNode === exitPortalNode(sim, d)) return `exit to ${portal(sim.layout, -d)}`;
+  for (const d of [1, -1]) if (exitNodes(sim, d).includes(c.exitNode)) return `exit to ${portal(sim.layout, -d)}`;
   return 'end of track';
 }
 
