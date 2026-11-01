@@ -213,14 +213,13 @@ export function createRenderer(canvas) {
     ctx.letterSpacing = '1px'; // names lifted 6 px clear of a row-0 label or platform box at tight zooms
     for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y) - 6, `13px ${SANS}`, P.label);
     ctx.letterSpacing = '0px';
-    // Slow order: SLOW 20 at the section's midpoint, outside its main (above Main 1, below Main 2) a line beyond the
-    // padlocks. The last order is kept so its label fades out with the amber.
+    // Slow order: SLOW 20 at the section's midpoint in the row between the mains (empty but for crossovers, which sit
+    // in the gaps between sections). The last order is kept so its label fades out with the amber.
     if (sim.slowOrder) lastSlow = sim.slowOrder;
     const sa = eased('slow', [sim.slowOrder ? 1 : 0], 120)[0];
     if (lastSlow && sa > 0.01) {
-      const v = lastSlow.main === 1 ? -1 : 1;
       ctx.globalAlpha = sa;
-      text(`SLOW ${SLOW_ORDER.mph}`, X((lastSlow.x0 + lastSlow.x1) / 2), Y(L.mainRow[v]) + v * (lw / 2 + 21), `11px ${SANS}`, '#f0b429');
+      text(`SLOW ${SLOW_ORDER.mph}`, X((lastSlow.x0 + lastSlow.x1) / 2), Y(L.mainRow[-1] + 1), `11px ${SANS}`, '#f0b429');
       ctx.globalAlpha = 1;
     }
 
