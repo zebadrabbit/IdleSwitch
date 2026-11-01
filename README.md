@@ -22,6 +22,8 @@ Mouse: drag to pan, wheel to zoom about the cursor. To route a train, click an e
 
 Track: grey is idle, green is a route set by the operator, blue is a route you set, red is occupied. The unset leg of a switch draws dim.
 
+Main 1 (upper) is home to westbound trains and Main 2 (lower) to eastbound, but both are signalled both ways, with a pair of crossovers in every gap between modules and at both ends. The operator may run a train on the other main round one that has stood a minute, returning it home at the first free pair; only one train runs on the wrong main at a time. A route into oncoming traffic is refused `opposing`, and one that would put a second train on the wrong main is refused `wrong main`; both show the usual red flash.
+
 Signal aspects (American practice):
 
 | Name | High (1 head) | High (2 head) | Dwarf | Meaning |
@@ -34,6 +36,8 @@ Signal aspects (American practice):
 | Restricting | — | R / flashing R | flashing R | enter at restricted speed, prepared to stop short of anything |
 | Slow Clear | — | — | G | proceed at slow speed |
 | Stop | R | R / R | R | stop |
+
+Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf.
 
 Trains are a locomotive block plus one block per car, with an ID tag (type letter plus number; even eastbound, odd westbound):
 
@@ -56,7 +60,7 @@ Higher priority wins when two trains want the same track.
 
 ## Design notes
 
-- The mains are directional: the top main runs westbound, the bottom eastbound. A meet is an overtake: the lower-priority train steps into a siding or yard track.
+- Each main has a home direction, Main 1 westbound and Main 2 eastbound, and is signalled both ways; traffic locking keeps opposing trains out of the same stretch of main between crossover pairs. A meet is an overtake: the lower-priority train steps into a siding or yard track, or a train held behind a standing one passes it on the other main.
 - Every track is a through track. Nothing reverses, so a train keeps its direction and ID from portal to portal.
 - A switch is held only by its trunk edge (occupied or routed); there is no flank protection.
 - Yard tracks must be clear to receive a train.
@@ -106,7 +110,7 @@ Needs Node 22. No packages to install.
 
 ## Status
 
-v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable panels and saved layout all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), bidirectional mains, stub spurs with reversing moves, sound.
+v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable panels and saved layout all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), stub spurs with reversing moves, sound.
 
 ## License
 

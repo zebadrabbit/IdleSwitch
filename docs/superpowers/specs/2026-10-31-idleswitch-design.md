@@ -386,3 +386,5 @@ implementation ledger and summarised here so this document stays true.
   running); modules' tracks sit between the mains, split by side.
 - **Density is a fixed mean spawn interval** per setting, not derived
   from terminal capacity.
+- 2026-11-01: directional mains replaced by bidirectional mains with crossover pairs; see
+  `2026-11-01-bidirectional-mains-design.md`.

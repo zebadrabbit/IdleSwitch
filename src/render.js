@@ -104,9 +104,9 @@ export function createRenderer(canvas) {
     canvas.height = Math.round(innerHeight * dpr);
   };
 
-  // Fits columns 0..cols-1 and rows -1..rows (the module names above Main 1, the portal labels beyond
-  // both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes the
-  // area its docked panels leave free).
+  // Fits columns 0..cols-1 and rows -1..rows (the module names above the top tracks, the portal labels
+  // beyond both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes
+  // the area its docked panels leave free).
   r.fit = (layout, box = { x: 0, y: 0, w: innerWidth, h: innerHeight }) => {
     const { w, h } = box, bw = (layout.cols - 1) * CELL, bh = (layout.rows + 1) * CELL;
     const zoom = Math.min((w - 2 * MARGIN) / bw, (h - 2 * MARGIN) / bh);
@@ -161,8 +161,8 @@ export function createRenderer(canvas) {
         text(t.name, X((lo + hi) / 2), cy, `small-caps ${labelPx}px ${SANS}`, COLORS.dim);
       }
     }
-    ctx.letterSpacing = '1px';
-    for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y), `13px ${SANS}`, COLORS.label);
+    ctx.letterSpacing = '1px'; // names lifted 6 px clear of a row-0 label or platform box at tight zooms
+    for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y) - 6, `13px ${SANS}`, COLORS.label);
     ctx.letterSpacing = '0px';
 
     // 4. Portals: a chevron pointing in just off the end of the main; the place name beyond the main on the
@@ -176,10 +176,9 @@ export function createRenderer(canvas) {
       text(`to ${p.name}`, a.x - p.dir * 6, a.y + p.dir * reach, `12px ${SANS}`, COLORS.label, a.align);
     }
 
-    // 5. Switches: a dot coloured like the trunk; a padlock toward the node's own main when locked.
-    const R = L.rows - 1;
+    // 5. Switches: a dot coloured like the trunk; a padlock when locked, above at or above Main 1, else below.
     for (const sw of L.switches) {
-      const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y * 2 < R ? -1 : 1;
+      const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y <= L.mainRow[-1] ? -1 : 1;
       disc(x, y, Math.max(2.5, 0.8 * lw), edgeColor(sim, sw.trunk));
       if (switchLocked(sim, sw.node)) {
         const ly = y + up * (lw / 2 + 9);
