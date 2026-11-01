@@ -1,10 +1,11 @@
 // Pure simulation: interlocking (routes, switches, locking), pathfinding, signal aspects, trains, traffic and the
 // virtual operator; step(sim) advances it one sim second. Never touches window, document, Math.random or Date;
-// randomness comes only from sim.rng (makeRng(seed + ':sim')).
+// randomness comes only from sim.rng (makeRng(seed + ':sim')) for traffic and sim.extras (makeRng(seed + ':extras')) for
+// slow orders and the operator, so those never change a seed's traffic.
 //
 // Travel direction is decided by x alone, never by edge a->b order: a dir=+1 train leaves a node
 // through edges whose far node has greater x, dir=-1 through smaller x. Edge dirs must also allow it.
-import { makeRng, randInt } from './rng.js';
+import { makeRng, pick, randInt } from './rng.js';
 
 const SLOW_CLS = new Set(['yard', 'siding', 'spur']);
 const far = (edge, n) => (edge.a === n ? edge.b : edge.a);
@@ -29,7 +30,12 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     queue: { 1: [], '-1': [] }, nextSpawn: { 1: start, '-1': start }, completed: [],
     time: start, log: [], auto: false, density: opts.density ?? 'normal',
     rng: makeRng(seed + ':sim'), _aspects: new Map(),
+    dayLength: opts.dayLength ?? 2400, slowOrders: opts.slowOrders ?? true, extras: makeRng(seed + ':extras'), slowOrder: null,
   };
+  sim.nextSlowOrder = start - SLOW_ORDER.gap * Math.log(1 - sim.extras());
+  sim.operator = drawOperator(sim.extras, null);
+  sim.nextShift = start + 8 * 3600;
+  logEvent(sim, `${sim.operator} on duty`);
   for (const e of layout.edges) if (e.section != null) {
     if (!sim.sectionEdges.has(e.section)) sim.sectionEdges.set(e.section, []);
     sim.sectionEdges.get(e.section).push(e.id);
@@ -439,7 +445,7 @@ export function moveTrains(sim, dt = 1) {
     let vAllowed = held ? 0 : train.maxSpeed, s = train.pathOff;
     for (const e of train.path) {
       const end = s + edges[e].len;
-      const ahead = Math.max(0, s - train.headDist), ve = edges[e].speed * MPH;
+      const ahead = Math.max(0, s - train.headDist), ve = edgeSpeed(sim, edges[e]) * MPH;
       if (end > train.headDist) vAllowed = Math.min(vAllowed, Math.sqrt(ve * ve + 2 * dec * ahead));
       s = end;
     }
@@ -495,11 +501,13 @@ export function trackFree(sim, trackId, forTrainId = null) {
 export const holdingTracks = (sim, dir) =>
   sim.layout.tracks.filter(t => t.dir === dir && (t.cls === 'siding' || t.cls === 'yard')).map(t => t.id);
 
+// Weights follow the lighting cycle: passenger falls at night, freight (Z, M, spur industries) rises, locals stay.
 export function trafficMenu(sim, dir) {
-  const mine = sim.layout.tracks.filter(t => t.dir === dir);
-  const menu = [{ type: 'X', dest: null, weight: 3 }, { type: 'Z', dest: null, weight: 2 }, { type: 'M', dest: null, weight: 3 },
-    ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 })),
-    ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 })),
+  const mine = sim.layout.tracks.filter(t => t.dir === dir), n = nightOf(sim), pax = 1 - 0.7 * n, frt = 1 + 0.7 * n;
+  const menu = [{ type: 'X', dest: null, weight: 3 * pax }, { type: 'Z', dest: null, weight: 2 * frt },
+    { type: 'M', dest: null, weight: 3 * frt },
+    ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 * pax })),
+    ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 * frt })),
     ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 }))];
   // A train too long for its track would wedge the queue for good. The generator's capacity floors mean this
   // drops nothing; the spawn gate checks fits again anyway.
@@ -715,6 +723,58 @@ function operator(sim) {
   }
 }
 
+// ---- Ambience (spec "The lighting cycle", "Slow orders", "Shift change and the HUD")
+// Night level 0..1 by phase of the cycle from 06:00: day, dusk (0.4-0.5), night, dawn (0.9-1). dayLength <= 0: always day.
+const smoothstep = x => x * x * (3 - 2 * x);
+export function nightLevel(time, dayLength) {
+  if (dayLength <= 0) return 0;
+  const p = ((time - 6 * 3600) % dayLength) / dayLength; // ponytail: sim time never runs before 06:00
+  return p < 0.4 ? 0 : p < 0.5 ? smoothstep((p - 0.4) / 0.1) : p < 0.9 ? 1 : 1 - smoothstep((p - 0.9) / 0.1);
+}
+export function nightOf(sim) { return nightLevel(sim.time, sim.dayLength); }
+
+export const SLOW_ORDER = { gap: 20 * 60, min: 5 * 60, max: 10 * 60, mph: 20 }; // sim s: mean gap, duration range
+// A slow order is a bulletin, not an indication: speeds only, aspects and findPath costs are unchanged.
+export const edgeSpeed = (sim, e) => (sim.slowOrder && e.section === sim.slowOrder.section ? SLOW_ORDER.mph : e.speed);
+export function slowOrderLabel({ slowOrder: o }) { return `Main ${o.main} ${o.x0}–${o.x1}`; }
+const clock = t => [Math.floor(t / 3600) % 24, Math.floor(t / 60) % 60].map(v => String(v).padStart(2, '0')).join(':'); // HH:MM
+
+// One at a time, on a main section; exponential gaps like spawns. Off: none starts and the next is kept ahead without a
+// draw, so turning them back on doesn't fire one at once; an active one runs out.
+function slowOrders(sim) {
+  const next = () => sim.time - SLOW_ORDER.gap * Math.log(1 - sim.extras());
+  if (sim.slowOrder && sim.time >= sim.slowOrder.until) {
+    logEvent(sim, `Slow order lifted: ${slowOrderLabel(sim)}`);
+    sim.slowOrder = null;
+    sim.nextSlowOrder = next();
+  }
+  if (sim.slowOrder || sim.time < sim.nextSlowOrder) return;
+  if (!sim.slowOrders) { sim.nextSlowOrder += SLOW_ORDER.gap; return; }
+  const { edges, nodes } = sim.layout, section = pick(sim.extras, [...sim.sectionEdges.keys()]);
+  const es = sim.sectionEdges.get(section).map(e => edges[e]), xs = es.flatMap(e => [nodes[e.a].x, nodes[e.b].x]);
+  sim.slowOrder = { section, until: sim.time + randInt(sim.extras, SLOW_ORDER.min, SLOW_ORDER.max),
+    main: es[0].main === -1 ? 1 : 2, x0: Math.min(...xs), x1: Math.max(...xs) }; // Main 1 is mainRow[-1]
+  logEvent(sim, `Slow order: ${slowOrderLabel(sim)}, ${SLOW_ORDER.mph} mph until ${clock(sim.slowOrder.until)}`);
+}
+
+export const OPERATORS = ['Alvarez', 'Brennan', 'Chen', 'Dubois', 'Ekwueme', 'Fischer', 'Garza', 'Haddad', 'Iyer', 'Jensen',
+  'Kowalski', 'Lindqvist', 'Moreau', 'Nakamura', 'Okafor', 'Petrov', 'Quinn', 'Reyes', 'Sato', 'Tremblay', 'Ueda', 'Varga',
+  'Whitfield', 'Zhang'];
+function drawOperator(rng, not) {
+  for (;;) {
+    const name = `${String.fromCharCode(randInt(rng, 65, 90))}. ${pick(rng, OPERATORS)}`;
+    if (name !== not) return name;
+  }
+}
+
+// Shifts change every 8 sim hours from 06:00: 14:00, 22:00, 06:00.
+function shifts(sim) {
+  if (sim.time < sim.nextShift) return;
+  sim.operator = drawOperator(sim.extras, sim.operator);
+  sim.nextShift += 8 * 3600;
+  logEvent(sim, `Shift change: ${sim.operator} takes the desk`);
+}
+
 // One sim second.
 export function step(sim) {
   clearAspects(sim);
@@ -722,6 +782,8 @@ export function step(sim) {
   for (const t of sim.trains.values()) dropCancelled(sim, t);
   if (sim.auto) operator(sim);
   spawner(sim);
+  slowOrders(sim);
+  shifts(sim);
   moveTrains(sim);
   missions(sim);
   sim.time += 1;

@@ -6,7 +6,7 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
   trainBlocks, headNode,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
-  WRONG_MAIN_COST, MOVING_COST, STANDING_COST } from '../src/sim.js';
+  WRONG_MAIN_COST, MOVING_COST, STANDING_COST, nightLevel, SLOW_ORDER, edgeSpeed, slowOrderLabel, OPERATORS } from '../src/sim.js';
 import { trainStatus } from '../src/panels.js';
 
 // ---- Task 3: interlocking core
@@ -18,10 +18,11 @@ const SLOW = ['yard', 'siding', 'spur'];
 const farOf = (G, e, n) => { const ed = G.edges[e]; assert.ok(ed.a === n || ed.b === n, `edge ${e} not at node ${n}`); return ed.a === n ? ed.b : ed.a; };
 const walk = (G, from, es) => es.reduce((ns, e) => [...ns, farOf(G, e, ns.at(-1))], [from]); // node ids along an edge list
 const allClear = S => S.routes.size === 0 && S.edgeState.every(s => s.route === null && s.occ.size === 0);
+const close = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 
 // fresh sim shape
 assert.equal(sim.time, 6 * 3600);
-assert.deepEqual(sim.log, []);
+assert.deepEqual(sim.log, [{ t: 6 * 3600, text: `${sim.operator} on duty` }]);
 assert.equal(sim.auto, false);
 assert.equal(typeof sim.rng, 'function');
 assert.equal(sim.adj.size, L.nodes.length);
@@ -413,7 +414,6 @@ console.log('aspects ok');
 // ---- Task 5: trains
 {
 const S = createSim(L, 'trains'), G = S.layout;
-const close = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 const tick = () => { moveTrains(S); S.time++; };
 const straightOf = sig => S.routesFrom.get(sig).find(c => !c.diverging && !c.slow);
 const lenOf = e => G.edges[e].len;
@@ -841,6 +841,57 @@ for (const seed of ['lebanon', 's7', 's42']) {
   assert.deepEqual([S.queue[1].length, S.queue[-1].length], [8, 8]);
 }
 
+// Lighting cycle: day, dusk midpoint, night, dawn midpoint; off when dayLength is 0
+const T0 = 6 * 3600, P = 2400;
+assert.deepEqual([0, 0.2, 0.45, 0.5, 0.7, 0.95].map(f => +nightLevel(T0 + f * P, P).toFixed(2)), [0, 0, 0.5, 1, 1, 0.5]);
+assert.equal(nightLevel(T0 + 0.6 * P, 0), 0);
+assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5, 'dusk ramps');
+
+// Traffic mix: at full night passenger weights are 30 % of day, freight 170 %, locals unchanged
+{
+  const A = createSim(L, 'lebanon'), B = createSim(L, 'lebanon');
+  B.time = T0 + 0.6 * B.dayLength; // night
+  const w = (S, pred) => trafficMenu(S, E).filter(pred).reduce((s, m) => s + m.weight, 0);
+  const pax = m => m.type === 'X' || m.type === 'P', frt = m => ['Z', 'M', 'C', 'G', 'I'].includes(m.type), loc = m => m.type === 'L';
+  assert.ok(close(w(B, pax), 0.3 * w(A, pax)) && close(w(B, frt), 1.7 * w(A, frt)) && w(B, loc) === w(A, loc));
+}
+
+// Slow orders: appear, apply, lift, log; only on main sections; separate rng stream; off lets one run out
+{
+  const S1 = createSim(L, 's7'), S2 = createSim(L, 's7', { slowOrders: false }); // normal density: queues never fill, so both draw the same entries
+  S1.auto = S2.auto = true; // in MANUAL nothing leaves the portal and the queues do fill
+  let seen = null;
+  for (let i = 0; i < 4 * SLOW_ORDER.gap && !seen; i++) { step(S1); if (S1.slowOrder) seen = { ...S1.slowOrder }; }
+  assert.ok(seen, 'a slow order appears within 4 mean gaps');
+  assert.ok(S1.sectionEdges.has(seen.section), 'on a main section');
+  const inSec = S1.sectionEdges.get(seen.section);
+  assert.ok(inSec.every(e => edgeSpeed(S1, L.edges[e]) === SLOW_ORDER.mph));
+  assert.ok(L.edges.filter(e => e.section !== seen.section).every(e => edgeSpeed(S1, e) === e.speed));
+  assert.ok(S1.log.some(l => l.text.startsWith(`Slow order: ${slowOrderLabel(S1)}, 20 mph until `)));
+  S1.slowOrders = false; // turned off mid-order: it runs out on schedule
+  while (S1.time <= seen.until) step(S1);
+  assert.equal(S1.slowOrder, null);
+  assert.ok(S1.log.some(l => l.text === `Slow order lifted: Main ${seen.main} ${seen.x0}–${seen.x1}`));
+  for (let i = 0; i < 4 * SLOW_ORDER.gap; i++) step(S2);
+  assert.equal(S2.slowOrder, null, 'none when off');
+  while (S1.time < S2.time) step(S1); // compared at one sim time: S1 stopped when its order lifted
+  while (S2.time < S1.time) step(S2);
+  const names = S => [...S.queue[E], ...S.queue[W], ...S.trains.values(), ...S.completed].map(t => t.name).sort();
+  assert.deepEqual(names(S1).slice(0, 20), names(S2).slice(0, 20), 'traffic unchanged by slow orders');
+}
+
+// Operator: named at boot, changes at 14:00 with a new name, logged
+{
+  const S = createSim(L, 'lebanon');
+  assert.match(S.operator, /^[A-Z]\. [A-Z][a-z]+$/);
+  assert.ok(OPERATORS.includes(S.operator.slice(3)));
+  assert.equal(S.log[0]?.text, `${S.operator} on duty`);
+  const first = S.operator;
+  while (S.time < 14 * 3600 + 5) step(S);
+  assert.notEqual(S.operator, first);
+  assert.ok(S.log.some(l => l.text === `Shift change: ${S.operator} takes the desk`));
+}
+
 // soak: 8 sim-hours busy over the brief's three seeds plus s47 (a local stood 45 min at a merge there before the
 // operator served long-standing trains first); never two trains on one edge, never a stall, and the spawn gate
 // (a queued train with a destination enters only while that track is free, and reserves it)
@@ -874,6 +925,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       dirs.delete(undefined);
       assert.ok(dirs.size <= 1, `${seed}: opposing trains in section ${sec}`);
     }
+    assert.ok(S.slowOrder === null || S.sectionEdges.has(S.slowOrder.section), `${seed}: slow order off the mains`);
     const wrong = wrongMainTrains(S).length;
     assert.ok(wrong <= 1, `${seed}: two wrong-main trains`);
     if (wrong) { wrongTicks++; sawWrongMain = true; }
