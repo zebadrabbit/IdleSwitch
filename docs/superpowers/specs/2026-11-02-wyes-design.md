@@ -117,8 +117,13 @@ at the stem's top (`y = 0`) or bottom (`y = rows − 1`).
 - **Spawn rate.** Total traffic is unchanged: with three portals each portal's mean interval is
   `DENSITY × 1.5` (ruling: a terminal with a junction is not busier, the traffic is shared three ways).
   `QUEUE_MAX` is per portal.
-- `trafficMenu(sim, dir)` is unchanged: a branch arrival bound east draws from the eastbound menu.
-  Scheduled time (`newEntry`) keeps the home-main formula.
+- **Reachability.** `createSim` computes, on the empty layout with `findPath`, which tracks each
+  `(portal, dir)` can reach and which exits each `(track, dir)` and `(portal, dir)` can reach.
+  `trafficMenu(sim, dir, portal)` drops destinations the entry cannot reach (a branch arrival bound east
+  never draws a platform west of the wye). The exit coin (`sim.rng`, one draw per entry, always drawn so
+  the stream is stable) sends the train to the branch only when the branch is reachable from its
+  destination for its dir (or from its entry when it has none); otherwise it keeps the far end. So no
+  train is ever born unable to finish. Scheduled time (`newEntry`) keeps the home-main formula.
 
 ## The wye (geometry)
 
@@ -127,20 +132,35 @@ One wye at most, placed by the seed in one inter-module gap (never a margin), on
 terminal has a wye: `0.6`; given one, Phase 1 makes it a junction; Phase 2 makes it a junction or a
 terminus by a fair coin.
 
-**Gap layout** (west to east; `b` = boundary signal column of the module to the west, i.e. `x1 + 1`):
+**Gap layout** (west to east; `b` = boundary signal column of the module to the west, `x1 + 1`; `b'` =
+`x0 − 1` of the module to the east; `.` = one empty column):
 
 ```
-junction:  b | pair(6) | s | F1 . A . F2 | s | pair(6) | b'          GAP_WYE = 1+6+1+5+1+6+1 = 21 (+1 for b')
-terminus:  b | pair(6) | s | run(7) | F1 . A . F2 | run(7) | s | pair(6) | b'   GAP_TERM = 21 + 14 = 35
+junction:  b | pair(6) | . | F1 . A . F2 | . | pair(6) | b'                 b' = x1 + 21,  GAP_WYE  = 22
+terminus:  b | pair(6) | P | run(7) | F1 . A . F2 | run(7) | P | pair(6) | b'   b' = x1 + 34,  GAP_TERM = 35
 ```
 
 - `F1`, `F2` are the **feet** on the main (two nodes four columns apart); `A` the **apex** two rows off the
   main, between them: north wye `A = (F1.x + 2, T − 2)`, south wye `A = (F1.x + 2, R2 + 2)`. Legs
   `F1–A` and `F2–A` are 45° edges of class `wye` (speed 30, both ways, len 2√2), like crossovers.
-- `s` marks a signal column: signals in both main directions on both mains, as at module boundaries.
-  The feet carry signals too: **both main directions on the wye's main at `F1` and `F2`** (the foot
-  signals; the reverse-facing one is what a Phase 2 reversing train reads), plus the other main's usual
-  pair at the same columns for symmetry.
+- **No signal stands inside the junction** (between the two pairs) except the two shunt signals of a
+  terminus, below. Every through move across the gap, every move into the branch and every arrival out
+  of it is therefore **one route from a signal outside the junction** (`b`, `b'`, a `P` column, the stem
+  signal, the stub signal): a train is either outside the junction or committed through it with its whole
+  route set. That is what keeps the junction deadlock-free (a train can never stand inside it waiting for
+  the branch while a branch train waits for the main). Signals never sit on a switch node.
+- `P` marks the **pull-ahead columns** of a terminus: signals in both main directions on both mains, as
+  at module boundaries. The 7-cell **run** between a foot and its `P` is a single edge, so a terminus
+  train stopped at `P` (`FOUL` short) has its tail `7 − 0.3 − 5.6 = 1.1` cells clear of the foot and its
+  reversed head node is the foot.
+- **Shunt signals** (terminus only): at `F1` facing east (`from` = the west run) and at `F2` facing west
+  (`from` = the east run), `kind: 'shunt'`, `dir 0`, drawn as dwarfs, aspects as dwarfs. A shunt signal
+  **does not end a route**: `candidates()` walks through its node as if it carried no signal, so through
+  routes from `P` cross the whole junction; only a train whose head node is the foot (a reversed terminus
+  train) reads it through `signalAhead`. Its own candidates are walked normally: the near leg into the
+  stub, and the main onward. Because the foot is a switch node, `switchLocked(sim, node, forTrain)` ignores
+  the trunk occupancy of `forTrain` itself when the route being set is for that train and starts at that
+  node: the standing train's head is ≥ 1.1 cells clear of the points, so the points may move for it.
 - The **stem** is vertical from `A` away from the main. Junction: to the branch portal at the panel edge,
   at least two cells long, class `branch` (speed 45, both ways), with a **stem signal** (`dir 0`, facing
   toward the main) one cell before the apex and the portal signal (`dir 0`) at the portal. Terminus: the
@@ -150,8 +170,9 @@ terminus:  b | pair(6) | s | run(7) | F1 . A . F2 | run(7) | s | pair(6) | b'   
 - **Rows.** A north wye needs `T ≥ 4` (apex at row 2, stem rows 2..0) and the terminus's stub needs
   `T ≥ 10`; the generator pads `T` up to the need (empty rows above the top tracks). A south wye pads
   `rows` likewise. Place names stay at `y = −1`; the branch portal's name sits beside the portal.
-- Both pairs in a wye gap are ordinary crossover pairs; sections split at crossover ends as today, so
-  the stretch between the two pairs on each main is one section: the **junction section**.
+- Both pairs in a wye gap are ordinary crossover pairs; sections split at crossover ends as today. Every
+  main edge strictly between `b` and `b'` is tagged `junction: true` (both mains, including the one-cell
+  pieces inside the pairs): the **junction gap**.
 - The generator's no-crossing and ≤ 3-edges invariants hold by construction: the legs sit in rows the
   modules do not use in that gap, the stem is in the gap's middle column, nothing crosses.
 
@@ -164,14 +185,15 @@ terminus:  b | pair(6) | s | run(7) | F1 . A . F2 | run(7) | s | pair(6) | b'   
   section is occupied by a train whose sense there is opposite, or route-locked by a route whose sense
   there is opposite. `route.sense` is stored per section at `setRoute`; a train's sense in a section comes
   from the node order of its path edges there. On main sections this is exactly today's rule.
-- **Junction exemption to one-wrong-main.** A train whose only wrong-main edges lie in the junction
-  section (between the wye's two pairs on its main) does not count toward the one-wrong-main-train rule,
-  and may be routed there while another train is wrong main elsewhere. Reason: an eastbound arrival onto
-  Main 1 (north wye) crosses to Main 2 at the east pair a few cells on; an eastbound departure crosses to
-  Main 1 at the west pair to reach `F1`. Both ends of the junction section are pairs and traffic locking
-  keeps opposing trains out of it, so a wrong-main train there always has its way home. `isWrongMain`
-  gains the exemption; the soak keeps the "at most one" invariant for non-exempt trains and adds "no two
-  opposing trains in the junction section" (already implied by traffic locking; asserted anyway).
+- **Junction exemption to one-wrong-main.** Wrong-main edges tagged `junction` do not count toward the
+  one-wrong-main-train rule (`isWrongMain` ignores them), so a train whose only wrong-main running is
+  inside the junction gap may be routed while another train is wrong main elsewhere. Reason: an eastbound
+  arrival onto Main 1 (north wye) crosses to Main 2 at the east pair a few cells on; an eastbound
+  departure crosses to Main 1 at the west pair to reach `F1`; on a south wye the westbound moves use the
+  one-cell Main 2 piece inside a pair. Safe because every junction move is one atomic route set from
+  outside the gap: a wrong-main train inside the gap always holds its route out of it, and traffic
+  locking per section keeps opposing trains out of the pieces it uses. The soak keeps "at most one" for
+  non-exempt trains and asserts that exempt wrong-main running only ever happens on `junction` edges.
 - **Stem one at a time.** The branch section's sense rule means one direction of flow at a time on the
   stem. A train standing at the stem signal waiting for the main is the normal picture.
 - Everything else (trunk lock, one un-entered route per signal, sectional release, dead routes) stands.
@@ -182,8 +204,10 @@ terminus:  b | pair(6) | s | run(7) | F1 . A . F2 | run(7) | s | pair(6) | b'   
 
 **Reversal.** `reverse(sim, train, newDir)` requires `train.speed === 0`. It sets `train.dir = newDir`,
 `train.path` to the reverse of the occupied edges (those overlapping `(tail, head]`, in reverse order),
-`train.pathStart` to the old `headNode`, `pathOff` to the unused remainder of the old head edge beyond
-the old head, and `headDist` to `pathOff + train.len` (the old tail is the new head). It clears
+`train.pathStart` to the old `headNode`, `pathOff` to `0`, and `headDist` to `r + train.len` where `r` is
+the unused remainder of the old head's edge beyond the old head (so the new tail sits exactly where the
+old head was: no jump). The distance the train has run so far is banked in `train.run += old pathOff`
+before the reset, and `despawnTrain` records `run + pathOff`. It clears
 `train.routes` (releasing any un-entered route set for it), toggles `train.locoAtTail`, and sets
 `train.pushing = !train.locoAtTail ? false : true` (pushing when the loco trails). Occupancy is unchanged
 by construction (`occupy` recomputes from the new path and agrees with the old set). A pushing train's
@@ -191,15 +215,17 @@ speed is capped at `PUSH_MPH = 15`.
 
 **The terminus mission** for a train with `dest` = the stub track (`train.terminus = true`; drawn from the
 menu for both main portals with weight `6 × pax`, types `P` and `X`, like a platform):
-1. **Approach.** `goal = { node: pullAhead }` where `pullAhead` is the far end of the 7-cell run beyond
-   the far foot for its arrival dir (east of `F2` for eastbound, west of `F1` for westbound). The run is
-   long enough that the whole train clears the foot: `7 − FOUL − len(X) = 1.1` cells spare.
-2. **Reverse 1.** Stopped at `pullAhead`: `reverse(sim, t, −arrivalDir)`. Its head node is now the far
-   foot (the run is a single edge), where the reverse-facing foot signal stands. `goal = { track: stub }`.
-   State `'reversing'`, status word `backing in`.
-3. **Back in.** The operator (or a human) routes it from the foot signal down the near leg to the stub's
-   exit-signal node and on to the buffer (one candidate, `slow`). It runs at `PUSH_MPH`, stops `FOUL`
-   short of the buffer (the path's end), and dwells `DWELL.terminus = 10 × 60`.
+1. **Approach.** `goal = { node: pullAhead }` where `pullAhead` is the `P` node on its main beyond the
+   far foot for its arrival dir (east of `F2` for eastbound, west of `F1` for westbound). Its last route
+   ends at the `P` signal and it stops there; with the goal reached the operator sets nothing further.
+2. **Reverse 1.** Stopped at `P`: `reverse(sim, t, −arrivalDir)`. Its head node is now the far foot (the
+   run is one edge and the tail cleared the foot by 1.1 cells), where the shunt signal stands.
+   `goal = { track: stub }`. State `'reversing'`, status word `backing in`.
+3. **Back in.** The operator (or a human) routes it from the shunt signal down the near leg to the stub's
+   exit-signal node and on to the buffer (one candidate, `slow`; the foot's points may move for it per
+   the `switchLocked` rule above). It runs at `PUSH_MPH`, stops `FOUL` short of the buffer (the path's
+   end), and dwells `DWELL.terminus = 10 × 60`. Nothing else can be inside the junction gap or on the run
+   at this point: its own atomic route held them, and no other route could include the occupied run.
 4. **Reverse 2.** `reverse(sim, t, −arrivalDir)` again (the dir is unchanged: it leaves the way it came,
    by the other leg). The head node is the stub's exit-signal node. `goal = { exit }` with `exit` = the
    portal it arrived from; `dest = null`. The loco now leads; `pushing` is false.
@@ -272,6 +298,14 @@ cases and the tail marker at the trailing end. The tag stays with the loco.
 ## Rulings made without the user
 
 - One wye per terminal, in a gap, never a margin; north on Main 1, south on Main 2; 60 % of seeds.
+- No signals inside the junction gap (atomic routes through it) and a gap-wide wrong-main exemption,
+  after the builder check showed that an intermediate signal at the feet deadlocks a branch-bound train
+  against a branch arrival, that signals on switch nodes break the trunk lock, and that the south wye's
+  moves use the one-cell Main 2 piece inside a pair.
+- Terminus shunt signals are route-transparent dwarfs at the feet; the points may move for the standing
+  train that reads them.
+- Destinations and exits are filtered by reachability (computed once per layout), the exit coin is
+  always drawn.
 - Wye gaps carry two crossover pairs so every move at the junction is at most a few cells wrong main,
   and those cells are exempt from the one-wrong-main rule.
 - The branch (Keddie) is single track with one direction of flow at a time; its signals are "either
