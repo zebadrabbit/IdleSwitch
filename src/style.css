@@ -93,7 +93,7 @@ table.board tbody tr:hover, table.board tr.sel { background: var(--row); }
 table.board tr.done { color: var(--dim); }
 table.board tr.queued td:not(:first-child) { color: var(--dim); }
 table.board td.id { font-family: var(--mono); }
-.c-id { width: 13%; } .c-type { width: 16%; } .c-ft { width: 31%; } .c-track { width: 13%; } .c-status { width: 17%; } .c-delay { width: 10%; }
+.c-id { width: 17%; } .c-type { width: 15%; } .c-ft { width: 28%; } .c-track { width: 13%; } .c-status { width: 17%; } .c-delay { width: 10%; }
 .num { text-align: right; }
 .delay { font-family: var(--mono); }
 .delay.late { color: var(--amber); }
