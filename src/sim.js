@@ -135,8 +135,11 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   if (cand.edges.some(e => sim.edgeState[e].route !== null)) return fail('locked');
   if (cand.switches.some(s => sim.switchState.get(s.node).lie !== s.lie && switchLocked(sim, s.node))) return fail('switch busy');
   if (opposing(sim, cand, sig.dir)) return fail('opposing');
-  // One wrong-main train at a time; the one at this signal (or the one the route is for) may go on or home.
-  if (cand.wrongMain && wrongMainTrains(sim).some(t => t.id !== trainId && headNode(sim, t) !== sig.node)) return fail('wrong main');
+  // One wrong-main train at a time; the one at this signal (or the one the route is for) may go on or home. An untaken
+  // human wrong-main route at another signal counts as one: some train will take it.
+  const untaken = r => r.signal !== signalId && r.trainId === null && !r.entered && r.cand.wrongMain;
+  if (cand.wrongMain && (wrongMainTrains(sim).some(t => t.id !== trainId && headNode(sim, t) !== sig.node)
+    || [...sim.routes.values()].some(untaken))) return fail('wrong main');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
   const route = { id: sim.nextRouteId++, signal: signalId, cand, trainId, human, entered: false, setAt: sim.time };
   for (const e of cand.edges) sim.edgeState[e].route = route.id;
@@ -646,10 +649,10 @@ function deadRoute(sim, r) {
 // A train whose path ends at a signal with no route from it gets the route to the next signal along its pathfound
 // way, when the interlocking allows; otherwise it waits and tries again next tick. The operator cancels nothing but
 // dead human routes (deadRoute), so a human route any train can still take stands.
-// Rule: trains ahead don't hide the way: a blocked edge (standing or moving) costs BLOCKED_COST, and setRoute decides if
-// the route sets now.
-// ponytail: 1000 outweighs any detour on generated layouts (under 100 columns); raise it if layouts reach ~1000 cells.
-const BLOCKED_COST = 1000;
+// Rule: trains ahead don't hide the way: a blocked edge costs extra, and setRoute decides if the route sets now. Behind
+// a moving train (MOVING_COST) the main beats a detour round a module (~20-30: WRONG_MAIN_COST a main edge); a train
+// stood PASS_WAIT (STANDING_COST) is passed on the other main.
+export const WRONG_MAIN_COST = 3, MOVING_COST = 10, STANDING_COST = 60;
 function operator(sim) {
   const { edges, tracks } = sim.layout;
   for (const r of [...sim.routes.values()]) {
@@ -668,7 +671,8 @@ function operator(sim) {
     const node = headNode(sim, t), sig = sim.signalAt.get(`${node}:${t.dir}`);
     if (sig === undefined || routeFrom(sim, sig)) continue;
     if (t.dest !== null && trackAhead(sim, t) === t.dest) continue; // arriving: it dwells before going on
-    const path = findPath(sim, node, t.dir, t.goal, { trainId: t.id, blockedCost: BLOCKED_COST, standingCost: BLOCKED_COST });
+    const path = findPath(sim, node, t.dir, t.goal,
+      { trainId: t.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST });
     if (!path) {
       // Rule: no way at all means a human route took it past its destination: give up the call, run for the exit.
       if (t.dest !== null) {

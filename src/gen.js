@@ -179,10 +179,12 @@ export function generate(seed) {
     switches.push({ node: nd.id, trunk: trunk.id, normal: normal.id, reverse: legs.find(e => e !== normal).id });
   }
   // Sections: main edges were made row by row, west to east; a new section starts on a new row and at
-  // every switch, so a section is the stretch of one main between two sets of points.
-  const sw = new Set(switches.map(s => s.node));
+  // every crossover end, so a section is the stretch of one main between crossover pairs (ladder points
+  // don't split it). Traffic locking claims a whole one: no opposing train can be lined into the far end
+  // of a module while a wrong-main train is on its way through it to the next pair.
+  const xo = new Set(edges.filter(e => e.cls === 'crossover').flatMap(e => [e.a, e.b]));
   let sec = -1, prev = null;
-  for (const e of edges) if (e.cls === 'main') { if (e.a !== prev || sw.has(e.a)) sec++; e.section = sec; prev = e.b; }
+  for (const e of edges) if (e.cls === 'main') { if (e.a !== prev || xo.has(e.a)) sec++; e.section = sec; prev = e.b; }
 
   return {
     seed, cols, rows, nodes, edges, switches, signals, tracks, portals, mainRow: { 1: R2, '-1': T },

@@ -37,11 +37,11 @@ for (const seed of seeds) {
   for (const e of mains) { const y = L.nodes[e.a].y; assert.equal(y, L.nodes[e.b].y); assert.equal(e.main, y === T ? -1 : 1); assert.deepEqual(e.dirs, [1, -1]); assert.equal(typeof e.section, 'number'); }
   for (const e of L.edges) if (e.cls !== 'main') assert.equal(e.main, null), assert.equal(e.section, null);
   for (const e of cross) { assert.deepEqual(e.dirs, [1, -1]); assert.equal(Math.abs(L.nodes[e.a].x - L.nodes[e.b].x), 2); assert.deepEqual([L.nodes[e.a].y, L.nodes[e.b].y].sort(byNum), [T, T + 2]); assert.equal(e.speed, 30); }
-  // a section is a contiguous run on one row that splits exactly at switch nodes
-  const swNodes = new Set(L.switches.map(s => s.node));
+  // a section is a contiguous run on one row that splits exactly at crossover-end nodes
+  const xoNodes = new Set(cross.flatMap(e => [e.a, e.b]));
   for (const p of mains) for (const q of mains) if (p !== q && (p.b === q.a || p.a === q.b || p.a === q.a || p.b === q.b)) {
     const shared = [p.a, p.b].find(n => n === q.a || n === q.b);
-    assert.equal(p.section === q.section, !swNodes.has(shared), `${seed}: section split at node ${shared}`);
+    assert.equal(p.section === q.section, !xoNodes.has(shared), `${seed}: section split at node ${shared}`);
   }
   // one pair per gap and margin, A then B
   const gaps = [[0, L.modules[0].x0], ...L.modules.slice(1).map((m, i) => [L.modules[i].x1, m.x0]), [L.modules.at(-1).x1, L.cols - 1]];

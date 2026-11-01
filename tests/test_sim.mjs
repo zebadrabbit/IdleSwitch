@@ -226,13 +226,13 @@ assert.ok(roundIt && !roundIt.some(e => c1.edges.includes(e)) && roundIt.some(e 
 assert.equal(cancelRoute(sim, r.route.id), true);
 assert.ok(allClear(sim));
 
-// wrongMainCost keeps a westbound off Main 2 while Main 1 is clear. The section at the home signal occupied: a train
+// wrongMainCost keeps a westbound off Main 2 while Main 1 is clear. The home signal's first edge occupied: a train
 // stood PASS_WAIT there is passed on the other main (a crossover), one still moving is followed.
 {
   const S = createSim(L, 'pass'), G = S.layout, cost = { standingCost: 60, blockedCost: 10, wrongMainCost: 3 };
   assert.ok(!findPath(S, from, W, to, { wrongMainCost: 3 }).some(e => G.edges[e].main === E), 'Main 1 clear: stays on it');
-  const M = spawnTrain(S, { type: 'M', dir: W }), sec = G.edges[c1.edges[0]].section;
-  for (const e of S.sectionEdges.get(sec)) S.edgeState[e].occ.add(M.id);
+  const M = spawnTrain(S, { type: 'M', dir: W });
+  S.edgeState[c1.edges[0]].occ.add(M.id); // one edge: costs are per edge, and the section now runs the module's length
   M.lastMoveTime = S.time - PASS_WAIT;
   assert.ok(findPath(S, from, W, to, cost).some(e => G.edges[e].cls === 'crossover'), 'round a standing train');
   M.lastMoveTime = S.time;
@@ -293,6 +293,12 @@ assert.ok(allClear(sim));
   assert.equal(setRoute(S, sigB.id, cB.exitNode).reason, 'wrong main');
   const next = S.signalAt.get(`${headNode(S, t)}:${t.dir}`), cN = S.routesFrom.get(next).find(c => c.wrongMain);
   if (cN) assert.equal(setRoute(S, next, cN.exitNode, { trainId: t.id }).ok, true, 'the wrong-main train may continue'); }
+// an untaken human wrong-main route counts as a wrong-main train: a wrong-main route at another signal is refused
+{ const S = createSim(L, 'wmh'), G = S.layout;
+  const [sigA, sigB] = G.signals.filter(s => S.routesFrom.get(s.id).some(c => c.wrongMain));
+  const wm = sig => S.routesFrom.get(sig.id).find(c => c.wrongMain).exitNode;
+  assert.equal(setRoute(S, sigA.id, wm(sigA), { human: true }).ok, true);
+  assert.equal(setRoute(S, sigB.id, wm(sigB)).reason, 'wrong main'); }
 // signalLabel unique over 50 seeds
 for (let i = 0; i < 50; i++) { const S = createSim(generate(`lab${i}`), 'x'); const ls = S.layout.signals.map(s => signalLabel(S, s.id)); assert.equal(new Set(ls).size, ls.length, `lab${i}`); }
 
