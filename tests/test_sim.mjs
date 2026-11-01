@@ -5,7 +5,8 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
   trainBlocks, headNode,
-  DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent } from '../src/sim.js';
+  DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
+  WRONG_MAIN_COST, MOVING_COST, STANDING_COST } from '../src/sim.js';
 import { trainStatus } from '../src/panels.js';
 
 // ---- Task 3: interlocking core
@@ -1103,6 +1104,51 @@ for (const moving of [false, true]) {
   T.path = [...S.routesFrom.get(ps).find(c => !c.wrongMain).edges];
   assert.ok(T.path.every(e => G.edges[e].main !== W));
   assert.equal(trainStatus(T, S), 'waiting');
+}
+
+// over and back: an eastbound wrong-main train stands at Main 1's end of a module, an eastbound stood PASS_WAIT on Main 2
+// past the next pair. findPath dips over that pair and back round it, which no candidate is (none uses two crossovers);
+// the operator takes the candidate ending where the path's first leg does, straight on or home, this tick.
+{
+  const G = generate('s0'), S = createSim(G, 's0'), N = (x, y) => G.nodes.find(n => n.x === x && n.y === y).id;
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  const on = (x1, x2, y) => G.edges.find(e => e.cls === 'main' && [e.a, e.b].every(n => G.nodes[n].y === y)
+    && [e.a, e.b].map(n => G.nodes[n].x).sort((a, b) => a - b).join() === `${x1},${x2}`).id;
+  const [m, m1] = G.modules, T1 = G.mainRow[W], T2 = G.mainRow[E], e0 = on(m.x1, m.x1 + 1, T1);
+  const X = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), Y = spawnTrain(S, { type: 'M', dir: E, name: 'M 4' });
+  Object.assign(X, { path: [e0], headDist: G.edges[e0].len - FOUL, state: 'stopped' });
+  Object.assign(Y, { path: [on(m1.x0, m1.x1, T2), on(m1.x1, m1.x1 + 1, T2)], lastMoveTime: S.time - 2 * PASS_WAIT, state: 'stopped' });
+  Y.headDist = pathLength(S, Y) - FOUL;
+  for (const t of [X, Y]) t.path.forEach(e => S.edgeState[e].occ.add(t.id));
+  assert.ok(isWrongMain(S, X));
+  const sig = S.signalAt.get(`${N(m.x1 + 1, T1)}:${E}`), cands = S.routesFrom.get(sig);
+  const path = findPath(S, headNode(S, X), E, X.goal,
+    { trainId: X.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST });
+  assert.ok(!cands.some(c => c.edges.every((e, i) => path[i] === e)), 'findPath no longer dips over and back');
+  step(S);
+  const r = S.routes.get(X.routes[0]);
+  assert.ok(r && r.signal === sig, 'the wrong-main train got no route');
+  const straight = cands.find(c => c.edges.every(e => G.edges[e].cls === 'main')), home = cands.find(c => G.nodes[c.exitNode].y === T2);
+  assert.ok([straight, home].includes(r.cand), 'neither straight on nor home');
+}
+
+// a human cancels a route a train has adopted but not entered, while it holds routes beyond it: those drop off its path
+// before the operator runs, so the train is routed on from the cancelled route's signal, never from its old path end
+// (a route set for it there is off its path for good, and wedges the signal)
+{
+  const S = createSim(L, 'lebanon');
+  S.auto = true;
+  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  const C = spawnTrain(S, { type: 'C', dir: E, name: 'C 2' });
+  for (let i = 0; i < 4; i++) step(S);
+  const mine = () => [...S.routes.values()].filter(r => r.trainId === C.id && !r.entered);
+  const r = mine().sort((a, b) => a.id - b.id)[0];
+  assert.ok(r && C.routes.indexOf(r.id) < C.routes.length - 1, 'C holds no route beyond an un-entered one');
+  assert.equal(cancelRoute(S, r.id), true);
+  step(S);
+  assert.ok(mine().every(q => C.routes.includes(q.id)), 'a route set for C off its path');
+  assert.equal(S.routes.get(C.routes.at(-1)).signal, r.signal, 'not routed on from the cancelled route\'s signal');
 }
 }
 console.log('traffic ok');

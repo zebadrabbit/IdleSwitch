@@ -140,7 +140,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   // One wrong-main train at a time; the one at this signal (or the one the route is for) may go on or home. An untaken
   // human wrong-main route at another signal counts as one: some train will take it.
   const untaken = r => r.trainId === null && !r.entered && r.cand.wrongMain; // one at this signal returned 'already set'
-  if (cand.wrongMain && (wrongMainTrains(sim).some(t => t.id !== trainId && headNode(sim, t) !== sig.node)
+  if (cand.wrongMain && (wrongMainTrains(sim).some(t => t.id !== trainId && !(headNode(sim, t) === sig.node && t.dir === sig.dir))
     || [...sim.routes.values()].some(untaken))) return fail('wrong main');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
   const route = { id: sim.nextRouteId++, signal: signalId, cand, trainId, human, entered: false, setAt: sim.time };
@@ -526,9 +526,10 @@ function newEntry(sim, dir) {
 function canEnter(sim, q) {
   const st = sim.edgeState[forwardEdges(sim, entryPortalNode(sim, q.dir), q.dir)[0]];
   const r = st.route === null ? null : sim.routes.get(st.route);
-  // Rule: the portal edge must be unoccupied and unrouted, except for an un-entered human route (trainId null),
-  // which the entering train adopts; otherwise a route lined from the portal before any train came blocks it for good.
-  if (st.occ.size || (r && (r.entered || r.trainId !== null))) return false;
+  // Rule: the portal edge must be unoccupied and unrouted, except for an un-entered human route (trainId null) from a
+  // signal of its direction, which the entering train adopts; otherwise a route lined from the portal before any train
+  // came blocks it for good.
+  if (st.occ.size || (r && (r.entered || r.trainId !== null || sim.layout.signals[r.signal].dir !== q.dir))) return false;
   // A train still waiting at the portal for its first route occupies nothing: never stack another behind it.
   for (const t of sim.trains.values()) if (t.dir === q.dir && !t.path.length) return false;
   return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest));
@@ -658,8 +659,8 @@ function deadRoute(sim, r) {
 // STANDING_COST, above a detour round a module (~20-25: WRONG_MAIN_COST a wrong-main edge, two crossovers), so the
 // standing train is passed on the other main.
 // ponytail: on the four busy soak seeds STANDING_COST is flat from 25 to 1000 (a wrong-main train on the panel 0-5 % of
-// ticks, worst stand 13 min); below one module's detour (~23) passing stops. PASS_WAIT moves the share (30 s: up to
-// 8 %). If passing should be smarter, price a stand by how long the train ahead will stay.
+// ticks, worst stand 13 min); below ~20 (roughly one module's detour) passing mostly stops. PASS_WAIT moves the share
+// (30 s: up to 8 %). If passing should be smarter, price a stand by how long the train ahead will stay.
 export const WRONG_MAIN_COST = 3, MOVING_COST = 0, STANDING_COST = 60;
 function operator(sim) {
   const { edges, tracks } = sim.layout;
@@ -692,7 +693,14 @@ function operator(sim) {
     }
     const cands = sim.routesFrom.get(sig);
     if (t.dest === null && t.prio <= 2 && hold(sim, t, sig, cands)) continue;
-    const cand = cands.find(c => c.edges.every((e, i) => path[i] === e));
+    // The candidate the path starts with; when none is (the path dips over a pair and back), the one ending where the
+    // path's first leg does: at its first signal or exit.
+    let legEnd = node;
+    for (const e of path) {
+      legEnd = far(edges[e], legEnd);
+      if (sim.signalAt.has(`${legEnd}:${t.dir}`) || exitNodes(sim, t.dir).includes(legEnd)) break;
+    }
+    const cand = cands.find(c => c.edges.every((e, i) => path[i] === e)) ?? cands.find(c => c.exitNode === legEnd);
     const into = cand ? edges[cand.edges.at(-1)].track : null;
     // Rule: never into a track that isn't its destination (holds go through hold()); a way round through one = wait.
     // Wrong-main candidates are fine: the way round a train on the main is over the crossovers.
@@ -707,6 +715,8 @@ function operator(sim) {
 // One sim second.
 export function step(sim) {
   clearAspects(sim);
+  // Cancelled routes drop off paths before the operator reads where they end (moveTrains drops them too, for its callers).
+  for (const t of sim.trains.values()) dropCancelled(sim, t);
   if (sim.auto) operator(sim);
   spawner(sim);
   moveTrains(sim);
