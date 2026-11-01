@@ -54,12 +54,12 @@ export function createRenderer(canvas) {
 
   // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', 'stub:<edge>:<node>', '<signal>:<head>' lamps and
   // 'h<signal>:<head>' their halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'slow' label. First
-  // sight snaps to the target; an id not drawn in a frame is dropped.
+  // sight starts at `from` (default the target: snaps); an id not drawn in a frame is dropped.
   const fade = new Map(), seen = new Set();
   let dt = 0, lastNow = -Infinity, lastSlow = null;
-  function eased(id, to, tau) {
+  function eased(id, to, tau, from = to) {
     let s = fade.get(id);
-    if (!s) fade.set(id, (s = [...to]));
+    if (!s) fade.set(id, (s = [...from]));
     const k = ease(0, 1, dt, tau);
     for (let i = 0; i < s.length; i++) s[i] += (to[i] - s[i]) * k;
     seen.add(id);
@@ -155,10 +155,10 @@ export function createRenderer(canvas) {
   // track/label layer in an offscreen canvas if it ever shows in a profile.
   r.draw = (sim, ui = {}) => {
     const L = sim.layout, { nodes, edges } = L, z = r.camera.zoom, lw = lineW(), cellPx = CELL * z;
-    const now = ui.now ?? 0, n = nightOf(sim), dim = c => mix(c, '#000000', 0.15 * n); // night palette
-    const P = { bg: mix(COLORS.bg, '#070b17', n), track: mix(COLORS.track, '#6c7590', n), label: dim(COLORS.label), dim: dim(COLORS.dim) };
+    const now = ui.now ?? 0, night = nightOf(sim), dim = c => mix(c, '#000000', 0.15 * night); // night palette
+    const P = { bg: mix(COLORS.bg, '#070b17', night), track: mix(COLORS.track, '#6c7590', night), label: dim(COLORS.label), dim: dim(COLORS.dim) };
     dt = clamp(now - lastNow, 0, 100); lastNow = now; seen.clear();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; // a throw last frame can't leak state
 
     // 1. Background (no grid).
     ctx.fillStyle = P.bg; ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
@@ -197,9 +197,9 @@ export function createRenderer(canvas) {
         const x0 = X(lo + (t.dir < 0 ? 2 : 0.5)), x1 = X(hi - (t.dir > 0 ? 2 : 0.5));
         const cy = y + t.dir * Math.min(cellPx / 2, lw / 2 + 3 + bh / 2);
         ctx.fillStyle = COLORS.platform; ctx.beginPath(); ctx.roundRect(x0, cy - bh / 2, x1 - x0, bh, 3); ctx.fill();
-        if (n) { // platform lights: a warm band beyond the box, fading away from it
+        if (night) { // platform lights: a warm band beyond the box, fading away from it
           const b0 = cy + t.dir * bh / 2, b1 = b0 + t.dir * cellPx / 2, gr = ctx.createLinearGradient(0, b0, 0, b1);
-          gr.addColorStop(0, rgba(rgb('#ffd9a0'), 0.35 * n)); gr.addColorStop(1, rgba(rgb('#ffd9a0'), 0));
+          gr.addColorStop(0, rgba(rgb('#ffd9a0'), 0.35 * night)); gr.addColorStop(1, rgba(rgb('#ffd9a0'), 0));
           ctx.globalCompositeOperation = 'lighter';
           ctx.fillStyle = gr; ctx.fillRect(x0, Math.min(b0, b1), x1 - x0, cellPx / 2);
           ctx.globalCompositeOperation = 'source-over';
@@ -223,13 +223,14 @@ export function createRenderer(canvas) {
       ctx.globalAlpha = 1;
     }
 
-    // Headlights: a glow 2.5 cells long ahead of each moving loco's front, along travel; fades with its motion.
+    // Headlights: a glow 2.5 cells long ahead of each moving loco's front, along travel; fades with its motion, and in
+    // from nothing when a train enters (as does its tail marker).
     const lagOf = t => (1 - (ui.alpha ?? 1)) * (t.adv ?? 0); // interpolate between sim steps
     const drawn = [...sim.trains.values()].map(t => [t, trainBlocks(sim, t, lagOf(t))]).filter(([, bl]) => bl.length);
     for (const [t, [h]] of drawn) {
-      const a = eased(`hl:${t.id}`, [t.speed > 0 ? lerp(0.22, 0.55, n) : 0], 200)[0];
+      const a = eased(`hl:${t.id}`, [t.speed > 0 ? lerp(0.22, 0.55, night) : 0], 200, [0])[0];
       const fx = X(h.x1), fy = Y(h.y1), ang = Math.atan2(fy - Y(h.y2), fx - X(h.x2)), d = 1.25 * cellPx;
-      if (a > 0.005) glow(fx + d * Math.cos(ang), fy + d * Math.sin(ang), d, 0.6 * cellPx, ang, rgb('#fff1c4'), a);
+      if (a > 0.005 && d > 0) glow(fx + d * Math.cos(ang), fy + d * Math.sin(ang), d, 0.6 * cellPx, ang, rgb('#fff1c4'), a);
     }
 
     // 4. Portals: a chevron pointing in just off the end of the main; the place name beyond the main on the
@@ -269,7 +270,7 @@ export function createRenderer(canvas) {
         const code = i ? lp.bottom : lp.top, lit = code[0] !== 'F' || ui.blink, hex = COLORS.lamp[code.at(-1)];
         return [faded(`${sig.id}:${i}`, lit ? hex : LAMP_OFF, 60), eased(`h${sig.id}:${i}`, rgb(lit ? hex : '#000000'), 60)];
       });
-      g.heads.forEach(([hx, hy], i) => glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, n)));
+      g.heads.forEach(([hx, hy], i) => glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, night)));
       g.heads.forEach(([hx, hy], i) => disc(hx, hy, g.rad, ls[i][0], P.bg));
       chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, P.label); // 4 px wide, pointing in dir
       const [cx, cy] = g.centre, rr = g.extent + 4;
@@ -298,7 +299,7 @@ export function createRenderer(canvas) {
         line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
         ctx.globalAlpha = 1;
       }
-      ctx.globalAlpha = eased(`eot:${t.id}`, [ui.blink ? 1 : 0], 60)[0];
+      ctx.globalAlpha = eased(`eot:${t.id}`, [ui.blink ? 1 : 0], 60, [0])[0];
       disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
       ctx.globalAlpha = 1;
       tags.push({ t, col, sel, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
