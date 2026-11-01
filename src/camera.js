@@ -3,7 +3,7 @@
 // eased, a slow drift while a shot holds, a crossfaded caption. Pure: all time comes in as now (ms), randomness from
 // the rng handed in. Camera convention as render.js: {x, y} the world-px point at the canvas's top-left, zoom screen
 // px per world px.
-import { pointAt, exitNodes, signalLabel, routeFrom, MPH } from './sim.js';
+import { pointAt, exitNodes, signalLabel, MPH } from './sim.js';
 import { CELL } from './render.js';
 import { pick } from './rng.js';
 
@@ -16,6 +16,7 @@ export const smoothstep = x => (x = clamp(x, 0, 1)) * x * (3 - 2 * x);
 // Smoothstep over MOVE_MS: the world point under pivot (screen px) moves linearly and zoom geometrically, so a move
 // pivoting on the box centre glides that centre straight; done (and exactly to) from MOVE_MS on.
 export function tween(from, to, startMs, pivot = { x: 0, y: 0 }) {
+  from = { ...from }; to = { ...to }; pivot = { ...pivot }; // copies: callers mutate their camera in place
   const under = c => ({ x: c.x + pivot.x / c.zoom, y: c.y + pivot.y / c.zoom }), a = under(from), b = under(to);
   return {
     at(nowMs) {
@@ -38,16 +39,16 @@ export const followCandidates = (sim, lag) => [...sim.trains.values()].filter(t 
   return h && Math.abs(sim.layout.nodes[exitNodes(sim, t.dir)[0]].x - h.x) >= 6;
 });
 
-// High signals on a main with a route set from them, or a train of their direction approaching within 12 cells.
+// High signals on a main with a moving train of their direction approaching on their row within 12 cells (a standing
+// train or a route alone is dead air).
 export function signalCandidates(sim) {
-  const { signals, nodes, mainRow } = sim.layout;
+  const { signals, nodes, mainRow } = sim.layout, trains = [...sim.trains.values()];
   return signals.filter(s => {
     const n = nodes[s.node];
-    return s.kind === 'high' && (n.y === mainRow[1] || n.y === mainRow[-1]) && (routeFrom(sim, s.id) ||
-      [...sim.trains.values()].some(t => {
-        const h = t.dir === s.dir && headAt(sim, t);
-        return h && (n.x - h.x) * s.dir > 0 && Math.abs(n.x - h.x) <= 12;
-      }));
+    return s.kind === 'high' && (n.y === mainRow[1] || n.y === mainRow[-1]) && trains.some(t => {
+      const h = t.dir === s.dir && t.speed > 0 && headAt(sim, t);
+      return h && h.y === n.y && (n.x - h.x) * s.dir > 0 && Math.abs(n.x - h.x) <= 12;
+    });
   }).map(s => s.id);
 }
 
@@ -130,13 +131,13 @@ export function createIdleCamera({ rng }) {
         return c && { x: null, y: null, zoom: null, caption: c };
       }
       if (!shot || over(sim, now, lag)) {
-        shot = { ...next(sim, now, lag), since: now, from: last ?? camera ?? fit };
+        shot = { ...next(sim, now, lag), since: now, from: { ...(last ?? camera ?? fit) } };
         chase = null;
       }
       // Every target is chased (tau CHASE_MS); a still one is simply sat on. The opening tween lands on the chase.
       const to = target(sim, fit, box, lag), k = 1 - Math.exp(-dt / CHASE_MS);
       chase = chase ? { x: chase.x + (to.x - chase.x) * k, y: chase.y + (to.y - chase.y) * k,
-        zoom: chase.zoom + (to.zoom - chase.zoom) * k } : to;
+        zoom: chase.zoom + (to.zoom - chase.zoom) * k } : { ...to };
       const pivot = { x: box.x + box.w / 2, y: box.y + box.h / 2 }; // moves glide the box centre straight
       const { x, y, zoom } = tween(shot.from, chase, shot.since, pivot).at(now);
       last = drift({ x, y, zoom }, box, (now - shot.since) / 1000, shot.kind === 'overview' ? 1 / 3 : 1);

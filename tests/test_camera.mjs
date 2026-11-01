@@ -1,7 +1,7 @@
 // node tests/test_camera.mjs — the idle camera (src/camera.js): eased tweens, centring, shots, drift, caption fades.
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
-import { createSim, step, pointAt } from '../src/sim.js';
+import { createSim, step, pointAt, despawnTrain, spawnTrain, setRoute, moveTrains, entryPortalNode } from '../src/sim.js';
 import { makeRng } from '../src/rng.js';
 import { CELL } from '../src/render.js';
 import { smoothstep, tween, centreOn, createIdleCamera, followCandidates, signalCandidates, MOVE_MS, CAPTION_MS,
@@ -20,6 +20,10 @@ const pv = { x: 500, y: 250 }, under = c => [c.x + pv.x / c.zoom, c.y + pv.y / c
 const mid2 = tween({ x: 0, y: 0, zoom: 1 }, { x: 100, y: 50, zoom: 4 }, 1000, pv).at(1500);
 const [u0, u1, uh] = [{ x: 0, y: 0, zoom: 1 }, { x: 100, y: 50, zoom: 4 }, mid2].map(under);
 assert.ok(mid2.zoom === 2 && [0, 1].every(i => Math.abs(uh[i] - (u0[i] + u1[i]) / 2) < 1e-9), 'pivot point moves linearly');
+// Tweens copy their endpoints: the caller mutating its camera in place mid-move changes nothing.
+const fm = { x: 0, y: 0, zoom: 1 }, tm = { x: 100, y: 50, zoom: 4 }, twm = tween(fm, tm, 1000, pv), atm = twm.at(1500);
+Object.assign(fm, { x: 7, y: 7, zoom: 3 }), Object.assign(tm, { x: 9, y: 9, zoom: 2 });
+assert.deepEqual([twm.at(1500), twm.at(2000)], [atm, { x: 100, y: 50, zoom: 4, done: true }]);
 const box = { x: 0, y: 0, w: 1000, h: 500 };
 assert.deepEqual(centreOn({ x: 240, y: 120 }, box, 2), { x: 240 - 250, y: 120 - 125, zoom: 2 });
 
@@ -33,6 +37,21 @@ for (const id of signalCandidates(S)) {
   const s = S.layout.signals[id];
   assert.ok(s.kind === 'high' && Object.values(S.layout.mainRow).includes(S.layout.nodes[s.node].y), 'signal shots: high signals on a main');
 }
+// Signal candidates need a moving train of their direction approaching on their row: a lone train standing at the
+// portal with a route set ahead gives none, running toward the route's exit signal gives it (not the signal level
+// with it on the other main), stopped short of it none.
+const S2 = createSim(generate('lebanon'), 'lebanon'), sig0 = S2.signalAt.get(`${entryPortalNode(S2, 1)}:1`);
+const cand = S2.routesFrom.get(sig0).find(c => c.exitSignal != null && S2.layout.nodes[c.exitNode].y === S2.layout.mainRow[1]);
+const other = S2.routesFrom.get(sig0).find(c => c !== cand && c.exitSignal != null), lone = spawnTrain(S2, { type: 'P', dir: 1 });
+assert.ok(S2.layout.nodes[other.exitNode].y === S2.layout.mainRow[-1]);
+assert.ok(setRoute(S2, sig0, cand.exitNode, { trainId: lone.id }).ok);
+assert.deepEqual(signalCandidates(S2), [], 'standing train and a set route: dead air');
+for (let i = 0; i < 20; i++) moveTrains(S2);
+const moving = signalCandidates(S2);
+assert.ok(lone.speed > 0 && moving.includes(cand.exitSignal) && !moving.includes(other.exitSignal), 'moving on the row toward it');
+for (let i = 0; i < 200 && lone.speed > 0; i++) moveTrains(S2);
+assert.ok(lone.speed === 0 && pointAt(S2, lone, lone.headDist).x < S2.layout.nodes[cand.exitNode].x, 'stopped short of it');
+assert.deepEqual(signalCandidates(S2), [], 'a stopped train is dead air');
 cam.reset();
 let shot = null;
 for (let t = 0; t < 60000 && !shot; t += 100) { const u = cam.update(S, t, { fit, box, lag, active: true }); if (u?.caption?.text.startsWith('following')) shot = { t, u }; }
@@ -46,7 +65,7 @@ const late = cam.update(S, shot.t + MOVE_MS + 5000, { fit, box, lag, active: tru
 const head = pointAt(S, tr, tr.headDist), want = centreOn({ x: (head.x + 3 * tr.dir) * CELL, y: head.y * CELL }, box, late.zoom);
 assert.ok(Math.abs(late.x - want.x) < 0.7 * CELL && Math.abs(late.y - want.y) < 0.4 * CELL, 'follows the head led by 3 cells (drift allowed)');
 assert.ok(Math.abs(late.zoom - 1.5) <= 0.04 * 1.5, 'follow zoom clamp(3 x fit, fit, 3) (drift allowed)');
-S.trains.delete(tr.id);
+despawnTrain(S, tr);
 cam.update(S, shot.t + MOVE_MS + 5100, { fit, box, lag, active: true }); // the frame the train vanished: shot ends, caption starts fading
 // Caption fade-out: 200 ms after the change the old text is half down.
 const fadeOut = cam.update(S, shot.t + MOVE_MS + 5300, { fit, box, lag, active: true }).caption;
@@ -77,12 +96,24 @@ assert.ok(changes >= 4, `the sweep covers several shots (${changes} caption chan
 
 // Input (reset) hands the camera back at once but fades the caption: caption only (no camera fields), then null.
 let t0 = 300000;
-for (let u; !(u?.caption?.alpha === 1) && t0 < 400000; t0 += 16) u = c2.update(S, t0, { fit, box, lag, active: true });
-t0 -= 16;
+while (c2.update(S, t0, { fit, box, lag, active: true }).caption?.alpha !== 1 && t0 < 400000) t0 += 16;
+assert.ok(t0 < 400000, 'a caption reaches full alpha before the reset check');
 c2.reset();
 const fading = c2.update(S, t0 + 200, { fit, box, lag, active: false });
 assert.ok(fading && fading.x == null && fading.y == null && fading.zoom == null && Math.abs(fading.caption.alpha - 0.5) <= 0.1,
   'after reset the caption fades out alone');
 assert.equal(c2.update(S, t0 + 450, { fit, box, lag, active: false }), null);
+
+// update copies the camera it starts from: Task 6 hands in r.camera and then assigns the result into it each frame.
+const run = mutate => {
+  const c = createIdleCamera({ rng: makeRng('copy') }), rc = { x: 300, y: 100, zoom: 2 }, out = [];
+  for (let t = 0; t <= 1200; t += 100) {
+    const u = c.update(S, t, { fit, box, lag, active: true, camera: rc });
+    out.push([u.x, u.y, u.zoom]);
+    if (mutate) Object.assign(rc, { x: u.x, y: u.y, zoom: u.zoom });
+  }
+  return out;
+};
+assert.deepEqual(run(true), run(false), 'the ease is unaffected by the caller mutating its camera');
 
 console.log('camera ok');
