@@ -383,7 +383,8 @@ implementation ledger and summarised here so this document stays true.
 - **Yard tracks must be clear** to receive a train; the optional
   Restricting entry onto an occupied yard track was dropped.
 - **No crossovers between the mains** (dead track under directional
-  running); modules' tracks sit between the mains, split by side.
+  running); modules' tracks sit between the mains, split by side
+  (superseded 2026-11-01, see below).
 - **Density is a fixed mean spawn interval** per setting, not derived
   from terminal capacity.
 - 2026-11-01: directional mains replaced by bidirectional mains with crossover pairs; see

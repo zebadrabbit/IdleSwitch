@@ -87,6 +87,8 @@ after the existing ones, in this order:
    time, terminal-wide. With the home main always flowing in its own direction and both rows open at the
    far end, that one train can always get home or out, so the line cannot wedge. The train standing at
    or routed to the signal (its path ends at the signal's node) is exempt so it can continue or return.
+   An un-entered wrong-main route from another signal with no train (an untaken human route) also counts
+   as wrong main in use: some train will take it.
 
 Both apply to human routes. `routesFrom` candidates gain `wrongMain`.
 
@@ -100,10 +102,15 @@ Both apply to human routes. `routesFrom` candidates gain `wrongMain`.
   soak seeds a wrong-main train is on the panel in at most 30 % of ticks and no train stands 30 min).
   The detour round one module costs roughly 20-30, so a train diverts round a standing train, never
   round a moving one. Candidates that cross over and straight back inside one pair are dropped: they
-  end where the straight route ends and are never the better route.
+  end where the straight route ends and are never a route the operator needs. The straight and the
+  go-home candidates reach the same exits, and the operator matches on the first leg's exit (a path
+  dipping over a pair and back round a standing train takes the candidate ending where its first leg
+  does).
 - Goal `{ exit: true }` is reached at either far-end node of the train's direction (`exitNodes(sim,
   dir)`); `{ node }` and `{ track }` stay for tests and holds.
 - The "never into a track that isn't its destination" rule stands; wrong-main candidates are allowed.
+- A human wrong-main route (or one from a signal on the other main) with no train of its direction at
+  its signal is cleared after the 3-minute grace like other dead routes.
 - The `AUTO:` log line and the train's `route` event carry `(wrong main)` / `wrongMain: true` when the
   candidate is. Board status appends ` · wrong main` while the train is.
 - Scheduled time (`newEntry`) uses the home main's length (`edge.main === dir`), not every main edge.
