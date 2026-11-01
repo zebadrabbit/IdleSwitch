@@ -3,6 +3,7 @@
 import { generate } from './gen.js';
 import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel, nightOf } from './sim.js';
 import { createRenderer, mix } from './render.js';
+import { createIdleCamera, tween, centreOn, IDLE_CAM_MS } from './camera.js';
 import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
   cleanSettings, cleanLayout, clampDock } from './ui-util.js';
 import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
@@ -14,7 +15,7 @@ const FLASH_MS = 1500;       // NX refusal: the entrance signal flashes red 3x (
 const LAYOUT_KEY = 'idleswitch.layout', SETTINGS_KEY = 'idleswitch.settings';
 const $ = sel => document.querySelector(sel);
 const store = (() => { try { return localStorage; } catch { return null; } })(); // access itself can throw
-const newSeed = () => randomSeed(Math.random); // the app's one use of Math.random
+const newSeed = () => randomSeed(Math.random); // one of the app's two uses of Math.random (the idle camera's rng the other)
 
 // ---- Boot
 const params = new URLSearchParams(location.search);
@@ -36,20 +37,62 @@ for (let i = 0; i < ff; i++) step(sim);
 const canvas = $('#map'), r = createRenderer(canvas);
 const state = {
   speed: settings.speed, paused: false, armedSignal: null, selected: null, lastInput: performance.now(),
-  hover: null, refused: null, fitted: true, fitZoom: 1, pressInPanel: false,
+  hover: null, refused: null, fitted: true, fitZoom: 1, pressInPanel: false, idleCam: false, camTween: null,
 };
 const panelEl = id => $(`#panel-${id}`), bodies = Object.fromEntries(PANELS.map(id => [id, $(`#panel-${id} .panel-body`)]));
 const docks = { left: $('#dock-left'), right: $('#dock-right'), bottom: $('#dock-bottom') };
-const touch = () => { state.lastInput = performance.now(); };
 const saveSettings = () => saveJSON(store, SETTINGS_KEY, settings);
 
-// ---- Camera: fit the terminal into the area the docked panels leave free (the whole window in bare mode).
-function fit() {
+// ---- Camera: fit the terminal into the area the docked panels leave free (the whole window in bare mode or when
+// that is under 240 x 160). F, 0 and the ⌖ button glide there; boot, resize and layout refits are instant.
+const idle = createIdleCamera({ rng: Math.random });
+function centreBox() {
   const b = $('#dock-center').getBoundingClientRect();
-  const box = b.width >= 240 && b.height >= 160 ? { x: b.left, y: b.top, w: b.width, h: b.height } : undefined; // too small: whole window
-  r.fit(layout, box);
+  return b.width >= 240 && b.height >= 160 ? { x: b.left, y: b.top, w: b.width, h: b.height } : { x: 0, y: 0, w: innerWidth, h: innerHeight };
+}
+const fitCamera = () => r.fitted(layout, centreBox());
+function fit(ease = false) {
+  if (ease && !state.fitted) return glide(fitCamera, true);
+  state.camTween = null;
+  r.fit(layout, centreBox());
   state.fitted = true;
   state.fitZoom = r.camera.zoom;
+}
+// Glide from the camera as it is to to() over MOVE_MS (camera.js's tween, pivoting on the centre box's centre). to is
+// read every frame, so the way home lands on the fit of the docks as they are by then; home: refit when it lands.
+function glide(to, home) {
+  state.camTween = { from: { ...r.camera }, start: performance.now(), to, home };
+  state.fitted = false;
+}
+const zoomLimit = z => Math.max(Math.min(0.4, state.fitZoom), Math.min(4, z)); // the wheel's and the buttons'
+function zoomBy(f) { // about the centre box's centre, from where a glide in progress is going
+  const b = centreBox(), c = state.camTween?.to() ?? r.camera, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  const to = centreOn({ x: c.x + cx / c.zoom, y: c.y + cy / c.zoom }, b, zoomLimit(c.zoom * f));
+  glide(() => to, false);
+}
+// Any input: note the time and take the camera back from the idle camera, gliding home to the fit.
+function touch() {
+  state.lastInput = performance.now();
+  if (!state.idleCam) return;
+  idle.reset();
+  state.idleCam = false;
+  glide(fitCamera, true);
+}
+// Each frame before drawing: the idle camera when it may run (setting on, not paused, IDLE_CAM_MS without input), else
+// the glide in progress. Returns the caption to draw, which fades out on its own after input.
+function steer(now, box) {
+  const active = settings.idleCamera && !state.paused && now - state.lastInput > IDLE_CAM_MS;
+  const u = idle.update(sim, now, { fit: r.fitted(layout, box), box, lag: t => (1 - acc) * (t.adv ?? 0), active, camera: r.camera });
+  if (u?.x != null) {
+    Object.assign(r.camera, { x: u.x, y: u.y, zoom: u.zoom });
+    state.idleCam = true;
+    state.fitted = false; // so layout and resize refits leave it alone
+  } else if (state.camTween) {
+    const g = state.camTween, p = tween(g.from, g.to(), g.start, { x: box.x + box.w / 2, y: box.y + box.h / 2 }).at(now);
+    Object.assign(r.camera, { x: p.x, y: p.y, zoom: p.zoom });
+    if (p.done) { state.camTween = null; if (g.home) fit(); }
+  }
+  return u?.caption ?? null;
 }
 
 // ---- HUD
@@ -112,13 +155,33 @@ $('#btn-pause').addEventListener('click', togglePause);
 $('#btn-speed').addEventListener('click', () => setSpeed(SPEEDS[(SPEEDS.indexOf(state.speed) + 1) % SPEEDS.length]));
 $('#hud-auto').addEventListener('click', toggleAuto);
 $('#btn-fullscreen').addEventListener('click', toggleFullscreen);
+$('#btn-zoom-out').addEventListener('click', () => zoomBy(1 / 1.25));
+$('#btn-zoom-in').addEventListener('click', () => zoomBy(1.25));
+$('#btn-fit').addEventListener('click', () => fit(true));
 $('#hud-density').innerHTML = densityOptions(settings.density);
 $('#hud-density').addEventListener('change', e => { setDensity(e.target.value); e.target.blur(); }); // keys work again at once
-const seedBtn = $('#hud-seed');
+// The HUD seed opens a popover under it: load a seed, roll a new one, or copy this one. Escape or a press elsewhere closes.
+const seedBtn = $('#hud-seed'), pop = $('#seed-pop'), popSeed = pop.querySelector('input');
 seedBtn.textContent = seed;
-seedBtn.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(seed); seedBtn.textContent = 'copied'; } catch { seedBtn.textContent = 'copy failed'; }
-  setTimeout(() => { seedBtn.textContent = seed; }, 1200);
+function seedPop(show) {
+  pop.classList.toggle('hidden', !show);
+  if (!show) return;
+  pop.style.left = `${seedBtn.getBoundingClientRect().left}px`;
+  popSeed.value = seed;
+  popSeed.focus();
+  popSeed.select();
+}
+seedBtn.addEventListener('click', () => seedPop(pop.classList.contains('hidden')));
+addEventListener('pointerdown', e => { if (!e.target.closest?.('#seed-pop, #hud-seed')) seedPop(false); });
+popSeed.addEventListener('keydown', e => { if (e.key === 'Enter') loadSeed(popSeed.value); });
+pop.addEventListener('click', async e => {
+  const b = e.target.closest('button'), act = b?.dataset.act;
+  if (act === 'load') loadSeed(popSeed.value);
+  else if (act === 'new') loadSeed(newSeed());
+  else if (act === 'copy') {
+    try { await navigator.clipboard.writeText(seed); b.textContent = 'copied'; } catch { b.textContent = 'copy failed'; }
+    setTimeout(() => { b.textContent = 'Copy'; }, 1200);
+  }
 });
 // A mouse click shouldn't leave focus on a button, or Space would press it again instead of pausing.
 document.addEventListener('click', e => { if (e.detail) e.target.closest?.('button')?.blur(); });
@@ -354,15 +417,18 @@ let press = null;
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   canvas.setPointerCapture(e.pointerId);
-  press = { x: e.clientX, y: e.clientY, cx: r.camera.x, cy: r.camera.y, panning: false };
+  press = { x: e.clientX, y: e.clientY, panning: false };
 });
 canvas.addEventListener('pointermove', e => {
   if (press) {
-    if (!press.panning && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4) press.panning = true;
+    // The pan starts from the camera as it is then: a glide may have moved it since the press.
+    if (!press.panning && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4)
+      Object.assign(press, { panning: true, x: e.clientX, y: e.clientY, cx: r.camera.x, cy: r.camera.y });
     if (press.panning) {
       r.camera.x = press.cx - (e.clientX - press.x) / r.camera.zoom;
       r.camera.y = press.cy - (e.clientY - press.y) / r.camera.zoom;
       state.fitted = false;
+      state.camTween = null; // a drag takes over from any glide where it is
       canvas.style.cursor = 'grabbing';
     }
     return;
@@ -382,22 +448,25 @@ canvas.addEventListener('pointerleave', () => { state.hover = null; });
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const c = r.camera, dy = e.deltaY * (e.deltaMode === 1 ? 33 : 1); // Firefox scrolls in lines
-  const z = Math.max(Math.min(0.4, state.fitZoom), Math.min(4, c.zoom * Math.exp(-dy * 0.0015)));
+  const z = zoomLimit(c.zoom * Math.exp(-dy * 0.0015));
   const wx = c.x + e.clientX / c.zoom, wy = c.y + e.clientY / c.zoom;
   c.zoom = z;
   c.x = wx - e.clientX / z;
   c.y = wy - e.clientY / z;
   state.fitted = false;
+  state.camTween = null;
 }, { passive: false });
 
 // ---- Keys (ignored while typing in a field; a focused button keeps Space and Enter).
 addEventListener('keydown', e => {
   touch();
+  if (e.key === 'Escape') seedPop(false);
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, select, textarea')) return;
   if (e.target.closest?.('button') && (e.key === ' ' || e.key === 'Enter')) return;
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   const keys = {
-    ' ': togglePause, '+': () => stepSpeed(1), '=': () => stepSpeed(1), '-': () => stepSpeed(-1), a: toggleAuto, f: fit,
+    ' ': togglePause, '+': () => stepSpeed(1), '=': () => stepSpeed(1), '-': () => stepSpeed(-1), a: toggleAuto,
+    f: () => fit(true), 0: () => fit(true),
     h: () => { document.body.classList.toggle('bare'); if (state.fitted) fit(); refreshPanels(); },
     Escape: () => { clearSelection(); refreshPanels(); }, '?': () => togglePanel('legend'), n: () => loadSeed(newSeed()),
   };
@@ -406,7 +475,8 @@ addEventListener('keydown', e => {
   else return;
   e.preventDefault();
 });
-for (const ev of ['pointerdown', 'pointermove', 'wheel']) addEventListener(ev, touch, { passive: true });
+// Capture: touch hands the camera back before a canvas drag or wheel takes it.
+for (const ev of ['pointerdown', 'pointermove', 'wheel']) addEventListener(ev, touch, { passive: true, capture: true });
 
 addEventListener('resize', () => {
   r.resize();
@@ -416,7 +486,7 @@ addEventListener('resize', () => {
 });
 
 // ---- Frame loop
-function uiFor(now) {
+function uiFor(now, caption, box) {
   const s = state.selected, f = state.refused && now < state.refused.until ? state.refused : null;
   const hide = id => (f && f.signal === id ? null : id); // the refusal flash replaces the rings on its signal
   return {
@@ -428,7 +498,7 @@ function uiFor(now) {
     hoverSignal: state.hover,
     blink: !settings.flash || Math.floor(now / 500) % 2 === 0,
     alpha: acc, // fraction of the next sim step already elapsed; the renderer interpolates train positions with it
-    now,
+    now, caption, box,
   };
 }
 
@@ -455,7 +525,10 @@ function frame(now) {
     }
     if (state.selected?.kind === 'train' && !sim.trains.has(state.selected.id)) state.selected = state.armedSignal = null; // it left
   });
-  guarded(() => r.draw(sim, uiFor(now)));
+  const box = centreBox();
+  let caption = null;
+  guarded(() => { caption = steer(now, box); });
+  guarded(() => r.draw(sim, uiFor(now, caption, box)));
   guarded(() => ambient(nightOf(sim)));
   if (now - lastPanels >= PANEL_MS) { lastPanels = now; guarded(refreshPanels); }
   requestAnimationFrame(frame);

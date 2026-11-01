@@ -142,14 +142,13 @@ export function createRenderer(canvas) {
 
   // Fits columns 0..cols-1 and rows -1..rows (the module names above the top tracks, the portal labels
   // beyond both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes
-  // the area its docked panels leave free).
-  r.fit = (layout, box = { x: 0, y: 0, w: innerWidth, h: innerHeight }) => {
+  // the area its docked panels leave free). fitted computes that camera, fit applies it.
+  r.fitted = (layout, box = { x: 0, y: 0, w: innerWidth, h: innerHeight }) => {
     const { w, h } = box, bw = (layout.cols - 1) * CELL, bh = (layout.rows + 1) * CELL;
     const zoom = Math.min((w - 2 * MARGIN) / bw, (h - 2 * MARGIN) / bh);
-    r.camera.zoom = zoom;
-    r.camera.x = bw / 2 - (box.x + w / 2) / zoom;
-    r.camera.y = (layout.rows - 1) * CELL / 2 - (box.y + h / 2) / zoom;
+    return { x: bw / 2 - (box.x + w / 2) / zoom, y: (layout.rows - 1) * CELL / 2 - (box.y + h / 2) / zoom, zoom };
   };
+  r.fit = (layout, box) => Object.assign(r.camera, r.fitted(layout, box));
 
   // ponytail: redraws everything every frame (a few hundred paths on the largest seed). Cache the static
   // track/label layer in an offscreen canvas if it ever shows in a profile.

@@ -17,7 +17,7 @@
   <button id="btn-speed" title="sim speed (+ / −)">1×</button>
   <button id="hud-auto" title="AUTO / MANUAL (A)">AUTO</button>
   <span id="hud-operator" class="dim"></span>
-  <button id="hud-seed" title="seed: click to copy"></button>
+  <button id="hud-seed" title="seed: load, new or copy"></button>
   <select id="hud-density" title="traffic density"></select>
   <span class="spacer"></span>
   <button data-panel="board" title="train board (1)">Board</button>
@@ -26,6 +26,7 @@
   <button data-panel="legend" title="legend and keys (4, ?)">Legend</button>
   <button data-panel="settings" title="settings (5)">Settings</button>
   <button id="btn-fullscreen" title="fullscreen">⛶</button>
+  <button id="btn-zoom-out" title="zoom out">−</button><button id="btn-zoom-in" title="zoom in">+</button><button id="btn-fit" title="reset view (F, 0)">⌖</button>
 </header>
 <div id="docks">
   <div id="dock-left"><div class="dock-handle" data-dock="left"></div></div>
@@ -38,6 +39,7 @@
 <section class="panel" id="panel-inspector"><div class="panel-title">Inspector <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
 <section class="panel" id="panel-legend"><div class="panel-title">Legend <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
 <section class="panel" id="panel-settings"><div class="panel-title">Settings <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
+<div id="seed-pop" class="panel hidden"><div class="panel-body"><input name="seed" spellcheck="false" autocomplete="off"> <button data-act="load">Load</button> <button data-act="new">New seed</button> <button data-act="copy">Copy</button></div></div>
 <script type="module" src="src/ui.js"></script>
 </body>
 </html>

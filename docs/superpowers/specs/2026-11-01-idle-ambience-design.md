@@ -229,11 +229,13 @@ the view (`F` fits, undocumented on the HUD).
   panel): a text input prefilled with the current seed, `Load`, `New seed`, and a `Copy` button that does
   what the click did before (`copied` / `copy failed` feedback on the button for 1.2 s). Enter loads,
   Escape or a click elsewhere closes. The Settings seed row stays.
-- **Zoom.** Three HUD buttons after the fullscreen button: `−`, `+` and `⌖` (title "reset view (F)").
+- **Zoom.** Three HUD buttons after the fullscreen button: `−`, `+` and `⌖` (title "reset view (F, 0)").
   `−`/`+` zoom by a factor of `1.25` about the centre of the dock-centre box, within the wheel's limits
   (`min(0.4, fitZoom)` to `4`), and set `state.fitted` false; `⌖` calls `fit()`. Keys: `0` also resets
   the view (added to the legend's key list). Zoom buttons tween over `MOVE_MS` like camera moves (the
-  same tween helper from `camera.js`), so a click glides rather than jumps.
+  same tween helper from `camera.js`), so a click glides rather than jumps. (Amended 2026-11-01: `F`, `0` and `⌖`
+  glide to the fit over `MOVE_MS` too when the view is not already fitted; boot, resize and layout refits stay
+  instant. The HUD wordmark hides at 1160 px and under so the three buttons fit at 1024.)
 
 ## Deferred to its own spec: north/south running
 

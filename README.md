@@ -9,18 +9,24 @@ Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itsel
 | Space | Pause / resume |
 | + / - | Faster / slower sim speed |
 | A | Toggle AUTO / MANUAL |
-| F | Fit the terminal to the window |
+| F, 0 | Reset the view: fit the terminal to the window |
 | H | Hide all chrome for a bare panel |
 | Esc | Clear the selection |
 | 1 - 5 | Toggle panels: train board, log, inspector, legend, settings |
 | ? | Toggle the legend |
 | N | New random seed |
 
-Mouse: drag to pan, wheel to zoom about the cursor. To route a train, click an entrance signal, then an exit signal; the route sets if the interlocking allows, otherwise the entrance signal flashes red and the log says why. Click a train to pre-arm its next signal. Click a set, unoccupied route to cancel it. Click a free switch to throw it.
+Mouse: drag to pan, wheel to zoom about the cursor. The HUD's − and + zoom about the middle of the map and ⌖ resets the view; they glide rather than jump, as F and 0 do. Click the seed in the HUD to type one in and load it (Enter), roll a new one or copy this one; Escape or a click elsewhere closes it. Drag the inner edge of a dock to resize it (double-click the edge for the default size); dock sizes are saved with the layout, and a floating panel resizes from its corner until reload.
+
+Leave it alone for a minute and the idle camera takes over: it holds the overview, then follows a passing train or watches a mainline signal as trains run up to it, easing between shots with a caption in the corner. Any key, click or mouse move eases it home to the overview.
+
+To route a train, click an entrance signal, then an exit signal; the route sets if the interlocking allows, otherwise the entrance signal flashes red and the log says why. Click a train to pre-arm its next signal. Click a set, unoccupied route to cancel it. Click a free switch to throw it.
 
 ## What's on the panel
 
 Track: grey is idle, green is a route set by the operator, blue is a route you set, red is occupied. The unset leg of a switch draws dim.
+
+The panel runs a day of light every few minutes on the sim clock: dusk dims it a little, signal lamps and platforms glow, locos throw a headlight ahead, and the HUD's sun gives way to a moon. Passenger trains thin out at night and freight picks up. Every colour change fades rather than snaps, and the last car carries a blinking red marker. Now and then a stretch of main gets a slow order: 20 mph, drawn amber with a `SLOW 20` label and logged, lifted after a few minutes. The operator setting the routes is named in the HUD and hands the desk over at each shift change (06:00, 14:00, 22:00), which the log notes.
 
 Main 1 (upper) is home to westbound trains and Main 2 (lower) to eastbound, but both are signalled both ways, with a pair of crossovers in every gap between modules and at both ends. The operator may run a train on the other main round one that has stood a minute, returning it home at the first free pair; only one train runs on the wrong main at a time. A route into oncoming traffic is refused `opposing`, and one that would put a second train on the wrong main is refused `wrong main`; both show the usual red flash.
 
@@ -56,7 +62,11 @@ Higher priority wins when two trains want the same track.
 
 ## Seeds
 
-`?seed=anything` loads that seed; the HUD shows the current one (click to copy) and N rolls a new one. Same seed, same terminal, same day of traffic. Density (light / normal / busy) is a setting in the HUD. `?ff=N` fast-forwards N sim seconds at boot (debug; used for headless screenshots).
+`?seed=anything` loads that seed; the HUD shows the current one (click it to load another, roll a new one or copy it) and N rolls a new one. Same seed, same terminal, same day of traffic. Density (light / normal / busy) is a setting in the HUD. `?ff=N` fast-forwards N sim seconds at boot (debug; used for headless screenshots).
+
+## Settings
+
+The Settings panel (5) holds sim speed, density, return to AUTO after 2 idle minutes, and whether flashing aspects flash; an Ambient group with the day length (2, 4 or 8 minutes, or off for always day), slow orders, and the idle camera (off by default when the system asks for reduced motion); Reset layout; and the seed. Settings and the panel layout are saved in the browser.
 
 ## Design notes
 
@@ -76,11 +86,12 @@ src/rng.js                  seeded PRNG
 src/gen.js                  terminal generator
 src/sim.js                  interlocking, routes, signals, trains, traffic
 src/render.js               canvas renderer
+src/camera.js               idle camera
 src/ui.js                   app, HUD, panels, keybinds
 src/ui-util.js              pure UI helpers
 src/panels.js               panel bodies
 src/style.css
-tests/                      test_gen, test_sim, test_ui (plain node)
+tests/                      test_gen, test_sim, test_ui, test_camera (plain node)
 .github/workflows/test.yml  CI
 docs/superpowers/specs/     design spec
 docs/superpowers/plans/     implementation plan
@@ -110,7 +121,7 @@ Needs Node 22. No packages to install.
 
 ## Status
 
-v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable panels and saved layout all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), stub spurs with reversing moves, sound.
+v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable and resizable panels with a saved layout, the lighting cycle, slow orders and the idle camera all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), stub spurs with reversing moves, sound, and north/south running (spurs, wyes): its own spec.
 
 ## License
 

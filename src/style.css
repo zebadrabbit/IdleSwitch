@@ -26,7 +26,8 @@ canvas#map { position: fixed; inset: 0; display: block; touch-action: none; }
 #hud-seed::before { content: 'seed '; color: var(--dim); font-family: system-ui, sans-serif; }
 #hud button[data-panel] { color: var(--dim); }
 #hud button.on { color: var(--accent); }
-@media (max-width: 1000px) { #hud .wordmark, #hud-seed { display: none; } #hud { gap: 8px; } }
+@media (max-width: 1160px) { #hud .wordmark { display: none; } #hud { gap: 8px; } } /* room for the zoom buttons */
+@media (max-width: 1000px) { #hud-seed { display: none; } }
 button, select, input { font: inherit; }
 button { background: var(--panel); color: var(--accent); border: 1px solid var(--panel-border);
   border-radius: 4px; padding: 2px 8px; cursor: pointer; }
@@ -73,6 +74,9 @@ body > .panel { resize: both; overflow: hidden; min-width: 220px; min-height: 60
 #docks .panel.dock-left { width: var(--side-w-left); border-width: 0 1px 1px 0; }
 #docks .panel.dock-right { width: var(--side-w-right); border-width: 0 0 1px 1px; }
 #docks .panel.dock-bottom { height: var(--bottom-h); flex: 1 1 0; min-width: 0; width: auto; border-width: 1px 1px 0 0; }
+/* The seed popover, under the HUD seed (ui.js sets left); a panel, but not a floating one that resizes. */
+#seed-pop { width: auto; padding: 0; top: calc(var(--hud-h) + 4px); z-index: 11; resize: none; min-height: 0; white-space: nowrap; }
+#seed-pop input { width: 120px; font-family: var(--mono); }
 body.bare #hud, body.bare .panel { display: none; }
 body.bare #docks { inset: 0; }
 .panel.shake { animation: shake .35s; }
