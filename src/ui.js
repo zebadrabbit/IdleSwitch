@@ -38,7 +38,7 @@ const canvas = $('#map'), r = createRenderer(canvas);
 const state = {
   speed: settings.speed, paused: false, armedSignal: null, selected: null, lastInput: performance.now(),
   hover: null, refused: null, fitted: true, fitZoom: 1, pressInPanel: false, idleCam: false, camTween: null,
-  camV: null, // the steered camera's velocity (see steer)
+  woke: null, camV: null, // the input event that woke the idle camera; the steered camera's velocity (see steer)
 };
 const panelEl = id => $(`#panel-${id}`), bodies = Object.fromEntries(PANELS.map(id => [id, $(`#panel-${id} .panel-body`)]));
 const docks = { left: $('#dock-left'), right: $('#dock-right'), bottom: $('#dock-bottom') };
@@ -72,10 +72,12 @@ function zoomBy(f) { // about the centre box's centre, from where a glide in pro
   const to = centreOn({ x: c.x + cx / c.zoom, y: c.y + cy / c.zoom }, b, zoomLimit(c.zoom * f));
   glide(() => to, false);
 }
-// Any input: note the time and take the camera back from the idle camera, gliding home to the fit.
-function touch() {
+// Any input: note the time and take the camera back from the idle camera, gliding home to the fit. The event that
+// woke it only wakes (state.woke): the canvas and the keys ignore it.
+function touch(e) {
   state.lastInput = performance.now();
   if (!state.idleCam) return;
+  state.woke = e;
   idle.reset();
   state.idleCam = false;
   glide(fitCamera, true);
@@ -131,7 +133,7 @@ function hud() {
 // Every frame: the HUD sun and moon by the night level n, and the page chrome blended toward its night colours.
 const sky = $('#hud-sky'), [sun, moon] = sky.children;
 let skyN = -1, chromeN = -1;
-function ambient(n) {
+function ambient(n) { // n: the renderer's eased night level (r.night)
   if (n !== skyN) { // unchanged (paused) keeps the dusk/dawn title
     sky.title = `lighting: ${n === 0 ? 'day' : n === 1 ? 'night' : n > skyN ? 'dusk' : 'dawn'}`;
     sun.style.opacity = 1 - n;
@@ -187,7 +189,7 @@ const seedBtn = $('#hud-seed'), pop = $('#seed-pop'), popSeed = pop.querySelecto
 seedBtn.textContent = seed;
 function seedPop(show) {
   pop.classList.toggle('hidden', !show);
-  if (!show) return;
+  if (!show) { popSeed.blur(); return; } // a hidden focused input would still swallow the keybinds
   pop.style.left = `${seedBtn.getBoundingClientRect().left}px`;
   popSeed.value = seed;
   popSeed.focus();
@@ -252,6 +254,7 @@ function togglePanel(id) {
 }
 function resetLayout() {
   panels = cleanLayout(DEFAULT_LAYOUT);
+  for (const id of PANELS) { const st = panelEl(id).style; st.width = st.height = ''; } // drop a floating panel's CSS resize
   PANELS.forEach(applyPanel);
   layoutChanged();
 }
@@ -434,12 +437,14 @@ function onMapClick(hit) {
 }
 
 // ---- Canvas: click picks, drag pans, wheel zooms about the cursor. The canvas fills the window from (0, 0),
-// so client coordinates are canvas coordinates.
+// so client coordinates are canvas coordinates. A click acts on what was under the cursor at the press (a glide may
+// move the map before the release), and the press that woke the idle camera acts on nothing.
 let press = null;
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   canvas.setPointerCapture(e.pointerId);
-  press = { x: e.clientX, y: e.clientY, panning: false };
+  press = { x: e.clientX, y: e.clientY, panning: false, hit: r.pick(sim, e.clientX, e.clientY), wake: state.woke === e };
+  state.woke = null;
 });
 canvas.addEventListener('pointermove', e => {
   if (press) {
@@ -464,7 +469,7 @@ canvas.addEventListener('pointerup', () => {
   const p = press;
   press = null;
   canvas.style.cursor = '';
-  if (p && !p.panning) onMapClick(r.pick(sim, p.x, p.y));
+  if (p && !p.panning && !p.wake) onMapClick(p.hit);
 });
 canvas.addEventListener('pointercancel', () => { press = null; });
 canvas.addEventListener('pointerleave', () => { state.hover = null; });
@@ -482,7 +487,8 @@ canvas.addEventListener('wheel', e => {
 
 // ---- Keys (ignored while typing in a field; a focused button keeps Space and Enter).
 addEventListener('keydown', e => {
-  touch();
+  touch(e);
+  if (state.woke === e) { state.woke = null; return; } // the key that woke the idle camera only wakes
   if (e.key === 'Escape') seedPop(false);
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, select, textarea')) return;
   if (e.target.closest?.('button') && (e.key === ' ' || e.key === 'Enter')) return;
@@ -552,7 +558,7 @@ function frame(now) {
   let caption = null;
   guarded(() => { caption = steer(now, box); });
   guarded(() => r.draw(sim, uiFor(now, caption, box)));
-  guarded(() => ambient(nightOf(sim)));
+  guarded(() => ambient(r.night ?? nightOf(sim)));
   if (now - lastPanels >= PANEL_MS) { lastPanels = now; guarded(refreshPanels); }
   requestAnimationFrame(frame);
 }

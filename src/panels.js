@@ -130,7 +130,7 @@ const ASPECTS = [ // name, high 1 head, high 2 heads (top bottom), dwarf
   ['Clear', 'G', 'G R', ''], ['Approach', 'Y', 'Y R', ''], ['Advance Approach', 'FY', 'FY R', ''],
   ['Diverging Clear', '', 'R G', ''], ['Diverging Approach', '', 'R Y', ''], ['Restricting', '', 'R FR', 'FR'],
   ['Slow Clear', '', '', 'G'], ['Stop', 'R', 'R R', 'R']];
-export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MANUAL'], ['F', 'fit map'], ['0', 'reset view'],
+export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MANUAL'], ['F, 0', 'reset view'],
   ['H', 'hide chrome'], ['Esc', 'clear selection'], ['1–5', 'board, log, inspector, legend, settings'], ['?', 'legend'],
   ['N', 'new seed'], ['wheel / drag', 'zoom / pan']];
 

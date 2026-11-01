@@ -53,10 +53,11 @@ export function createRenderer(canvas) {
   const lineW = () => Math.max(2, 3 * r.camera.zoom);
 
   // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', 'stub:<edge>:<node>', '<signal>:<head>' lamps and
-  // 'h<signal>:<head>' their halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'slow' label. First
-  // sight starts at `from` (default the target: snaps); an id not drawn in a frame is dropped.
+  // 'h<signal>:<head>' their halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'tag:<train>' its tag,
+  // 'lock:<node>' padlock, 'slow' label, 'night' the night level. First sight starts at `from` (default the target:
+  // snaps); an id not drawn in a frame is dropped.
   const fade = new Map(), seen = new Set();
-  let dt = 0, lastNow = -Infinity, lastSlow = null;
+  let dt = 0, lastNow = -Infinity, lastSlow = null, capAt = null; // capAt: the caption's text and the box it shows in
   function eased(id, to, tau, from = to) {
     let s = fade.get(id);
     if (!s) fade.set(id, (s = [...from]));
@@ -153,10 +154,14 @@ export function createRenderer(canvas) {
   // ponytail: redraws everything every frame (a few hundred paths on the largest seed). Cache the static
   // track/label layer in an offscreen canvas if it ever shows in a profile.
   r.draw = (sim, ui = {}) => {
-    const L = sim.layout, { nodes, edges } = L, z = r.camera.zoom, lw = lineW(), cellPx = CELL * z;
-    const now = ui.now ?? 0, night = nightOf(sim), dim = c => mix(c, '#000000', 0.15 * night); // night palette
-    const P = { bg: mix(COLORS.bg, '#070b17', night), track: mix(COLORS.track, '#6c7590', night), label: dim(COLORS.label), dim: dim(COLORS.dim) };
+    const L = sim.layout, { nodes, edges } = L, z = r.camera.zoom, lw = lineW(), cellPx = CELL * z, now = ui.now ?? 0;
     dt = clamp(now - lastNow, 0, 100); lastNow = now; seen.clear();
+    // The night level as shown: eased, so a Day length change crossfades the page (the sim's traffic reads the raw level);
+    // within 0.001 it settles exactly. r.night: for the page chrome and the HUD sky.
+    const n0 = nightOf(sim), nt = eased('night', [n0], 150);
+    if (Math.abs(nt[0] - n0) < 1e-3) nt[0] = n0;
+    const night = r.night = nt[0], dim = c => mix(c, '#000000', 0.15 * night); // night palette
+    const P = { bg: mix(COLORS.bg, '#070b17', night), track: mix(COLORS.track, '#6c7590', night), label: dim(COLORS.label), dim: dim(COLORS.dim) };
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; // a throw last frame can't leak state
 
     // 1. Background (no grid).
@@ -243,15 +248,18 @@ export function createRenderer(canvas) {
       text(`to ${p.name}`, a.x - p.dir * 6, a.y + p.dir * reach, `12px ${SANS}`, P.label, a.align);
     }
 
-    // 5. Switches: a dot coloured like the trunk; a padlock when locked, above at or above Main 1, else below.
+    // 5. Switches: a dot coloured like the trunk; a padlock when locked (fading in and out), above at or above Main 1,
+    // else below.
     for (const sw of L.switches) {
-      const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y <= L.mainRow[-1] ? -1 : 1;
+      const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y <= L.mainRow[-1] ? -1 : 1, lk = `lock:${sw.node}`;
       disc(x, y, Math.max(2.5, 0.8 * lw), faded(`sw:${sw.node}`, edgeColor(sim, sw.trunk, P.track)));
-      if (switchLocked(sim, sw.node)) {
+      const locked = switchLocked(sim, sw.node), la = locked || fade.get(lk)?.[0] > 0.01 ? eased(lk, [locked ? 1 : 0], 120, [0])[0] : 0;
+      if (la > 0.01) {
         const ly = y + up * (lw / 2 + 9);
-        ctx.strokeStyle = P.label; ctx.lineWidth = 1.5;
+        ctx.globalAlpha = la; ctx.strokeStyle = P.label; ctx.lineWidth = 1.5;
         ctx.strokeRect(x - 3.5, ly - 1.5, 7, 5.5);
         ctx.beginPath(); ctx.arc(x, ly - 1.5, 2.5, Math.PI, 0); ctx.stroke();
+        ctx.globalAlpha = 1;
       }
       if (ui.selectedSwitch === sw.node)
         text(sim.switchState.get(sw.node).lie === 'normal' ? 'N' : 'R', x, y - up * 12, `bold 11px ${SANS}`, WHITE);
@@ -269,7 +277,9 @@ export function createRenderer(canvas) {
         const code = i ? lp.bottom : lp.top, lit = code[0] !== 'F' || ui.blink, hex = COLORS.lamp[code.at(-1)];
         return [faded(`${sig.id}:${i}`, lit ? hex : LAMP_OFF, 60), eased(`h${sig.id}:${i}`, rgb(lit ? hex : '#000000'), 60)];
       });
-      g.heads.forEach(([hx, hy], i) => glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, night)));
+      g.heads.forEach(([hx, hy], i) => { // a halo faded to (near) black adds nothing: skip its gradient
+        if (ls[i][1].some(c => c >= 8)) glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, night));
+      });
       g.heads.forEach(([hx, hy], i) => disc(hx, hy, g.rad, ls[i][0], P.bg));
       chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, P.label); // 4 px wide, pointing in dir
       const [cx, cy] = g.centre, rr = g.extent + 4;
@@ -301,17 +311,19 @@ export function createRenderer(canvas) {
       ctx.globalAlpha = eased(`eot:${t.id}`, [ui.blink ? 1 : 0], 60, [0])[0];
       disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
       ctx.globalAlpha = 1;
-      tags.push({ t, col, sel, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
+      const a = eased(`tag:${t.id}`, [1], 120, [0])[0]; // fades in when the train enters
+      tags.push({ t, col, sel, a, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
     }
     ctx.font = `11px ${MONO}`;
     const gap = Math.max(10, tw / 2 + 5);
-    for (const { t, col, sel, x, y } of tags) { // 10 px above the head block, below for eastbound
+    for (const { t, col, sel, a, x, y } of tags) { // 10 px above the head block, below for eastbound
       const tw2 = ctx.measureText(t.name).width + 8, th = 15, ty = t.dir > 0 ? y + gap : y - gap - th;
-      ctx.fillStyle = TAG_BG; ctx.fillRect(x - tw2 / 2, ty, tw2, th);
+      ctx.globalAlpha = a; ctx.fillStyle = TAG_BG; ctx.fillRect(x - tw2 / 2, ty, tw2, th);
       ctx.strokeStyle = sel ? WHITE : col; ctx.lineWidth = sel ? 2 : 1;
       ctx.strokeRect(x - tw2 / 2 + 0.5, ty + 0.5, tw2 - 1, th - 1);
       text(t.name, x, ty + th / 2 + 0.5, `11px ${MONO}`, col);
     }
+    ctx.globalAlpha = 1;
 
     // 8. Queue at each entry portal, under its name.
     for (const p of L.portals) {
@@ -319,11 +331,14 @@ export function createRenderer(canvas) {
       if (n) text(`+${n} waiting`, a.x - p.dir * 6, a.y + p.dir * (reach + 15), `12px ${SANS}`, P.dim, a.align);
     }
 
-    // Caption (the idle camera's), bottom-left of the box it frames.
-    if (ui.caption?.text) {
-      const box = ui.box ?? { x: 0, y: 0, w: canvas.width / dpr, h: canvas.height / dpr };
-      ctx.globalAlpha = ui.caption.alpha;
-      text(ui.caption.text, box.x + 16, box.y + box.h - 16, `12px ${SANS}`, P.dim, 'left');
+    // Caption (the idle camera's), bottom-left of the box it frames: the box it was first shown in, until it fades to
+    // nothing or changes text (a panel toggled mid-fade doesn't jump it).
+    const cap = ui.caption?.text && ui.caption.alpha > 0 ? ui.caption : null;
+    if (cap?.text !== capAt?.text) capAt = cap && { text: cap.text, box: { ...(ui.box ?? { x: 0, y: 0, w: canvas.width / dpr, h: canvas.height / dpr }) } };
+    if (cap) {
+      const { box } = capAt;
+      ctx.globalAlpha = cap.alpha;
+      text(cap.text, box.x + 16, box.y + box.h - 16, `12px ${SANS}`, P.dim, 'left');
       ctx.globalAlpha = 1;
     }
     for (const id of fade.keys()) if (!seen.has(id)) fade.delete(id);
