@@ -3,7 +3,7 @@
 // 11 px, strokes never below 2 px) so a four-module terminal fitted to 1366 px (~15 px a cell) stays legible.
 // World px = grid cell * CELL. camera {x, y} is the world-px point at the canvas's top-left corner and zoom
 // the screen px per world px: screen = (world - camera) * zoom.
-import { aspectOf, signalHeads, lamps, trainBlocks, switchLocked } from './sim.js';
+import { aspectOf, signalHeads, lamps, trainBlocks, switchLocked, nightOf, SLOW_ORDER } from './sim.js';
 
 export const CELL = 24;
 export const COLORS = {
@@ -23,6 +23,13 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // '#rrggbb' a blended toward b by t (0..1), per channel.
 export const mix = (a, b, t) => `#${[1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * (1 - t)
   + parseInt(b.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('')}`;
+const lerp = (a, b, t) => a + (b - a) * t;
+// from moved toward to over dt ms at time constant tau ms (63 % in tau, 95 % in 3 tau).
+export const ease = (from, to, dt, tau) => from + (to - from) * (1 - Math.exp(-dt / tau));
+// ponytail: one entry per distinct target; targets are constants or a night mix (a few dozen values).
+const rgbOf = new Map(); // '#rrggbb' -> [r, g, b], parsed once
+const rgb = hex => rgbOf.get(hex) ?? rgbOf.set(hex, [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))).get(hex);
+const rgba = ([r, g, b], a) => `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a})`;
 
 function segDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
@@ -45,6 +52,21 @@ export function createRenderer(canvas) {
   const Y = gy => (gy * CELL - r.camera.y) * r.camera.zoom;
   const lineW = () => Math.max(2, 3 * r.camera.zoom);
 
+  // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', '<signal>:<head>' lamps and 'h<signal>:<head>' their
+  // halos, scalars 'hl:<train>' headlight, 'eot:<train>' tail marker, 'slow' label. First sight snaps to the target;
+  // an id not drawn in a frame is dropped.
+  const fade = new Map(), seen = new Set();
+  let dt = 0, lastNow = -Infinity, lastSlow = null;
+  function eased(id, to, tau) {
+    let s = fade.get(id);
+    if (!s) fade.set(id, (s = [...to]));
+    const k = ease(0, 1, dt, tau);
+    for (let i = 0; i < s.length; i++) s[i] += (to[i] - s[i]) * k;
+    seen.add(id);
+    return s;
+  }
+  const faded = (id, hex, tau = 120) => rgba(eased(id, rgb(hex), tau), 1);
+
   function line(x1, y1, x2, y2, color, width, cap = 'round') {
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = cap;
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -58,6 +80,15 @@ export function createRenderer(canvas) {
     ctx.fillStyle = fill; ctx.fill();
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
   }
+  // Additive radial glow: an ellipse of radii rx, ry turned to ang, rgb c at alpha a in the middle fading to nothing.
+  function glow(x, y, rx, ry, ang, c, a) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.translate(x, y); ctx.rotate(ang); ctx.scale(1, ry / rx);
+    const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    gr.addColorStop(0, rgba(c, a)); gr.addColorStop(1, rgba(c, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, rx, 0, 2 * Math.PI); ctx.fill();
+    ctx.restore(); // back to source-over
+  }
   function ring(x, y, rad, color, width) {
     ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
@@ -70,10 +101,11 @@ export function createRenderer(canvas) {
     ctx.stroke();
   }
 
-  function edgeColor(sim, id) {
+  // Target colour: occupied, else its route's, else amber on the slow order's section, else idle.
+  function edgeColor(sim, id, idle) {
     const st = sim.edgeState[id];
     if (st.occ.size) return COLORS.occupied;
-    if (st.route === null) return COLORS.track;
+    if (st.route === null) return sim.layout.edges[id].section === sim.slowOrder?.section ? COLORS.slow : idle;
     return sim.routes.get(st.route)?.human ? COLORS.human : COLORS.route;
   }
 
@@ -123,10 +155,13 @@ export function createRenderer(canvas) {
   // track/label layer in an offscreen canvas if it ever shows in a profile.
   r.draw = (sim, ui = {}) => {
     const L = sim.layout, { nodes, edges } = L, z = r.camera.zoom, lw = lineW(), cellPx = CELL * z;
+    const now = ui.now ?? 0, n = nightOf(sim), dim = c => mix(c, '#000000', 0.15 * n); // night palette
+    const P = { bg: mix(COLORS.bg, '#070b17', n), track: mix(COLORS.track, '#6c7590', n), label: dim(COLORS.label), dim: dim(COLORS.dim) };
+    dt = clamp(now - lastNow, 0, 100); lastNow = now; seen.clear();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 1. Background (no grid).
-    ctx.fillStyle = COLORS.bg; ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    ctx.fillStyle = P.bg; ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
     // 2. Edges, idle first so routes and occupancy win at shared nodes. The unselected leg of each switch
     // is dim for its first STUB cells at the points, so the lie reads without dimming a whole track.
@@ -135,16 +170,16 @@ export function createRenderer(canvas) {
       const leg = sim.switchState.get(node).lie === 'normal' ? sw.reverse : sw.normal;
       dimAt.set(leg, [...(dimAt.get(leg) ?? []), node]);
     }
-    const rank = c => (c === COLORS.track ? 0 : c === COLORS.occupied ? 2 : 1);
+    const rank = c => (c === COLORS.occupied ? 2 : c === COLORS.route || c === COLORS.human ? 1 : 0);
     for (const pass of [0, 1, 2]) for (const e of edges) {
-      const color = edgeColor(sim, e.id);
+      const color = edgeColor(sim, e.id, P.track);
       if (rank(color) !== pass) continue;
       const a = nodes[e.a], b = nodes[e.b], dims = dimAt.get(e.id) ?? [], f = Math.min(0.5, STUB / e.len);
       const t0 = dims.includes(e.a) ? f : 0, t1 = dims.includes(e.b) ? 1 - f : 1;
       const px = t => X(a.x + t * (b.x - a.x)), py = t => Y(a.y + t * (b.y - a.y));
       if (t0) line(px(0), py(0), px(t0), py(t0), COLORS.trackDim, 2, 'butt');
       if (t1 < 1) line(px(t1), py(t1), px(1), py(1), COLORS.trackDim, 2, 'butt');
-      line(px(t0), py(t0), px(t1), py(t1), color, lw);
+      line(px(t0), py(t0), px(t1), py(t1), faded(e.id, color), lw);
     }
 
     // 3. Tracks. The right-hand side of travel is the outer side: no two labels or boxes share a gap. Mid-gap
@@ -159,15 +194,41 @@ export function createRenderer(canvas) {
         const x0 = X(lo + (t.dir < 0 ? 2 : 0.5)), x1 = X(hi - (t.dir > 0 ? 2 : 0.5));
         const cy = y + t.dir * Math.min(cellPx / 2, lw / 2 + 3 + bh / 2);
         ctx.fillStyle = COLORS.platform; ctx.beginPath(); ctx.roundRect(x0, cy - bh / 2, x1 - x0, bh, 3); ctx.fill();
+        if (n) { // platform lights: a warm band beyond the box, fading away from it
+          const b0 = cy + t.dir * bh / 2, b1 = b0 + t.dir * cellPx / 2, gr = ctx.createLinearGradient(0, b0, 0, b1);
+          gr.addColorStop(0, rgba(rgb('#ffd9a0'), 0.35 * n)); gr.addColorStop(1, rgba(rgb('#ffd9a0'), 0));
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.fillStyle = gr; ctx.fillRect(x0, Math.min(b0, b1), x1 - x0, cellPx / 2);
+          ctx.globalCompositeOperation = 'source-over';
+        }
         text(t.name, (x0 + x1) / 2, cy, `bold ${labelPx}px ${SANS}`, WHITE);
       } else {
         const cy = y + t.dir * Math.min(cellPx / 2, lw / 2 + 9);
-        text(t.name, X((lo + hi) / 2), cy, `small-caps ${labelPx}px ${SANS}`, COLORS.dim);
+        text(t.name, X((lo + hi) / 2), cy, `small-caps ${labelPx}px ${SANS}`, P.dim);
       }
     }
     ctx.letterSpacing = '1px'; // names lifted 6 px clear of a row-0 label or platform box at tight zooms
-    for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y) - 6, `13px ${SANS}`, COLORS.label);
+    for (const p of L.places) text(p.name.toUpperCase(), X(p.x), Y(p.y) - 6, `13px ${SANS}`, P.label);
     ctx.letterSpacing = '0px';
+    // Slow order: SLOW 20 at the section's midpoint, outside its main (above Main 1, below Main 2). The last order is
+    // kept so its label fades out with the amber.
+    if (sim.slowOrder) lastSlow = sim.slowOrder;
+    const sa = eased('slow', [sim.slowOrder ? 1 : 0], 120)[0];
+    if (lastSlow && sa > 0.01) {
+      const v = lastSlow.main === 1 ? -1 : 1;
+      ctx.globalAlpha = sa;
+      text(`SLOW ${SLOW_ORDER.mph}`, X((lastSlow.x0 + lastSlow.x1) / 2), Y(L.mainRow[v]) + v * (lw / 2 + 9), `11px ${SANS}`, '#f0b429');
+      ctx.globalAlpha = 1;
+    }
+
+    // Headlights: a glow 2.5 cells long ahead of each moving loco's front, along travel; fades with its motion.
+    const lagOf = t => (1 - (ui.alpha ?? 1)) * (t.adv ?? 0); // interpolate between sim steps
+    const drawn = [...sim.trains.values()].map(t => [t, trainBlocks(sim, t, lagOf(t))]).filter(([, bl]) => bl.length);
+    for (const [t, [h]] of drawn) {
+      const a = eased(`hl:${t.id}`, [t.speed > 0 ? lerp(0.22, 0.55, n) : 0], 200)[0];
+      const fx = X(h.x1), fy = Y(h.y1), ang = Math.atan2(fy - Y(h.y2), fx - X(h.x2)), d = 1.25 * cellPx;
+      if (a > 0.005) glow(fx + d * Math.cos(ang), fy + d * Math.sin(ang), d, 0.6 * cellPx, ang, rgb('#fff1c4'), a);
+    }
 
     // 4. Portals: a chevron pointing in just off the end of the main; the place name beyond the main on the
     // right-hand side of travel (below Main 2 at the west end, above Main 1 at the east end), clear of the
@@ -176,17 +237,17 @@ export function createRenderer(canvas) {
     const portalAt = p => { const n = nodes[p.node]; return { x: X(n.x), y: Y(n.y), align: p.dir > 0 ? 'left' : 'right' }; };
     for (const p of L.portals) {
       const a = portalAt(p);
-      chevron(a.x - p.dir * 14, a.y, p.dir, 5, COLORS.label);
-      text(`to ${p.name}`, a.x - p.dir * 6, a.y + p.dir * reach, `12px ${SANS}`, COLORS.label, a.align);
+      chevron(a.x - p.dir * 14, a.y, p.dir, 5, P.label);
+      text(`to ${p.name}`, a.x - p.dir * 6, a.y + p.dir * reach, `12px ${SANS}`, P.label, a.align);
     }
 
     // 5. Switches: a dot coloured like the trunk; a padlock when locked, above at or above Main 1, else below.
     for (const sw of L.switches) {
       const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y <= L.mainRow[-1] ? -1 : 1;
-      disc(x, y, Math.max(2.5, 0.8 * lw), edgeColor(sim, sw.trunk));
+      disc(x, y, Math.max(2.5, 0.8 * lw), faded(`sw:${sw.node}`, edgeColor(sim, sw.trunk, P.track)));
       if (switchLocked(sim, sw.node)) {
         const ly = y + up * (lw / 2 + 9);
-        ctx.strokeStyle = COLORS.label; ctx.lineWidth = 1.5;
+        ctx.strokeStyle = P.label; ctx.lineWidth = 1.5;
         ctx.strokeRect(x - 3.5, ly - 1.5, 7, 5.5);
         ctx.beginPath(); ctx.arc(x, ly - 1.5, 2.5, Math.PI, 0); ctx.stroke();
       }
@@ -199,14 +260,16 @@ export function createRenderer(canvas) {
       const g = signalGeom(sim, sig), lp = lamps(aspectOf(sim, sig.id), sig.kind, g.heads.length);
       if (sig.kind !== 'dwarf') { // stub mast from the track to the heads; a bar joins side-by-side heads
         const [hx, hy] = g.heads.at(-1);
-        line(g.x, g.y + g.v * lw / 2, g.x, g.heads[0][1], COLORS.track, 2, 'butt');
-        line(g.x, g.heads[0][1], hx, hy, COLORS.track, 2, 'butt');
+        line(g.x, g.y + g.v * lw / 2, g.x, g.heads[0][1], P.track, 2, 'butt');
+        line(g.x, g.heads[0][1], hx, hy, P.track, 2, 'butt');
       }
-      g.heads.forEach(([hx, hy], i) => {
-        const code = i ? lp.bottom : lp.top, lit = code[0] !== 'F' || ui.blink;
-        disc(hx, hy, g.rad, lit ? COLORS.lamp[code.at(-1)] : LAMP_OFF, COLORS.bg);
+      const ls = g.heads.map((_, i) => { // [lamp, halo rgb]; an unlit halo fades to black, which adds nothing
+        const code = i ? lp.bottom : lp.top, lit = code[0] !== 'F' || ui.blink, hex = COLORS.lamp[code.at(-1)];
+        return [faded(`${sig.id}:${i}`, lit ? hex : LAMP_OFF, 60), eased(`h${sig.id}:${i}`, rgb(lit ? hex : '#000000'), 60)];
       });
-      chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, COLORS.label); // 4 px wide, pointing in dir
+      g.heads.forEach(([hx, hy], i) => glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, n)));
+      g.heads.forEach(([hx, hy], i) => disc(hx, hy, g.rad, ls[i][0], P.bg));
+      chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, P.label); // 4 px wide, pointing in dir
       const [cx, cy] = g.centre, rr = g.extent + 4;
       if (ui.refusedSignal === sig.id) ring(cx, cy, rr + 1, COLORS.lamp.R, 3); // NX refusal flash
       else if (ui.armedSignal === sig.id) {
@@ -214,27 +277,28 @@ export function createRenderer(canvas) {
         ring(cx, cy, rr + 1, WHITE, 2);
         ctx.globalAlpha = 1;
       } else if (ui.selectedSignal === sig.id) ring(cx, cy, rr, WHITE, 2);
-      else if (ui.hoverSignal === sig.id) ring(cx, cy, rr, COLORS.dim, 1.5);
+      else if (ui.hoverSignal === sig.id) ring(cx, cy, rr, P.dim, 1.5);
     }
 
-    // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; tags on top.
+    // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; a red marker on the tail
+    // blinking with flashing aspects (steady when they're off); tags on top.
     // ponytail: no collision avoidance; tags draw after everything else on the panel, so they stay readable.
     const tw = Math.max(4, 5 * z), tags = [];
-    const lagOf = t => (1 - (ui.alpha ?? 1)) * (t.adv ?? 0); // interpolate between sim steps
-    for (const t of sim.trains.values()) {
-      const bl = trainBlocks(sim, t, lagOf(t));
-      if (!bl.length) continue;
+    for (const [t, bl] of drawn) {
       const col = COLORS.types[t.type] ?? COLORS.label, sel = ui.selectedTrain === t.id;
       for (const b of bl) {
         const x1 = X(b.x1), y1 = Y(b.y1), x2 = X(b.x2), y2 = Y(b.y2), len = Math.hypot(x2 - x1, y2 - y1);
         if (!len) continue;
         const trim = Math.max(0, Math.min(tw / 2 + 0.5, len / 2 - 0.25)), ux = (x2 - x1) / len * trim, uy = (y2 - y1) / len * trim;
         if (sel) line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, WHITE, tw + 3);
-        line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, COLORS.bg, tw);
+        line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, P.bg, tw);
         ctx.globalAlpha = b.kind === 'loco' ? 1 : 0.7;
         line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
         ctx.globalAlpha = 1;
       }
+      ctx.globalAlpha = eased(`eot:${t.id}`, [ui.blink ? 1 : 0], 60)[0];
+      disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R);
+      ctx.globalAlpha = 1;
       tags.push({ t, col, sel, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
     }
     ctx.font = `11px ${MONO}`;
@@ -250,8 +314,17 @@ export function createRenderer(canvas) {
     // 8. Queue at each entry portal, under its name.
     for (const p of L.portals) {
       const n = sim.queue[p.dir]?.length ?? 0, a = portalAt(p);
-      if (n) text(`+${n} waiting`, a.x - p.dir * 6, a.y + p.dir * (reach + 15), `12px ${SANS}`, COLORS.dim, a.align);
+      if (n) text(`+${n} waiting`, a.x - p.dir * 6, a.y + p.dir * (reach + 15), `12px ${SANS}`, P.dim, a.align);
     }
+
+    // Caption (the idle camera's), bottom-left of the box it frames.
+    if (ui.caption?.text) {
+      const box = ui.box ?? { x: 0, y: 0, w: canvas.width / dpr, h: canvas.height / dpr };
+      ctx.globalAlpha = ui.caption.alpha;
+      text(ui.caption.text, box.x + 16, box.y + box.h - 16, `12px ${SANS}`, P.dim, 'left');
+      ctx.globalAlpha = 1;
+    }
+    for (const id of fade.keys()) if (!seen.has(id)) fade.delete(id);
   };
 
   // Signals first, then switches (id = node), then train blocks, then routed edges (id = route id).
