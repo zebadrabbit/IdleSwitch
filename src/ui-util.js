@@ -73,19 +73,20 @@ export function cleanSettings(v, densities, defaults = DEFAULT_SETTINGS) {
   };
 }
 
-// {id: {x, y, dock, hidden}}; x, y place a floating panel (dock null). Board right, log bottom, the inspector
-// floating under the HUD at the top left, legend and settings hidden.
+// {id: {x, y, dock, hidden}, size}; x, y place a floating panel (dock null). Board right, log bottom, the inspector
+// floating under the HUD at the top left, legend and settings hidden. size: docked px (side widths, bottom height).
 export const DEFAULT_LAYOUT = {
   board: { x: 0, y: 0, dock: 'right', hidden: false },
   log: { x: 0, y: 0, dock: 'bottom', hidden: false },
   inspector: { x: 12, y: 44, dock: null, hidden: false },
   legend: { x: 324, y: 44, dock: null, hidden: true },
   settings: { x: 672, y: 44, dock: null, hidden: true },
+  size: { left: 420, right: 420, bottom: 200 },
 };
 const DOCKS = [null, 'left', 'right', 'bottom'];
 const num = v => typeof v === 'number' && Number.isFinite(v);
 
-// Each panel keeps its saved entry if the whole entry is valid, else gets its default.
+// Each panel keeps its saved entry if the whole entry is valid, else gets its default; each dock size likewise.
 export function cleanLayout(v) {
   const o = obj(v), out = {};
   for (const id of PANELS) {
@@ -93,5 +94,14 @@ export function cleanLayout(v) {
     const ok = p && typeof p === 'object' && num(p.x) && num(p.y) && DOCKS.includes(p.dock) && typeof p.hidden === 'boolean';
     out[id] = ok ? { x: p.x, y: p.y, dock: p.dock, hidden: p.hidden } : { ...DEFAULT_LAYOUT[id] };
   }
+  const s = obj(o.size);
+  out.size = {};
+  for (const k in DEFAULT_LAYOUT.size) out.size[k] = num(s[k]) && s[k] >= 0 ? s[k] : DEFAULT_LAYOUT.size[k];
   return out;
+}
+
+// A dock's size in px in a W x H window: side docks 200 to 60% of W wide, the bottom dock 80 to 70% of H tall.
+export function clampDock(side, px, W, H) {
+  const [lo, hi] = side === 'bottom' ? [80, 0.7 * H] : [200, 0.6 * W];
+  return Math.round(Math.max(lo, Math.min(hi, px)));
 }

@@ -27,7 +27,12 @@
   <button data-panel="settings" title="settings (5)">Settings</button>
   <button id="btn-fullscreen" title="fullscreen">⛶</button>
 </header>
-<div id="docks"><div id="dock-left"></div><div id="dock-center"></div><div id="dock-right"></div><div id="dock-bottom"></div></div>
+<div id="docks">
+  <div id="dock-left"><div class="dock-handle" data-dock="left"></div></div>
+  <div id="dock-center"></div>
+  <div id="dock-right"><div class="dock-handle" data-dock="right"></div></div>
+  <div id="dock-bottom"><div class="dock-handle" data-dock="bottom"></div></div>
+</div>
 <section class="panel" id="panel-board"><div class="panel-title">Board <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
 <section class="panel" id="panel-log"><div class="panel-title">Log <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>
 <section class="panel" id="panel-inspector"><div class="panel-title">Inspector <button class="panel-hide" title="hide">×</button></div><div class="panel-body"></div></section>

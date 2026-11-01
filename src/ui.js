@@ -4,7 +4,7 @@ import { generate } from './gen.js';
 import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel, nightOf } from './sim.js';
 import { createRenderer, mix } from './render.js';
 import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
-  cleanSettings, cleanLayout } from './ui-util.js';
+  cleanSettings, cleanLayout, clampDock } from './ui-util.js';
 import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
 
 const SIM_PER_SEC = 10;      // sim seconds per real second at 1x
@@ -135,7 +135,7 @@ function applyPanel(id) {
   if (p.dock) {
     el.classList.add(`dock-${p.dock}`);
     if (el.parentElement !== docks[p.dock]) docks[p.dock].append(el);
-    el.style.left = el.style.top = '';
+    el.style.left = el.style.top = el.style.width = el.style.height = ''; // a floating resize doesn't follow it in
   } else {
     if (el.parentElement !== document.body) document.body.append(el);
     const c = clampPos(el, p.x, p.y);
@@ -143,6 +143,12 @@ function applyPanel(id) {
     el.style.top = `${c.y}px`;
   }
   $(`#hud button[data-panel="${id}"]`).classList.toggle('on', !p.hidden);
+  for (const d of Object.values(docks)) d.classList.toggle('empty', !d.querySelector('.panel:not(.hidden)')); // hides its handle
+}
+// Docked sizes from panels.size, clamped to the window here only, so a larger window gets the saved size back.
+const SIZE_VARS = { left: '--side-w-left', right: '--side-w-right', bottom: '--bottom-h' };
+function applySizes() {
+  for (const k in SIZE_VARS) document.documentElement.style.setProperty(SIZE_VARS[k], `${clampDock(k, panels.size[k], innerWidth, innerHeight)}px`);
 }
 function layoutChanged() {
   saveJSON(store, LAYOUT_KEY, panels);
@@ -157,6 +163,7 @@ function togglePanel(id) {
 function resetLayout() {
   panels = cleanLayout(DEFAULT_LAYOUT);
   PANELS.forEach(applyPanel);
+  applySizes();
   layoutChanged();
 }
 
@@ -208,6 +215,25 @@ for (const id of PANELS) {
   el.addEventListener('pointerdown', () => { state.pressInPanel = true; });
 }
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => { state.pressInPanel = false; });
+// A dock's handle: drag its inner edge to the pointer (the map refits as it goes), double-click for the default.
+for (const h of document.querySelectorAll('.dock-handle')) {
+  const k = h.dataset.dock;
+  h.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    h.setPointerCapture(e.pointerId);
+    h.classList.add('active');
+  });
+  h.addEventListener('pointermove', e => {
+    if (!h.hasPointerCapture(e.pointerId)) return;
+    const px = k === 'left' ? e.clientX : k === 'right' ? innerWidth - e.clientX : innerHeight - e.clientY;
+    panels.size[k] = clampDock(k, px, innerWidth, innerHeight);
+    applySizes();
+    if (state.fitted) fit();
+  });
+  h.addEventListener('lostpointercapture', () => { h.classList.remove('active'); layoutChanged(); });
+  h.addEventListener('dblclick', () => { panels.size[k] = DEFAULT_LAYOUT.size[k]; applySizes(); layoutChanged(); });
+}
 
 const lastHTML = {};
 function put(id, html) {
@@ -381,6 +407,7 @@ for (const ev of ['pointerdown', 'pointermove', 'wheel']) addEventListener(ev, t
 addEventListener('resize', () => {
   r.resize();
   PANELS.forEach(applyPanel); // re-clamp floating panels into the window
+  applySizes();
   if (state.fitted) fit();
 });
 
@@ -431,6 +458,7 @@ function frame(now) {
 }
 
 PANELS.forEach(applyPanel);
+applySizes();
 r.resize();
 fit();
 refreshPanels();

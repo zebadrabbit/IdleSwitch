@@ -1,6 +1,6 @@
 // node tests/test_ui.mjs — the UI's pure helpers (src/ui-util.js). The DOM side is checked by hand in a browser.
 import assert from 'node:assert/strict';
-import { formatClock, formatDelay, dockFor, matchCandidate, tick, loadJSON, cleanSettings, cleanLayout,
+import { formatClock, formatDelay, dockFor, matchCandidate, tick, loadJSON, cleanSettings, cleanLayout, clampDock,
   DEFAULT_SETTINGS, DEFAULT_LAYOUT } from '../src/ui-util.js';
 import { mix } from '../src/render.js';
 
@@ -44,6 +44,13 @@ assert.deepEqual([settings({ dayLength: 8 }).dayLength, settings({ dayLength: 3 
 assert.deepEqual([settings({ slowOrders: false }).slowOrders, settings({ slowOrders: 'no' }).slowOrders], [false, true]);
 assert.equal(cleanSettings(null, D, { ...DEFAULT_SETTINGS, idleCamera: false }).idleCamera, false);
 assert.equal(cleanSettings({ idleCamera: true }, D, { ...DEFAULT_SETTINGS, idleCamera: false }).idleCamera, true);
+
+// Dock sizes: defaults when missing or bad, kept when valid (a copy: drags mutate it); clamps
+assert.deepEqual(cleanLayout(null).size, { left: 420, right: 420, bottom: 200 });
+assert.deepEqual(cleanLayout({ size: { left: 300, right: 'x', bottom: -5 } }).size, { left: 300, right: 420, bottom: 200 });
+assert.notEqual(cleanLayout(DEFAULT_LAYOUT).size, DEFAULT_LAYOUT.size);
+assert.deepEqual([clampDock('left', 10, 1366, 768), clampDock('right', 2000, 1366, 768), clampDock('bottom', 1000, 1366, 768), clampDock('bottom', 150, 1366, 768)],
+  [200, Math.round(0.6 * 1366), Math.round(0.7 * 768), 150]);
 
 // Colour blend (night chrome and palette): endpoints exact, midpoint rounds per channel.
 assert.deepEqual([0, 0.5, 1].map(t => mix('#0b1020', '#070b17', t)), ['#0b1020', '#090e1c', '#070b17']);
