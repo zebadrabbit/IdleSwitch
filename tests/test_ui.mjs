@@ -51,6 +51,7 @@ assert.deepEqual(cleanLayout({ size: { left: 300, right: 'x', bottom: -5 } }).si
 assert.notEqual(cleanLayout(DEFAULT_LAYOUT).size, DEFAULT_LAYOUT.size);
 assert.deepEqual([clampDock('left', 10, 1366, 768), clampDock('right', 2000, 1366, 768), clampDock('bottom', 1000, 1366, 768), clampDock('bottom', 150, 1366, 768)],
   [200, Math.round(0.6 * 1366), Math.round(0.7 * 768), 150]);
+assert.equal(clampDock('left', 1000, 1366, 768, 600), 1366 - 600 - 240); // the side docks leave fit's 240 px between them
 
 // Colour blend (night chrome and palette): endpoints exact, midpoint rounds per channel.
 assert.deepEqual([0, 0.5, 1].map(t => mix('#0b1020', '#070b17', t)), ['#0b1020', '#090e1c', '#070b17']);

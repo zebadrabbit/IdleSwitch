@@ -100,8 +100,9 @@ export function cleanLayout(v) {
   return out;
 }
 
-// A dock's size in px in a W x H window: side docks 200 to 60% of W wide, the bottom dock 80 to 70% of H tall.
-export function clampDock(side, px, W, H) {
-  const [lo, hi] = side === 'bottom' ? [80, 0.7 * H] : [200, 0.6 * W];
+// A dock's size in px in a W x H window: side docks 200 to 60% of W wide, leaving fit's 240 px beside the other side
+// dock (other px wide); the bottom dock 80 to 70% of H tall.
+export function clampDock(side, px, W, H, other = 0) {
+  const [lo, hi] = side === 'bottom' ? [80, 0.7 * H] : [200, Math.min(0.6 * W, W - other - 240)];
   return Math.round(Math.max(lo, Math.min(hi, px)));
 }

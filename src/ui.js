@@ -46,7 +46,7 @@ const saveSettings = () => saveJSON(store, SETTINGS_KEY, settings);
 // ---- Camera: fit the terminal into the area the docked panels leave free (the whole window in bare mode).
 function fit() {
   const b = $('#dock-center').getBoundingClientRect();
-  const box = b.width > 240 && b.height > 160 ? { x: b.left, y: b.top, w: b.width, h: b.height } : undefined; // too small: whole window
+  const box = b.width >= 240 && b.height >= 160 ? { x: b.left, y: b.top, w: b.width, h: b.height } : undefined; // too small: whole window
   r.fit(layout, box);
   state.fitted = true;
   state.fitZoom = r.camera.zoom;
@@ -145,13 +145,18 @@ function applyPanel(id) {
   $(`#hud button[data-panel="${id}"]`).classList.toggle('on', !p.hidden);
   for (const d of Object.values(docks)) d.classList.toggle('empty', !d.querySelector('.panel:not(.hidden)')); // hides its handle
 }
-// Docked sizes from panels.size, clamped to the window here only, so a larger window gets the saved size back.
+// Docked sizes from panels.size, clamped to the window here only, so a larger window gets the saved size back. Shown
+// side docks never overlap or squeeze the map under 240 px: the left yields to the right (the right only to the floors).
 const SIZE_VARS = { left: '--side-w-left', right: '--side-w-right', bottom: '--bottom-h' };
 function applySizes() {
-  for (const k in SIZE_VARS) document.documentElement.style.setProperty(SIZE_VARS[k], `${clampDock(k, panels.size[k], innerWidth, innerHeight)}px`);
+  const s = panels.size, W = innerWidth, H = innerHeight, shown = k => !docks[k].classList.contains('empty');
+  const left = clampDock('left', s.left, W, H, shown('right') ? clampDock('right', s.right, W, H) : 0);
+  const px = { left, right: clampDock('right', s.right, W, H, shown('left') ? left : 0), bottom: clampDock('bottom', s.bottom, W, H) };
+  for (const k in SIZE_VARS) document.documentElement.style.setProperty(SIZE_VARS[k], `${px[k]}px`);
 }
-function layoutChanged() {
+function layoutChanged() { // also on show/hide and docking: what a side dock may take depends on the other
   saveJSON(store, LAYOUT_KEY, panels);
+  applySizes();
   if (state.fitted) fit();
   refreshPanels();
 }
@@ -163,7 +168,6 @@ function togglePanel(id) {
 function resetLayout() {
   panels = cleanLayout(DEFAULT_LAYOUT);
   PANELS.forEach(applyPanel);
-  applySizes();
   layoutChanged();
 }
 
@@ -217,7 +221,7 @@ for (const id of PANELS) {
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => { state.pressInPanel = false; });
 // A dock's handle: drag its inner edge to the pointer (the map refits as it goes), double-click for the default.
 for (const h of document.querySelectorAll('.dock-handle')) {
-  const k = h.dataset.dock;
+  const k = h.dataset.dock, o = { left: 'right', right: 'left' }[k]; // o: the other side dock
   h.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -227,12 +231,12 @@ for (const h of document.querySelectorAll('.dock-handle')) {
   h.addEventListener('pointermove', e => {
     if (!h.hasPointerCapture(e.pointerId)) return;
     const px = k === 'left' ? e.clientX : k === 'right' ? innerWidth - e.clientX : innerHeight - e.clientY;
-    panels.size[k] = clampDock(k, px, innerWidth, innerHeight);
+    panels.size[k] = clampDock(k, px, innerWidth, innerHeight, o ? docks[o].offsetWidth : 0); // 0 for an empty dock
     applySizes();
     if (state.fitted) fit();
   });
   h.addEventListener('lostpointercapture', () => { h.classList.remove('active'); layoutChanged(); });
-  h.addEventListener('dblclick', () => { panels.size[k] = DEFAULT_LAYOUT.size[k]; applySizes(); layoutChanged(); });
+  h.addEventListener('dblclick', () => { panels.size[k] = DEFAULT_LAYOUT.size[k]; layoutChanged(); });
 }
 
 const lastHTML = {};
