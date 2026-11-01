@@ -94,10 +94,13 @@ Both apply to human routes. `routesFrom` candidates gain `wrongMain`.
 
 - `findPath` costs: a `crossover` edge costs its length +1 like a ladder; a main edge with
   `main === -dir` costs +3 (`WRONG_MAIN_COST`), so a train returns home at the first pair that is free; an
-  edge blocked by a route or by a *moving* train costs +10 (`MOVING_COST`); an edge occupied by a train
-  that has stood at least `PASS_WAIT = 60` s costs +60 (`STANDING_COST`). The detour round one module
-  costs roughly 20-30, so a train diverts round a standing train, never round a moving one, and not
-  round one two modules ahead.
+  edge blocked by a route or by a *moving* train costs nothing extra (`MOVING_COST = 0`: the train
+  follows, and `setRoute` decides when the next route can be set); an edge occupied by a train that has
+  stood at least `PASS_WAIT = 60` s costs `STANDING_COST` (start at 60, tuned so that over the four busy
+  soak seeds a wrong-main train is on the panel in at most 30 % of ticks and no train stands 30 min).
+  The detour round one module costs roughly 20-30, so a train diverts round a standing train, never
+  round a moving one. Candidates that cross over and straight back inside one pair are dropped: they
+  end where the straight route ends and are never the better route.
 - Goal `{ exit: true }` is reached at either far-end node of the train's direction (`exitNodes(sim,
   dir)`); `{ node }` and `{ track }` stay for tests and holds.
 - The "never into a track that isn't its destination" rule stands; wrong-main candidates are allowed.
