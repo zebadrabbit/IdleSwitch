@@ -16,3 +16,4 @@ jobs:
       - run: node tests/test_gen.mjs
       - run: node tests/test_sim.mjs
       - run: node tests/test_ui.mjs
+      - run: node tests/test_camera.mjs
