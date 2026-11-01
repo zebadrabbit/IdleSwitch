@@ -421,9 +421,10 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   if (press) {
-    // The pan starts from the camera as it is then: a glide may have moved it since the press.
+    // From the camera as it is then (a glide may have moved it since the press), by the pointer's travel since the press,
+    // so the grabbed point stays under the cursor.
     if (!press.panning && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4)
-      Object.assign(press, { panning: true, x: e.clientX, y: e.clientY, cx: r.camera.x, cy: r.camera.y });
+      Object.assign(press, { panning: true, cx: r.camera.x, cy: r.camera.y });
     if (press.panning) {
       r.camera.x = press.cx - (e.clientX - press.x) / r.camera.zoom;
       r.camera.y = press.cy - (e.clientY - press.y) / r.camera.zoom;
