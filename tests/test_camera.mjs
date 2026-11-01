@@ -15,6 +15,11 @@ for (let x = 0; x < 1; x += 0.1) assert.ok(smoothstep(x + 0.1) >= smoothstep(x))
 const tw = tween({ x: 0, y: 0, zoom: 1 }, { x: 100, y: 50, zoom: 4 }, 1000);
 assert.deepEqual(tw.at(1500), { x: 50, y: 25, zoom: 2, done: false });
 assert.deepEqual(tw.at(5000), { x: 100, y: 50, zoom: 4, done: true }); // dt far past MOVE_MS lands exactly
+// Pivot: the world point under a screen pivot moves linearly (a zoom about the box centre keeps it still).
+const pv = { x: 500, y: 250 }, under = c => [c.x + pv.x / c.zoom, c.y + pv.y / c.zoom];
+const mid2 = tween({ x: 0, y: 0, zoom: 1 }, { x: 100, y: 50, zoom: 4 }, 1000, pv).at(1500);
+const [u0, u1, uh] = [{ x: 0, y: 0, zoom: 1 }, { x: 100, y: 50, zoom: 4 }, mid2].map(under);
+assert.ok(mid2.zoom === 2 && [0, 1].every(i => Math.abs(uh[i] - (u0[i] + u1[i]) / 2) < 1e-9), 'pivot point moves linearly');
 const box = { x: 0, y: 0, w: 1000, h: 500 };
 assert.deepEqual(centreOn({ x: 240, y: 120 }, box, 2), { x: 240 - 250, y: 120 - 125, zoom: 2 });
 
@@ -69,5 +74,15 @@ for (let now = 0, acc = 0; now < 300000; now += 16) {
   p = u;
 }
 assert.ok(changes >= 4, `the sweep covers several shots (${changes} caption changes)`);
+
+// Input (reset) hands the camera back at once but fades the caption: caption only (no camera fields), then null.
+let t0 = 300000;
+for (let u; !(u?.caption?.alpha === 1) && t0 < 400000; t0 += 16) u = c2.update(S, t0, { fit, box, lag, active: true });
+t0 -= 16;
+c2.reset();
+const fading = c2.update(S, t0 + 200, { fit, box, lag, active: false });
+assert.ok(fading && fading.x == null && fading.y == null && fading.zoom == null && Math.abs(fading.caption.alpha - 0.5) <= 0.1,
+  'after reset the caption fades out alone');
+assert.equal(c2.update(S, t0 + 450, { fit, box, lag, active: false }), null);
 
 console.log('camera ok');

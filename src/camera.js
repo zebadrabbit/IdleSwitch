@@ -13,14 +13,15 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v)); // lo wins: a close 
 
 export const smoothstep = x => (x = clamp(x, 0, 1)) * x * (3 - 2 * x);
 
-// x, y linear and zoom geometric on smoothstep over MOVE_MS; done (and exactly to) from MOVE_MS on.
-export function tween(from, to, startMs) {
+// Smoothstep over MOVE_MS: the world point under pivot (screen px) moves linearly and zoom geometrically, so a move
+// pivoting on the box centre glides that centre straight; done (and exactly to) from MOVE_MS on.
+export function tween(from, to, startMs, pivot = { x: 0, y: 0 }) {
+  const under = c => ({ x: c.x + pivot.x / c.zoom, y: c.y + pivot.y / c.zoom }), a = under(from), b = under(to);
   return {
     at(nowMs) {
-      const t = (nowMs - startMs) / MOVE_MS, s = smoothstep(t);
+      const t = (nowMs - startMs) / MOVE_MS, s = smoothstep(t), zoom = from.zoom * (to.zoom / from.zoom) ** s;
       if (t >= 1) return { x: to.x, y: to.y, zoom: to.zoom, done: true };
-      return { x: from.x + (to.x - from.x) * s, y: from.y + (to.y - from.y) * s,
-        zoom: from.zoom * (to.zoom / from.zoom) ** s, done: false };
+      return { x: a.x + (b.x - a.x) * s - pivot.x / zoom, y: a.y + (b.y - a.y) * s - pivot.y / zoom, zoom, done: false };
     },
   };
 }
@@ -59,9 +60,8 @@ function drift(c, box, t, k) {
 }
 
 export function createIdleCamera({ rng }) {
-  let shot, last, then, chase, cap;
-  const reset = () => { shot = last = then = chase = null; cap = { text: null, want: null, a: 0 }; };
-  reset();
+  let shot = null, last = null, then = null, chase = null, cap = { text: null, want: null, a: 0 };
+  const reset = () => { shot = last = chase = null; cap.want = null; }; // the caption fades out, never cut
 
   // Overview after a close shot (or to start); after an overview, follow (0.6 if any), else signal, else overview.
   function next(sim, now, lag) {
@@ -119,11 +119,16 @@ export function createIdleCamera({ rng }) {
 
   return {
     reset,
-    // camera: the renderer's camera, where the first move of a fresh run starts (default fit).
+    // camera: the renderer's camera, where the first move of a fresh run starts (default fit). Not active: the
+    // caption alone while it fades ({x: null, y: null, zoom: null, caption}), then null.
     update(sim, now, { fit, box, lag, active, camera }) {
-      if (!active) return reset(), null;
       const dt = then == null ? 0 : now - then;
       then = now;
+      if (!active) {
+        reset();
+        const c = caption(null, dt);
+        return c && { x: null, y: null, zoom: null, caption: c };
+      }
       if (!shot || over(sim, now, lag)) {
         shot = { ...next(sim, now, lag), since: now, from: last ?? camera ?? fit };
         chase = null;
@@ -132,7 +137,8 @@ export function createIdleCamera({ rng }) {
       const to = target(sim, fit, box, lag), k = 1 - Math.exp(-dt / CHASE_MS);
       chase = chase ? { x: chase.x + (to.x - chase.x) * k, y: chase.y + (to.y - chase.y) * k,
         zoom: chase.zoom + (to.zoom - chase.zoom) * k } : to;
-      const { x, y, zoom } = tween(shot.from, chase, shot.since).at(now);
+      const pivot = { x: box.x + box.w / 2, y: box.y + box.h / 2 }; // moves glide the box centre straight
+      const { x, y, zoom } = tween(shot.from, chase, shot.since, pivot).at(now);
       last = drift({ x, y, zoom }, box, (now - shot.since) / 1000, shot.kind === 'overview' ? 1 / 3 : 1);
       return { ...last, caption: caption(shot.text ?? null, dt) };
     },
