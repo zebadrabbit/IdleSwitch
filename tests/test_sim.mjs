@@ -880,6 +880,30 @@ assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5
   assert.deepEqual(names(S1).slice(0, 20), names(S2).slice(0, 20), 'traffic unchanged by slow orders');
 }
 
+// A slow order set under a train at speed brakes it at its own rate, never in one step, down to 20 mph on the section
+{
+  const S = createSim(L, 'lebanon', { slowOrders: false });
+  S.auto = true;
+  const head = T => { let s = T.pathOff; return L.edges[T.path.find(e => (s += L.edges[e].len) >= T.headDist)]; }; // head's edge
+  const ahead = T => { // cells of the head's section still ahead of the head
+    const xs = S.sectionEdges.get(head(T).section).flatMap(e => [L.nodes[L.edges[e].a].x, L.nodes[L.edges[e].b].x]);
+    const hx = pointAt(S, T, T.headDist).x;
+    return T.dir > 0 ? Math.max(...xs) - hx : hx - Math.min(...xs);
+  };
+  let t = null;
+  for (let i = 0; i < 3600 && !t; i++) {
+    step(S);
+    t = [...S.trains.values()].find(T => T.speed > 50 * MPH && head(T)?.section != null && ahead(T) >= 15) ?? null;
+  }
+  assert.ok(t, 'no train at speed on a long main section');
+  S.slowOrder = { section: head(t).section, until: S.time + 3600 };
+  const on = () => S.trains.has(t.id) && head(t)?.section === S.slowOrder.section, v = t.speed;
+  step(S);
+  assert.ok(v - t.speed <= TYPES[t.type].dec * MPH + 1e-9, `${t.name} snapped from ${v / MPH} to ${t.speed / MPH} mph`);
+  for (let i = 0; i < 120 && on() && t.speed > SLOW_ORDER.mph * MPH + 1e-9; i++) step(S);
+  assert.ok(on() && t.speed <= SLOW_ORDER.mph * MPH + 1e-9, `${t.name} not down to 20 mph on the section`);
+}
+
 // Operator: named at boot, changes at 14:00 with a new name, logged
 {
   const S = createSim(L, 'lebanon');

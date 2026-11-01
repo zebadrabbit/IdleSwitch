@@ -440,13 +440,14 @@ export function moveTrains(sim, dt = 1) {
     const runOff = train.path.length > 0 && exitNodes(sim, train.dir).includes(headNode(sim, train));
     const acc = TYPES[train.type].acc * MPH, dec = TYPES[train.type].dec * MPH;
     const held = train.state === 'dwelling' || train.state === 'holding';
-    // Limit: the head's edge, and every edge ahead braked down to from where the head is now.
+    // Limit: the head's edge, and every edge ahead braked down to from where the head is now. A limit never drops the
+    // train faster than dec (a slow order set under it brakes it); the stop point below stays absolute.
     // ponytail: speed limits read the head's edge only; a tail still on slower track doesn't hold the train.
     let vAllowed = held ? 0 : train.maxSpeed, s = train.pathOff;
     for (const e of train.path) {
       const end = s + edges[e].len;
       const ahead = Math.max(0, s - train.headDist), ve = edgeSpeed(sim, edges[e]) * MPH;
-      if (end > train.headDist) vAllowed = Math.min(vAllowed, Math.sqrt(ve * ve + 2 * dec * ahead));
+      if (end > train.headDist) vAllowed = Math.min(vAllowed, Math.max(Math.sqrt(ve * ve + 2 * dec * ahead), train.speed - dec * dt));
       s = end;
     }
     const remaining = runOff ? Infinity : s - train.headDist - FOUL; // to the stop point FOUL short of the path's end
