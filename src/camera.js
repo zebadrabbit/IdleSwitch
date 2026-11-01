@@ -8,21 +8,30 @@ import { CELL } from './render.js';
 import { pick } from './rng.js';
 
 export const MOVE_MS = 1000, CAPTION_MS = 400, IDLE_CAM_MS = 60000;
+export const PAUSE_MS = 100, FRAME_MS = 16; // a gap between frames over PAUSE_MS is a pause (background tab): counts as FRAME_MS
 const CHASE_MS = 500; // tau of the chase after a shot's target (a follow's moving head, a resized fit)
+const FOLLOW_S = 8;   // real seconds a follow candidate must still run, at its speed, before its exit end
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v)); // lo wins: a close shot never zooms out past the fit
 
 export const smoothstep = x => (x = clamp(x, 0, 1)) * x * (3 - 2 * x);
+// ms the clocks skip for a gap of gap ms between frames: all of it but one frame when it was a pause, else none.
+export const pauseSkip = gap => (gap > PAUSE_MS ? gap - FRAME_MS : 0);
 
 // Smoothstep over MOVE_MS: the world point under pivot (screen px) moves linearly and zoom geometrically, so a move
-// pivoting on the box centre glides that centre straight; done (and exactly to) from MOVE_MS on.
-export function tween(from, to, startMs, pivot = { x: 0, y: 0 }) {
-  from = { ...from }; to = { ...to }; pivot = { ...pivot }; // copies: callers mutate their camera in place
+// pivoting on the box centre glides that centre straight; done (and exactly to) from MOVE_MS on. v: the velocity the
+// camera had when the move began ({x, y} world px/ms of the point under pivot, z log-zoom/ms; default still), carried
+// in: the start point keeps moving at v, slowing with tau CHASE_MS, and the smoothstep blends it into the target, so
+// a move never starts with a jolt.
+export function tween(from, to, startMs, pivot = { x: 0, y: 0 }, v = null) {
+  from = { ...from }; to = { ...to }; pivot = { ...pivot }; v = { x: 0, y: 0, z: 0, ...v }; // copies: callers mutate theirs
   const under = c => ({ x: c.x + pivot.x / c.zoom, y: c.y + pivot.y / c.zoom }), a = under(from), b = under(to);
   return {
     at(nowMs) {
-      const t = (nowMs - startMs) / MOVE_MS, s = smoothstep(t), zoom = from.zoom * (to.zoom / from.zoom) ** s;
+      const t = (nowMs - startMs) / MOVE_MS, s = smoothstep(t);
       if (t >= 1) return { x: to.x, y: to.y, zoom: to.zoom, done: true };
-      return { x: a.x + (b.x - a.x) * s - pivot.x / zoom, y: a.y + (b.y - a.y) * s - pivot.y / zoom, zoom, done: false };
+      const k = CHASE_MS * (1 - Math.exp(-Math.max(0, nowMs - startMs) / CHASE_MS)); // ms travelled at v so far
+      const ax = a.x + v.x * k, ay = a.y + v.y * k, zoom = from.zoom * Math.exp(v.z * k * (1 - s)) * (to.zoom / from.zoom) ** s;
+      return { x: ax + (b.x - ax) * s - pivot.x / zoom, y: ay + (b.y - ay) * s - pivot.y / zoom, zoom, done: false };
     },
   };
 }
@@ -33,10 +42,11 @@ export const centreOn = (w, box, zoom) =>
 
 const headAt = (sim, t, lag = () => 0) => pointAt(sim, t, t.headDist - lag(t)); // the drawn head, grid cells
 
-// Moving over 15 mph on a path, head at least 6 cells short of its exit end.
-export const followCandidates = (sim, lag) => [...sim.trains.values()].filter(t => {
+// Moving over 15 mph on a path, its head at least FOLLOW_S real seconds short of its exit end at its speed. simSpeed:
+// sim seconds per real second (default 10, the UI's 1x).
+export const followCandidates = (sim, lag, simSpeed = 10) => [...sim.trains.values()].filter(t => {
   const h = t.speed / MPH > 15 && t.path.length && headAt(sim, t, lag);
-  return h && Math.abs(sim.layout.nodes[exitNodes(sim, t.dir)[0]].x - h.x) >= 6;
+  return h && Math.abs(sim.layout.nodes[exitNodes(sim, t.dir)[0]].x - h.x) / (t.speed * simSpeed) >= FOLLOW_S;
 });
 
 // High signals on a main with a moving train of their direction approaching on their row within 12 cells (a standing
@@ -62,13 +72,14 @@ function drift(c, box, t, k) {
 
 export function createIdleCamera({ rng }) {
   let shot = null, last = null, then = null, chase = null, cap = { text: null, want: null, a: 0 };
-  const reset = () => { shot = last = chase = null; cap.want = null; }; // the caption fades out, never cut
+  let skew = 0, vel = null, prev = null; // ms skipped over pauses; the box-centre point's velocity and where it was
+  const reset = () => { shot = last = chase = vel = prev = null; cap.want = null; }; // the caption fades out, never cut
 
   // Overview after a close shot (or to start); after an overview, follow (0.6 if any), else signal, else overview.
-  function next(sim, now, lag) {
+  function next(sim, now, lag, simSpeed) {
     const overview = { kind: 'overview', until: now + 25000 + 20000 * rng() };
     if (shot?.kind !== 'overview') return overview;
-    const f = followCandidates(sim, lag), s = signalCandidates(sim);
+    const f = followCandidates(sim, lag, simSpeed), s = signalCandidates(sim);
     if (f.length && rng() < 0.6) {
       const t = pick(rng, f), to = sim.layout.portals.find(p => p.dir === -t.dir).name;
       return { kind: 'follow', train: t.id, moved: now, until: now + 40000,
@@ -120,18 +131,21 @@ export function createIdleCamera({ rng }) {
 
   return {
     reset,
-    // camera: the renderer's camera, where the first move of a fresh run starts (default fit). Not active: the
-    // caption alone while it fades ({x: null, y: null, zoom: null, caption}), then null.
-    update(sim, now, { fit, box, lag, active, camera }) {
-      const dt = then == null ? 0 : now - then;
+    // camera: the renderer's camera, where the first move of a fresh run starts (default fit). simSpeed: sim seconds per
+    // real second (default 10). Not active: the caption alone while it fades ({x: null, y: null, zoom: null, caption}),
+    // then null. Active: the camera, its caption and the shot ({kind, since}). A gap over PAUSE_MS between calls is a
+    // pause: every clock (shots, moves, drift, caption) picks up where it left off.
+    update(sim, now, { fit, box, lag, active, camera, simSpeed = 10 }) {
+      const gap = then == null ? 0 : now - then, dt = gap > PAUSE_MS ? FRAME_MS : gap;
       then = now;
+      now -= (skew += pauseSkip(gap));
       if (!active) {
         reset();
         const c = caption(null, dt);
         return c && { x: null, y: null, zoom: null, caption: c };
       }
-      if (!shot || over(sim, now, lag)) {
-        shot = { ...next(sim, now, lag), since: now, from: { ...(last ?? camera ?? fit) } };
+      if (!shot || over(sim, now, lag)) { // a new move starts where and when the last frame was, at the velocity it had
+        shot = { ...next(sim, now, lag, simSpeed), since: prev?.now ?? now, from: { ...(last ?? camera ?? fit) }, v: vel };
         chase = null;
       }
       // Every target is chased (tau CHASE_MS); a still one is simply sat on. The opening tween lands on the chase.
@@ -139,9 +153,12 @@ export function createIdleCamera({ rng }) {
       chase = chase ? { x: chase.x + (to.x - chase.x) * k, y: chase.y + (to.y - chase.y) * k,
         zoom: chase.zoom + (to.zoom - chase.zoom) * k } : { ...to };
       const pivot = { x: box.x + box.w / 2, y: box.y + box.h / 2 }; // moves glide the box centre straight
-      const { x, y, zoom } = tween(shot.from, chase, shot.since, pivot).at(now);
+      const { x, y, zoom } = tween(shot.from, chase, shot.since, pivot, shot.v).at(now);
       last = drift({ x, y, zoom }, box, (now - shot.since) / 1000, shot.kind === 'overview' ? 1 / 3 : 1);
-      return { ...last, caption: caption(shot.text ?? null, dt) };
+      const p = { x: last.x + pivot.x / last.zoom, y: last.y + pivot.y / last.zoom, z: Math.log(last.zoom), now }, d = now - prev?.now;
+      if (d > 0) vel = { x: (p.x - prev.x) / d, y: (p.y - prev.y) / d, z: (p.z - prev.z) / d };
+      prev = p;
+      return { ...last, caption: caption(shot.text ?? null, dt), shot: { kind: shot.kind, since: shot.since } };
     },
   };
 }

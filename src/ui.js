@@ -3,7 +3,7 @@
 import { generate } from './gen.js';
 import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel, nightOf } from './sim.js';
 import { createRenderer, mix } from './render.js';
-import { createIdleCamera, tween, centreOn, IDLE_CAM_MS } from './camera.js';
+import { createIdleCamera, tween, centreOn, pauseSkip, IDLE_CAM_MS } from './camera.js';
 import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
   cleanSettings, cleanLayout, clampDock } from './ui-util.js';
 import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
@@ -38,6 +38,7 @@ const canvas = $('#map'), r = createRenderer(canvas);
 const state = {
   speed: settings.speed, paused: false, armedSignal: null, selected: null, lastInput: performance.now(),
   hover: null, refused: null, fitted: true, fitZoom: 1, pressInPanel: false, idleCam: false, camTween: null,
+  camV: null, // the steered camera's velocity (see steer)
 };
 const panelEl = id => $(`#panel-${id}`), bodies = Object.fromEntries(PANELS.map(id => [id, $(`#panel-${id} .panel-body`)]));
 const docks = { left: $('#dock-left'), right: $('#dock-right'), bottom: $('#dock-bottom') };
@@ -58,10 +59,11 @@ function fit(ease = false) {
   state.fitted = true;
   state.fitZoom = r.camera.zoom;
 }
-// Glide from the camera as it is to to() over MOVE_MS (camera.js's tween, pivoting on the centre box's centre). to is
-// read every frame, so the way home lands on the fit of the docks as they are by then; home: refit when it lands.
+// Glide from the camera as it is to to() over MOVE_MS (camera.js's tween, pivoting on the centre box's centre), from
+// the frame that drew it and carrying the velocity it had then (an idle shot, a glide in progress). to is read every
+// frame, so the way home lands on the fit of the docks as they are by then; home: refit when it lands.
 function glide(to, home) {
-  state.camTween = { from: { ...r.camera }, start: performance.now(), to, home };
+  state.camTween = { from: { ...r.camera }, v: state.camV, start: steerAt ?? performance.now(), to, home };
   state.fitted = false;
 }
 const zoomLimit = z => Math.max(Math.min(0.4, state.fitZoom), Math.min(4, z)); // the wheel's and the buttons'
@@ -79,19 +81,39 @@ function touch() {
   glide(fitCamera, true);
 }
 // Each frame before drawing: the idle camera when it may run (setting on, not paused, IDLE_CAM_MS without input), else
-// the glide in progress. Returns the caption to draw, which fades out on its own after input.
+// the glide in progress, which runs even if the idle camera throws (and takes the camera home if that ended its run).
+// A gap over PAUSE_MS since the last frame (a background tab) is a pause: the glide picks up where it was. Tracks the
+// velocity of the camera it steers (state.camV: box-centre world px/ms and log-zoom/ms; null after a frame it didn't
+// steer) for the next glide to carry. Returns the caption to draw, which fades out on its own after input.
+let steerAt = null, steered = null; // the last frame's time, and the camera it steered (box-centre world point, log zoom)
 function steer(now, box) {
+  const gap = steerAt == null ? 0 : now - steerAt, skip = pauseSkip(gap), pivot = { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  steerAt = now;
+  if (state.camTween) state.camTween.start += skip;
   const active = settings.idleCamera && !state.paused && now - state.lastInput > IDLE_CAM_MS;
-  const u = idle.update(sim, now, { fit: r.fitted(layout, box), box, lag: t => (1 - acc) * (t.adv ?? 0), active, camera: r.camera });
-  if (u?.x != null) {
+  let u = null;
+  guarded(() => {
+    u = idle.update(sim, now, { fit: r.fitted(layout, box), box, lag: t => (1 - acc) * (t.adv ?? 0), active, camera: r.camera,
+      simSpeed: SIM_PER_SEC * state.speed });
+  });
+  let moved = u?.x != null;
+  if (moved) {
     Object.assign(r.camera, { x: u.x, y: u.y, zoom: u.zoom });
     state.idleCam = true;
     state.fitted = false; // so layout and resize refits leave it alone
-  } else if (state.camTween) {
-    const g = state.camTween, p = tween(g.from, g.to(), g.start, { x: box.x + box.w / 2, y: box.y + box.h / 2 }).at(now);
-    Object.assign(r.camera, { x: p.x, y: p.y, zoom: p.zoom });
-    if (p.done) { state.camTween = null; if (g.home) fit(); }
+  } else {
+    if (state.idleCam) { state.idleCam = false; glide(fitCamera, true); }
+    const g = state.camTween;
+    if (g) {
+      const p = tween(g.from, g.to(), g.start, pivot, g.v).at(now);
+      Object.assign(r.camera, { x: p.x, y: p.y, zoom: p.zoom });
+      if (p.done) { state.camTween = null; if (g.home) fit(); }
+      moved = true;
+    }
   }
+  const c = r.camera, pt = moved && { x: c.x + pivot.x / c.zoom, y: c.y + pivot.y / c.zoom, z: Math.log(c.zoom) }, d = gap - skip;
+  state.camV = pt && steered && d > 0 ? { x: (pt.x - steered.x) / d, y: (pt.y - steered.y) / d, z: (pt.z - steered.z) / d } : null;
+  steered = pt;
   return u?.caption ?? null;
 }
 
@@ -429,7 +451,7 @@ canvas.addEventListener('pointermove', e => {
       r.camera.x = press.cx - (e.clientX - press.x) / r.camera.zoom;
       r.camera.y = press.cy - (e.clientY - press.y) / r.camera.zoom;
       state.fitted = false;
-      state.camTween = null; // a drag takes over from any glide where it is
+      state.camTween = state.camV = null; // a drag takes over from any glide where it is
       canvas.style.cursor = 'grabbing';
     }
     return;
@@ -455,7 +477,7 @@ canvas.addEventListener('wheel', e => {
   c.x = wx - e.clientX / z;
   c.y = wy - e.clientY / z;
   state.fitted = false;
-  state.camTween = null;
+  state.camTween = state.camV = null;
 }, { passive: false });
 
 // ---- Keys (ignored while typing in a field; a focused button keeps Space and Enter).
