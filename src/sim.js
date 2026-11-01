@@ -734,14 +734,15 @@ export function nightLevel(time, dayLength) {
 }
 export function nightOf(sim) { return nightLevel(sim.time, sim.dayLength); }
 
-export const SLOW_ORDER = { gap: 20 * 60, min: 5 * 60, max: 10 * 60, mph: 20 }; // sim s: mean gap, duration range
+export const SLOW_ORDER = { gap: 20 * 60, min: 5 * 60, max: 10 * 60, mph: 20, minLen: 6 }; // sim s: mean gap, duration range; cells
 // A slow order is a bulletin, not an indication: speeds only, aspects and findPath costs are unchanged.
 export const edgeSpeed = (sim, e) => (sim.slowOrder && e.section === sim.slowOrder.section ? SLOW_ORDER.mph : e.speed);
 export function slowOrderLabel({ slowOrder: o }) { return `Main ${o.main} ${o.x0}–${o.x1}`; }
 const clock = t => [Math.floor(t / 3600) % 24, Math.floor(t / 60) % 60].map(v => String(v).padStart(2, '0')).join(':'); // HH:MM
 
-// One at a time, on a main section; exponential gaps like spawns. Off: none starts and the next is kept ahead without a
-// draw, so turning them back on doesn't fire one at once; an active one runs out.
+// One at a time, on a main section at least minLen cells long; exponential gaps like spawns. Off (or no section long
+// enough): none starts and the next is kept ahead without a draw, so turning them back on doesn't fire one at once; an
+// active one runs out.
 function slowOrders(sim) {
   const next = () => sim.time - SLOW_ORDER.gap * Math.log(1 - sim.extras());
   if (sim.slowOrder && sim.time >= sim.slowOrder.until) {
@@ -750,9 +751,10 @@ function slowOrders(sim) {
     sim.nextSlowOrder = next();
   }
   if (sim.slowOrder || sim.time < sim.nextSlowOrder) return;
-  if (!sim.slowOrders) { sim.nextSlowOrder += SLOW_ORDER.gap; return; }
-  const { edges, nodes } = sim.layout, section = pick(sim.extras, [...sim.sectionEdges.keys()]);
-  const es = sim.sectionEdges.get(section).map(e => edges[e]), xs = es.flatMap(e => [nodes[e.a].x, nodes[e.b].x]);
+  const { edges, nodes } = sim.layout;
+  const long = [...sim.sectionEdges].filter(([, ids]) => ids.reduce((s, e) => s + edges[e].len, 0) >= SLOW_ORDER.minLen);
+  if (!sim.slowOrders || !long.length) { sim.nextSlowOrder += SLOW_ORDER.gap; return; }
+  const [section, ids] = pick(sim.extras, long), es = ids.map(e => edges[e]), xs = es.flatMap(e => [nodes[e.a].x, nodes[e.b].x]);
   sim.slowOrder = { section, until: sim.time + randInt(sim.extras, SLOW_ORDER.min, SLOW_ORDER.max),
     main: es[0].main === -1 ? 1 : 2, x0: Math.min(...xs), x1: Math.max(...xs) }; // Main 1 is mainRow[-1]
   logEvent(sim, `Slow order: ${slowOrderLabel(sim)}, ${SLOW_ORDER.mph} mph until ${clock(sim.slowOrder.until)}`);

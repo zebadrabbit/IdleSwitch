@@ -864,6 +864,7 @@ assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5
   for (let i = 0; i < 4 * SLOW_ORDER.gap && !seen; i++) { step(S1); if (S1.slowOrder) seen = { ...S1.slowOrder }; }
   assert.ok(seen, 'a slow order appears within 4 mean gaps');
   assert.ok(S1.sectionEdges.has(seen.section), 'on a main section');
+  assert.ok(S1.sectionEdges.get(seen.section).reduce((s, e) => s + L.edges[e].len, 0) >= SLOW_ORDER.minLen, 'on a section minLen long');
   const inSec = S1.sectionEdges.get(seen.section);
   assert.ok(inSec.every(e => edgeSpeed(S1, L.edges[e]) === SLOW_ORDER.mph));
   assert.ok(L.edges.filter(e => e.section !== seen.section).every(e => edgeSpeed(S1, e) === e.speed));
