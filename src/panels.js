@@ -3,7 +3,7 @@
 import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitNodes, switchLocked,
   isWrongMain } from './sim.js';
 import { COLORS } from './render.js';
-import { SPEEDS, formatClock, formatDelay } from './ui-util.js';
+import { SPEEDS, DAY_LENGTHS, formatClock, formatDelay } from './ui-util.js';
 
 export const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
@@ -130,14 +130,14 @@ const ASPECTS = [ // name, high 1 head, high 2 heads (top bottom), dwarf
   ['Clear', 'G', 'G R', ''], ['Approach', 'Y', 'Y R', ''], ['Advance Approach', 'FY', 'FY R', ''],
   ['Diverging Clear', '', 'R G', ''], ['Diverging Approach', '', 'R Y', ''], ['Restricting', '', 'R FR', 'FR'],
   ['Slow Clear', '', '', 'G'], ['Stop', 'R', 'R R', 'R']];
-export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MANUAL'], ['F', 'fit map'], ['H', 'hide chrome'],
-  ['Esc', 'clear selection'], ['1–5', 'board, log, inspector, legend, settings'], ['?', 'legend'], ['N', 'new seed'],
-  ['wheel / drag', 'zoom / pan']];
+export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MANUAL'], ['F', 'fit map'], ['0', 'reset view'],
+  ['H', 'hide chrome'], ['Esc', 'clear selection'], ['1–5', 'board, log, inspector, legend, settings'], ['?', 'legend'],
+  ['N', 'new seed'], ['wheel / drag', 'zoom / pan']];
 
 export function legendHTML() {
   const cell = codes => (codes ? heads(codes.split(' ')) : '<span class="dim">—</span>');
   const tracks = [['idle', COLORS.track], ['route set', COLORS.route], ['human route', COLORS.human], ['occupied', COLORS.occupied],
-    ['unset switch leg', COLORS.trackDim]];
+    ['unset switch leg', COLORS.trackDim], ['slow order', COLORS.slow]];
   return '<table class="legend"><thead><tr><th>Aspect</th><th>1 head</th><th>2 heads</th><th>dwarf</th></tr></thead><tbody>'
     + ASPECTS.map(([n, ...c]) => `<tr><td>${n}</td>${c.map(x => `<td>${cell(x)}</td>`).join('')}</tr>`).join('') + '</tbody></table>'
     + '<div class="sub">Track</div>' + tracks.map(([n, c]) => `<div><i class="bar" style="background:${c}"></i>${n}</div>`).join('')
@@ -150,8 +150,13 @@ export function legendHTML() {
 export function settingsHTML(settings, seed) {
   const radio = s => `<label><input type="radio" name="speed" value="${s}"${s === settings.speed ? ' checked' : ''}> ${s}×</label>`;
   const check = (name, label) => `<label><input type="checkbox" name="${name}"${settings[name] ? ' checked' : ''}> ${label}</label>`;
+  const day = m => `<option value="${m}"${m === settings.dayLength ? ' selected' : ''}>${m ? `${m} min` : 'off'}</option>`;
   return `<div class="row"><span class="k">Speed</span>${SPEEDS.map(radio).join(' ')}</div>`
     + `<div class="row"><span class="k">Density</span><select name="density">${densityOptions(settings.density)}</select></div>`
+    + '<div class="sub">Ambient</div>'
+    + `<div class="row"><label>Day length <select name="dayLength">${DAY_LENGTHS.map(day).join('')}</select></label></div>`
+    + `<div class="row">${check('slowOrders', 'slow orders')}</div>`
+    + `<div class="row">${check('idleCamera', 'idle camera after 1 idle minute')}</div>`
     + `<div class="row">${check('idleReturn', 'return to AUTO after 2 idle minutes')}</div>`
     + `<div class="row">${check('flash', 'flashing aspects flash')}</div>`
     + '<div class="row"><button data-act="reset">Reset layout</button></div>'

@@ -1,9 +1,9 @@
 // The app: boot from the seed, the frame loop, HUD, dockable panels with saved layout and settings, NX routing
 // by clicks, keybinds, camera. Panel bodies come from panels.js; pure helpers from ui-util.js.
 import { generate } from './gen.js';
-import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel } from './sim.js';
-import { createRenderer } from './render.js';
-import { PANELS, SPEEDS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
+import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel, nightOf } from './sim.js';
+import { createRenderer, mix } from './render.js';
+import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
   cleanSettings, cleanLayout } from './ui-util.js';
 import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
 
@@ -22,10 +22,12 @@ const seed = params.get('seed') ?? newSeed(); // bad or empty seeds go to genera
 params.set('seed', seed);
 try { history.replaceState(null, '', `?${params}`); } catch { /* file:// and sandboxed frames refuse */ }
 
-const settings = loadJSON(store, SETTINGS_KEY, v => cleanSettings(v, Object.keys(DENSITY)));
+const settings = loadJSON(store, SETTINGS_KEY, v => cleanSettings(v, Object.keys(DENSITY),
+  { ...DEFAULT_SETTINGS, idleCamera: !matchMedia('(prefers-reduced-motion: reduce)').matches }));
 let panels = loadJSON(store, LAYOUT_KEY, cleanLayout);
 const layout = generate(seed);
-const sim = createSim(layout, seed, { density: settings.density });
+const sim = createSim(layout, seed,
+  { density: settings.density, dayLength: settings.dayLength * 60 * SIM_PER_SEC, slowOrders: settings.slowOrders });
 sim.auto = true;
 // Debug: ?ff=N runs N sim seconds at boot. Headless screenshots need it: --virtual-time-budget never runs rAF.
 const ff = Math.min(86400, Math.max(0, parseInt(params.get('ff'), 10) || 0));
@@ -59,6 +61,24 @@ function hud() {
   $('#btn-pause').textContent = state.paused ? '▶' : '⏸';
   $('#btn-pause').classList.toggle('on', state.paused);
   $('#btn-speed').textContent = `${state.speed}×`;
+  $('#hud-operator').textContent = sim.operator;
+}
+// Every frame: the HUD sun and moon by the night level n, and the page chrome blended toward its night colours.
+const sky = $('#hud-sky'), [sun, moon] = sky.children;
+let skyN = -1, chromeN = -1;
+function ambient(n) {
+  if (n !== skyN) { // unchanged (paused) keeps the dusk/dawn title
+    sky.title = `lighting: ${n === 0 ? 'day' : n === 1 ? 'night' : n > skyN ? 'dusk' : 'dawn'}`;
+    sun.style.opacity = 1 - n;
+    moon.style.opacity = n;
+    skyN = n;
+  }
+  if (Math.abs(n - chromeN) > 0.01) {
+    chromeN = n;
+    const css = document.documentElement.style;
+    css.setProperty('--bg', mix('#0b1020', '#070b17', n));
+    css.setProperty('--panel', mix('#121a2e', '#0d1424', n));
+  }
 }
 const togglePause = () => { state.paused = !state.paused; hud(); };
 function toggleAuto() {
@@ -210,8 +230,13 @@ bodies.settings.addEventListener('change', e => {
   if (t.name !== 'seed') t.blur(); // a focused control swallows the keybinds
   if (t.name === 'speed') setSpeed(Number(t.value));
   else if (t.name === 'density') setDensity(t.value);
-  else if (t.name === 'idleReturn' || t.name === 'flash') {
+  else if (t.name === 'dayLength') {
+    settings.dayLength = Number(t.value);
+    sim.dayLength = settings.dayLength * 60 * SIM_PER_SEC;
+    saveSettings();
+  } else if (t.type === 'checkbox') { // idleReturn, flash, slowOrders, idleCamera
     settings[t.name] = t.checked;
+    sim.slowOrders = settings.slowOrders;
     saveSettings();
     document.body.classList.toggle('noflash', !settings.flash);
   }
@@ -400,6 +425,7 @@ function frame(now) {
     if (state.selected?.kind === 'train' && !sim.trains.has(state.selected.id)) state.selected = state.armedSignal = null; // it left
   });
   guarded(() => r.draw(sim, uiFor(now)));
+  guarded(() => ambient(nightOf(sim)));
   if (now - lastPanels >= PANEL_MS) { lastPanels = now; guarded(refreshPanels); }
   requestAnimationFrame(frame);
 }

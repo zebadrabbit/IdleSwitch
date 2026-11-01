@@ -54,17 +54,22 @@ export function saveJSON(storage, key, value) {
   try { storage.setItem(key, JSON.stringify(value)); } catch { /* full or blocked: just not remembered */ }
 }
 
-export const DEFAULT_SETTINGS = { speed: 1, density: 'normal', idleReturn: true, flash: true };
+export const DEFAULT_SETTINGS = { speed: 1, density: 'normal', idleReturn: true, flash: true, dayLength: 4, slowOrders: true, idleCamera: true };
+export const DAY_LENGTHS = [2, 4, 8, 0]; // lighting cycle, real minutes at 1x; 0 = always day
 const obj = v => (v && typeof v === 'object' ? v : {});
 const bool = (v, d) => (typeof v === 'boolean' ? v : d);
 
-export function cleanSettings(v, densities) {
-  const o = obj(v), d = DEFAULT_SETTINGS;
+// defaults: ui.js passes its own (idleCamera off under prefers-reduced-motion).
+export function cleanSettings(v, densities, defaults = DEFAULT_SETTINGS) {
+  const o = obj(v), d = defaults;
   return {
     speed: SPEEDS.includes(o.speed) ? o.speed : d.speed,
     density: densities.includes(o.density) ? o.density : d.density,
     idleReturn: bool(o.idleReturn, d.idleReturn),
     flash: bool(o.flash, d.flash),
+    dayLength: DAY_LENGTHS.includes(o.dayLength) ? o.dayLength : d.dayLength,
+    slowOrders: bool(o.slowOrders, d.slowOrders),
+    idleCamera: bool(o.idleCamera, d.idleCamera),
   };
 }
 

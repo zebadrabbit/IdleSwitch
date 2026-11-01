@@ -9,6 +9,7 @@ export const CELL = 24;
 export const COLORS = {
   bg: '#0b1020', track: '#8a93ab', trackDim: '#3a4463', route: '#39d353', occupied: '#ff4d4f', human: '#5aa9ff',
   label: '#cfd6ea', platform: '#1c2744', dim: '#7d88a6', // dim = --dim in style.css
+  slow: '#b8862b', // slow order
   lamp: { R: '#ff3b30', Y: '#ffcc00', G: '#34c759' },
   types: { X: '#f5d90a', P: '#ffd166', Z: '#c77dff', M: '#5aa9ff', C: '#9aa0a6', G: '#e0a458', I: '#4cc9f0', L: '#8ac926' },
 };
@@ -19,6 +20,9 @@ const STUB = 0.6; // cells of a switch's unselected leg drawn dim at the points
 const MARGIN = 40;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+// '#rrggbb' a blended toward b by t (0..1), per channel.
+export const mix = (a, b, t) => `#${[1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * (1 - t)
+  + parseInt(b.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('')}`;
 
 function segDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;

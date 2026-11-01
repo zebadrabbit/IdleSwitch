@@ -11,11 +11,15 @@ canvas#map { position: fixed; inset: 0; display: block; touch-action: none; }
 .dim { color: var(--dim); }
 
 #hud { position: fixed; top: 0; left: 0; right: 0; height: var(--hud-h); display: flex; align-items: center;
-  gap: 12px; padding: 0 12px; background: rgba(18,26,46,.88); border-bottom: 1px solid var(--panel-border); z-index: 10;
+  gap: 12px; padding: 0 12px; background: color-mix(in srgb, var(--panel) 88%, transparent); border-bottom: 1px solid var(--panel-border); z-index: 10;
   white-space: nowrap; overflow: hidden; }
 #hud .wordmark { font-weight: 600; color: var(--accent); letter-spacing: 1px; }
 #hud .spacer { flex: 1; }
 #hud-clock { font: 600 14px var(--mono); color: var(--text); min-width: 5ch; }
+#hud-sky { position: relative; width: 16px; display: inline-block; }
+#hud-sky i { position: absolute; left: 0; top: -9px; font-style: normal; }
+#hud-sky .sun { color: var(--amber); }
+#hud-sky .moon { color: var(--text); }
 #hud-auto { min-width: 76px; font-weight: 600; letter-spacing: 1px; color: var(--amber); border-color: rgba(240,180,41,.45); }
 #hud-auto.on { color: var(--green); border-color: rgba(57,211,83,.4); }
 #hud-seed { font-family: var(--mono); color: var(--text); }

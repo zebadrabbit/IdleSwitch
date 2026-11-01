@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { formatClock, formatDelay, dockFor, matchCandidate, tick, loadJSON, cleanSettings, cleanLayout,
   DEFAULT_SETTINGS, DEFAULT_LAYOUT } from '../src/ui-util.js';
+import { mix } from '../src/render.js';
 
 // Clock: 06:00 start, minutes floor, wraps past midnight.
 assert.deepEqual([21600, 22859, 86399, 86400 + 3660].map(t => formatClock(t)), ['06:00', '06:20', '23:59', '01:01']);
@@ -34,7 +35,17 @@ assert.deepEqual([
   loadJSON(mem('{oops'), 'k', settings),
   loadJSON(mem(JSON.stringify({ speed: 4, density: 'warp', flash: false })), 'k', settings),
   [layout.board, layout.log],
-], [DEFAULT_SETTINGS, DEFAULT_LAYOUT, DEFAULT_SETTINGS, { speed: 4, density: 'normal', idleReturn: true, flash: false },
+], [DEFAULT_SETTINGS, DEFAULT_LAYOUT, DEFAULT_SETTINGS, { ...DEFAULT_SETTINGS, speed: 4, flash: false },
   [{ x: 40, y: 80, dock: null, hidden: true }, DEFAULT_LAYOUT.log]]);
+
+// New settings: defaults, validation, and a caller-supplied default for idleCamera
+assert.deepEqual(settings(null), DEFAULT_SETTINGS);
+assert.deepEqual([settings({ dayLength: 8 }).dayLength, settings({ dayLength: 3 }).dayLength, settings({ dayLength: 0 }).dayLength], [8, 4, 0]);
+assert.deepEqual([settings({ slowOrders: false }).slowOrders, settings({ slowOrders: 'no' }).slowOrders], [false, true]);
+assert.equal(cleanSettings(null, D, { ...DEFAULT_SETTINGS, idleCamera: false }).idleCamera, false);
+assert.equal(cleanSettings({ idleCamera: true }, D, { ...DEFAULT_SETTINGS, idleCamera: false }).idleCamera, true);
+
+// Colour blend (night chrome and palette): endpoints exact, midpoint rounds per channel.
+assert.deepEqual([0, 0.5, 1].map(t => mix('#0b1020', '#070b17', t)), ['#0b1020', '#090e1c', '#070b17']);
 
 console.log('ui ok');
