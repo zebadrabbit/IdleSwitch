@@ -1,7 +1,7 @@
 // node tests/test_camera.mjs — the idle camera (src/camera.js): eased tweens, centring, shots, drift, caption fades.
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
-import { createSim, step, pointAt, despawnTrain, spawnTrain, setRoute, moveTrains, signalAhead, exitNodes } from '../src/sim.js';
+import { createSim, step, pointAt, despawnTrain, spawnTrain, setRoute, moveTrains, signalAhead, exitNodes, trainLength } from '../src/sim.js';
 import { makeRng } from '../src/rng.js';
 import { CELL } from '../src/render.js';
 import { smoothstep, tween, centreOn, createIdleCamera, followCandidates, signalCandidates, pauseSkip, MOVE_MS, CAPTION_MS,
@@ -177,6 +177,37 @@ assert.deepEqual(run(true), run(false), 'the ease is unaffected by the caller mu
     }
   }
   assert.ok(vertical > 0 && jump < 1e-9, `a head on the stem moves by its advance (${vertical} vertical steps, worst excess ${jump})`);
+}
+
+// A follow caption reads the train every frame: a terminus train (s8) followed in to its pull-ahead signal reverses there,
+// and the caption crossfades from eastbound to westbound (to the same exit: it changes when the train departs the stub)
+// within the one follow shot.
+{
+  const K = createSim(generate('s8'), 's8'), w = K.layout.wye, entry = K.layout.portals.find(p => p.dir === 1);
+  const exit = K.layout.portals.find(p => p.dir === -1), px = K.layout.nodes[w.P[1]].x;
+  K.nextSpawn = K.nextSpawn.map(() => Infinity);
+  K.auto = true;
+  K.queue[entry.id].push({ id: K.nextTrainId++, name: 'P 2', type: 'P', dir: 1, entry: entry.id, exit: exit.id, dest: w.stub, terminus: true,
+    len: trainLength('P'), spawnTime: K.time, sched: K.time });
+  let T = null;
+  for (let i = 0; i < 3000 && !(T && followCandidates(K, lag).includes(T) && px - pointAt(K, T, T.headDist).x < 20); i++) {
+    step(K);
+    T = [...K.trains.values()][0] ?? null;
+  }
+  assert.ok(T?.terminus && followCandidates(K, lag).includes(T), 'a terminus train to follow, 20 cells short of its pull-ahead signal');
+  const c = createIdleCamera({ rng: () => 0 }), seen = []; // rng 0: a 25 s overview, then a follow of the first candidate
+  let u = play(c, -16, 25008, opts, K), since = null, acc = 0;
+  for (let now = 25008; now < 25008 + 40000 && T.state !== 'dwelling'; now += 16) {
+    for (acc += 16; acc >= 100; acc -= 100) step(K);
+    const p = u;
+    u = c.update(K, now, opts);
+    if (u.shot.kind === 'follow') since ??= u.shot.since;
+    if (u.caption?.text !== p.caption?.text) assert.ok(Math.max(p.caption?.alpha ?? 0, u.caption?.alpha ?? 0) <= 0.05, 'the caption crossfades');
+    if (u.caption && u.caption.text !== seen.at(-1)) seen.push(u.caption.text);
+    if (since !== null) assert.equal(u.shot.since, since, 'one follow shot through the reversal');
+  }
+  assert.ok(T.reversed1 && T.pushing, 'the train reversed and backed in under the follow');
+  assert.deepEqual(seen, [`following P 2 · eastbound to ${exit.name}`, `following P 2 · westbound to ${exit.name}`], `captions ${seen}`);
 }
 
 console.log('camera ok');

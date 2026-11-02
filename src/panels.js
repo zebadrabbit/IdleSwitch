@@ -93,7 +93,7 @@ function signalHTML(sim, sig, armed) {
       + ` <button data-cancel="${rt.id}">cancel</button>`
     : 'none';
   return kv([['Signal', `<b class="mono">${signalLabel(sim, sig)}</b>${armed ? ' <span class="armed">armed: click an exit signal</span>' : ''}`],
-    ['Kind', s.kind === 'dwarf' ? 'dwarf' : 'high'], ['Heads', signalHeads(sim, sig)], ['Aspect', aspectHTML(sim, sig)], ['Route', route]])
+    ['Kind', s.kind], ['Heads', signalHeads(sim, sig)], ['Aspect', aspectHTML(sim, sig)], ['Route', route]])
     + `<div class="sub">Exits</div>${exitsHTML(sim, sig)}`;
 }
 
@@ -110,11 +110,15 @@ function trainHTML(sim, t, armed) {
     + (armed !== null ? `<div class="sub">Routes from ${signalLabel(sim, armed)}</div>${exitsHTML(sim, armed)}` : '');
 }
 
+// Locked by: a train on the trunk, else the route on it, else an un-entered route through the points (a shunt route
+// from a terminus foot holds them before its train moves; switchLocked's rule).
 function switchHTML(sim, node) {
   const sw = sim.switchAt.get(node), st = sim.edgeState[sw.trunk];
+  const rt = st.route !== null ? sim.routes.get(st.route)
+    : [...sim.routes.values()].find(r => !r.entered && r.cand.switches.some(s => s.node === node));
   let by = 'no';
   if (st.occ.size) by = `occupied by ${[...st.occ].map(id => trainLabel(sim, id)).join(', ')}`;
-  else if (st.route !== null) by = `route from ${signalLabel(sim, sim.routes.get(st.route).signal)}`;
+  else if (rt) by = `route from ${signalLabel(sim, rt.signal)}`;
   return kv([['Switch', `<b class="mono">${switchLabel(sim, node)}</b>`], ['Lie', sim.switchState.get(node).lie],
     ['Locked', switchLocked(sim, node) ? by : 'no']]) + `<div class="sub"><button data-throw="${node}">throw</button></div>`;
 }
@@ -137,7 +141,7 @@ export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MAN
 
 export function legendHTML() {
   const cell = codes => (codes ? heads(codes.split(' ')) : '<span class="dim">—</span>');
-  const tracks = [['idle', COLORS.track], ['wye / branch', COLORS.track], ['route set', COLORS.route], ['human route', COLORS.human],
+  const tracks = [['idle', COLORS.track], ['wye / branch / stub', COLORS.track], ['route set', COLORS.route], ['human route', COLORS.human],
     ['occupied', COLORS.occupied], ['unset switch leg', COLORS.trackDim], ['slow order', COLORS.slow]];
   return '<table class="legend"><thead><tr><th>Aspect</th><th>1 head</th><th>2 heads</th><th>dwarf</th></tr></thead><tbody>'
     + ASPECTS.map(([n, ...c]) => `<tr><td>${n}</td>${c.map(x => `<td>${cell(x)}</td>`).join('')}</tr>`).join('') + '</tbody></table>'

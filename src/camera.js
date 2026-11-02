@@ -80,18 +80,15 @@ export function createIdleCamera({ rng }) {
     const overview = { kind: 'overview', until: now + 25000 + 20000 * rng() };
     if (shot?.kind !== 'overview') return overview;
     const f = followCandidates(sim, lag, simSpeed), s = signalCandidates(sim);
-    if (f.length && rng() < 0.6) {
-      const t = pick(rng, f), to = sim.layout.portals[t.exit].name;
-      return { kind: 'follow', train: t.id, moved: now, until: now + 40000,
-        text: `following ${t.name} · ${t.dir > 0 ? 'east' : 'west'}bound to ${to}` };
-    }
+    if (f.length && rng() < 0.6) return { kind: 'follow', train: pick(rng, f).id, moved: now, until: now + 40000 };
     if (!s.length) return overview;
     const id = pick(rng, s);
     return { kind: 'signal', signal: id, passed: Infinity, until: now + 45000, text: `watching ${signalLabel(sim, id)}` };
   }
 
   // Ends early when the subject is lost: a follow's train gone, off its path or stood 8 s; a signal 6 s after a head
-  // passes its node (any train, crossing in its direction of travel).
+  // passes its node (any train, crossing in its direction of travel). ponytail: a terminus train reversing at a pull-ahead
+  // signal counts as passing it (its head moves back past the node and its direction flips): the shot ends 6 s later.
   function over(sim, now, lag) {
     if (now >= shot.until) return true;
     if (shot.kind === 'follow') {
@@ -118,6 +115,12 @@ export function createIdleCamera({ rng }) {
     const t = sim.trains.get(shot.train), h = headAt(sim, t, lag);
     return centreOn({ x: (h.x + 3 * t.dir) * CELL, y: h.y * CELL }, box, clamp(3 * fit.zoom, fit.zoom, 3));
   }
+
+  // A follow's caption, read every frame: a terminus train's direction flips when it reverses, its exit when it departs.
+  const textOf = (sim, sh) => {
+    const t = sh.kind === 'follow' && sim.trains.get(sh.train);
+    return t ? `following ${t.name} · ${t.dir > 0 ? 'east' : 'west'}bound to ${sim.layout.portals[t.exit].name}` : sh.text ?? null;
+  };
 
   // One text at a time: a changed text first fades the old one out, then rises, each linear over CAPTION_MS. The
   // frame's dt applies to the previous frame's wanted text, so a change at now still shows the old alpha at now.
@@ -158,7 +161,7 @@ export function createIdleCamera({ rng }) {
       const p = { x: last.x + pivot.x / last.zoom, y: last.y + pivot.y / last.zoom, z: Math.log(last.zoom), now }, d = now - prev?.now;
       if (d > 0) vel = { x: (p.x - prev.x) / d, y: (p.y - prev.y) / d, z: (p.z - prev.z) / d };
       prev = p;
-      return { ...last, caption: caption(shot.text ?? null, dt), shot: { kind: shot.kind, since: shot.since } };
+      return { ...last, caption: caption(textOf(sim, shot), dt), shot: { kind: shot.kind, since: shot.since } };
     },
   };
 }

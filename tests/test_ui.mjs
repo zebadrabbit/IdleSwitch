@@ -5,7 +5,9 @@ import { formatClock, formatDelay, dockFor, matchCandidate, tick, loadJSON, clea
   DEFAULT_SETTINGS, DEFAULT_LAYOUT } from '../src/ui-util.js';
 import { mix, createRenderer, facingOf, rightOf, tagAt, CELL } from '../src/render.js';
 import { generate } from '../src/gen.js';
-import { createSim, step, nightOf, spawnTrain, setRoute, cancelRoute, switchLocked, aspectOf, lamps, signalHeads, trainBlocks } from '../src/sim.js';
+import { createSim, step, nightOf, spawnTrain, setRoute, cancelRoute, switchLocked, aspectOf, lamps, signalHeads, trainBlocks, reverse,
+  signalLabel, FOUL } from '../src/sim.js';
+import { inspectorHTML } from '../src/panels.js';
 
 // Clock: 06:00 start, minutes floor, wraps past midnight.
 assert.deepEqual([21600, 22859, 86399, 86400 + 3660].map(t => formatClock(t)), ['06:00', '06:20', '23:59', '01:01']);
@@ -68,6 +70,7 @@ const ctx = new Proxy({ globalAlpha: 1 }, {
     else if (k === 'fillRect' && a[3] === 15) rec.push({ k: 'tag', x: a[0], y: a[1], w: a[2], h: a[3] });
     else if (k === 'strokeRect' && a[2] === 7 && a[3] === 5.5) rec.push({ k: 'lock', x: a[0] + 3.5, y: a[1] + 1.5, alpha: o.globalAlpha });
     else if (k === 'createRadialGradient') rec.push({ k: 'halo' });
+    else if (k === 'translate' || k === 'rotate' || k === 'roundRect' || k === 'moveTo' || k === 'lineTo') rec.push({ k, a });
     return k === 'measureText' ? { width: 30 } : { addColorStop() {} };
   },
   set: (o, k, v) => { o[k] = v; return true; },
@@ -203,6 +206,79 @@ for (const L of [N3, S18]) {
   assert.ok(setRoute(SL, L.wye.stemSignal, SL.routesFrom.get(L.wye.stemSignal)[0].exitNode).ok && switchLocked(SL, L.wye.A));
   const lock = (rec = [], R2.draw(SL, { blink: true, now: 32 }), rec).find(d => d.k === 'lock' && Math.abs(d.y - Y(A.y)) < 1);
   assert.ok(lock && Math.sign(lock.x - X(A.x)) === -side && Math.abs(lock.x - X(A.x)) >= 9, `${L.wye.side}: apex padlock beside the apex (${lock?.x}, ${X(A.x)})`);
+}
+
+// ---- A terminus (s8 north, s14 south): the stub's box, its buffer stop, the shunt dwarfs at the feet, a pushing train's
+// tag with its loco, and the crossfade of a train's ends when it reverses.
+for (const seed of ['s8', 's14']) {
+  const L = generate(seed), w = L.wye, north = w.side === 'north', S = createSim(L, seed);
+  assert.ok(w?.kind === 'terminus' && north === (seed === 's8'), `${seed} is a ${north ? 'north' : 'south'} terminus`);
+  S.nextSpawn = S.nextSpawn.map(() => Infinity);
+  const R3 = createRenderer({ getContext: () => ctx, style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) });
+  R3.fit(L);
+  let now = 0;
+  const draw = () => (rec = [], R3.draw(S, { blink: true, now: (now += 16) }), rec);
+  const cam = () => { const z = R3.camera.zoom; return { z, X: gx => (gx * CELL - R3.camera.x) * z, Y: gy => (gy * CELL - R3.camera.y) * z,
+    cell: CELL * z, lw: Math.max(2, 3 * z), bh: Math.min(18, Math.max(9, CELL * z * 0.56)) }; };
+  const sg = L.signals[w.stubSignal], se = L.edges[sg.from], sn = L.nodes[sg.node], bn = L.nodes[se.a === sg.node ? se.b : se.a];
+  // The box: turned a quarter (the name reads bottom to top), on the right of departure travel (west of a north stub,
+  // east of a south one), clear of the track, along the S-buffer edge from a cell past S to half a cell short of the
+  // buffer; the name across its middle, centred when it fits, else from 4 px in at its S end on past the buffer.
+  for (const zoom of [null, 0.2]) {
+    if (zoom) Object.assign(R3.camera, { zoom });
+    const { X, Y, cell, lw, bh } = cam(), d = draw(), i = d.findIndex(r => r.k === 'rotate'), [tx, ty] = d[i - 1].a, box = d[i + 1].a;
+    const name = d.slice(i).find(r => r.text === L.tracks[w.stub].name), len = box[2];
+    assert.ok(d[i - 1].k === 'translate' && Math.abs(d[i].a[0] + Math.PI / 2) < 1e-12 && d[i + 1].k === 'roundRect', `${seed}: a turned box`);
+    assert.ok(north ? tx < X(sn.x) : tx > X(sn.x), `${seed}: the box on the right of departure travel (${tx}, ${X(sn.x)})`);
+    assert.ok(Math.abs(Math.abs(tx - X(sn.x)) - bh / 2 - (lw / 2 + 3)) < 1e-9 && box[3] === bh, `${seed}: the box ${lw / 2 + 3} px off the track`);
+    assert.ok(Math.abs(Math.abs(ty - Y(sn.y)) - len / 2 - cell) < 1e-9 && Math.abs(Math.abs(ty - Y(bn.y)) - len / 2 - cell / 2) < 1e-9,
+      `${seed}: the box from a cell past S to half a cell short of the buffer`);
+    const over = 30 - len; // the recording canvas measures every text 30 px wide
+    assert.ok(name && name.y === 0 && name.x === (over > 0 ? (north ? 1 : -1) * (over / 2 + 4) : 0), `${seed}: the name (${name?.x}, ${len})`);
+    // The buffer stop: a bar 2 lw long across the end of the track.
+    const bar = d.findIndex(r => r.k === 'moveTo' && r.a[1] === Y(bn.y) && Math.abs(Math.abs(r.a[0] - X(bn.x)) - lw) < 1e-9);
+    assert.ok(bar >= 0 && d[bar + 1].k === 'lineTo' && d[bar + 1].a[1] === Y(bn.y) && Math.abs(d[bar + 1].a[0] + d[bar].a[0] - 2 * X(bn.x)) < 1e-9,
+      `${seed}: a buffer stop across the stub's end`);
+  }
+  // Shunt signals are dwarfs on the right of their facing, near the track as dwarfs are, and stand back along the run
+  // they face from the foot's points: F1's faces east (below the main, west of F1), F2's west (above, east of F2).
+  Object.assign(R3.camera, { x: L.nodes[w.A].x * CELL - 683 / 2, y: L.nodes[w.A].y * CELL - 384 / 2, zoom: 2 });
+  {
+    const { X, Y, lw } = cam(), dr = 3.5, near = lw / 2 + 2 + dr, back = dr + 13;
+    for (const [f, sig, dx, dy] of [[w.F1, w.shunt.F1, -1, 1], [w.F2, w.shunt.F2, 1, -1]]) {
+      const n = L.nodes[f], at = (bx, by) => R3.pick(S, X(n.x) + bx, Y(n.y) + by);
+      assert.ok(L.signals[sig].kind === 'shunt' && at(dx * back, dy * near)?.id === sig && at(dx * back, -dy * near)?.id !== sig
+        && at(-dx * back, dy * near)?.id !== sig, `${seed}: shunt ${signalLabel(S, sig)} by facing, back from the points`);
+    }
+  }
+  // A pushing train's tag rides its loco, the last block, on the right of its travel; at a reversal (standing) the old
+  // tag fades out where it was as the new one fades in on the right of the new travel.
+  {
+    const P = w.P[-1], run = L.edges.find(e => (e.a === P && e.b === w.F1) || (e.b === P && e.a === w.F1)), y0 = cam().Y(L.mainRow[w.feetMain]);
+    const T = spawnTrain(S, { type: 'P', dir: 1, name: 'P 2' });
+    Object.assign(T, { path: [run.id], pathStart: P, headDist: run.len - FOUL, state: 'stopped', locoAtTail: true, pushing: true });
+    S.edgeState[run.id].occ.add(T.id);
+    const tagsOf = d => d.filter(r => r.text === 'P 2'), mid = b => (cam().X(b.x1) + cam().X(b.x2)) / 2;
+    for (let i = 0; i < 40; i++) draw();
+    const bl = trainBlocks(S, T), [t0] = tagsOf(draw());
+    assert.ok(bl.at(-1).kind === 'loco' && Math.abs(t0.x - mid(bl.at(-1))) <= 0.5 && t0.y > y0 && t0.alpha > 0.98,
+      `${seed}: the tag at the trailing loco, below eastbound travel (${t0.x}, ${mid(bl.at(-1))})`);
+    reverse(S, T, -1);
+    const both = tagsOf(draw()), [nw, old] = [both.find(r => r.y < y0), both.find(r => r.y > y0)];
+    assert.ok(both.length === 2 && nw && old && old.x === t0.x && old.alpha < 1 && old.alpha > 0.8 && nw.alpha > 0 && nw.alpha < 0.2,
+      `${seed}: the tags crossfade at the reversal ${JSON.stringify(both)}`);
+    assert.ok(Math.abs(nw.x - mid(trainBlocks(S, T)[0])) <= 0.5, `${seed}: the new tag on the loco, now leading`);
+    for (let i = 0; i < 40; i++) draw();
+    const after = tagsOf(draw());
+    assert.ok(after.length === 1 && after[0].y < y0 && after[0].alpha > 0.98, `${seed}: one tag, above westbound travel`);
+  }
+  // The switch inspector names an un-entered route through the points as what locks them (a shunt route holds the foot
+  // before its train moves).
+  {
+    const Q = createSim(L, seed), buffer = L.nodes.indexOf(bn);
+    assert.ok(setRoute(Q, w.shunt.F1, buffer, { human: true }).ok && switchLocked(Q, w.F1));
+    assert.match(inspectorHTML(Q, { kind: 'switch', id: w.F1 }), new RegExp(`<th>Locked</th><td>route from ${signalLabel(Q, w.shunt.F1)}</td>`));
+  }
 }
 
 console.log('ui ok');
