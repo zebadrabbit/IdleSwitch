@@ -35,7 +35,7 @@ const tx = (G, t) => G.nodes[G.edges[G.tracks[t].edges[0]].a].x; // a track's co
 function wyeSeed(side) {
   for (let i = 0; i < 100; i++) {
     const G = generate(`s${i}`), w = G.wye, dest = (t, d) => t.cls !== 'siding' && t.dir === d;
-    if (w?.side === side && G.tracks.some(t => dest(t, E) && tx(G, t.id) < w.x0) && G.tracks.some(t => dest(t, W) && tx(G, t.id) > w.x1))
+    if (w?.kind === 'junction' && w.side === side && G.tracks.some(t => dest(t, E) && tx(G, t.id) < w.x0) && G.tracks.some(t => dest(t, W) && tx(G, t.id) > w.x1))
       return `s${i}`;
   }
   assert.fail(`no ${side} junction seed in s0..s99`);
@@ -1639,14 +1639,13 @@ for (const seed of [sN, sS]) {
   assert.equal(S.routes.get(D.routes[0])?.cand.exitNode, k.portal.node, 'the departure waiting at b did not get the stem');
   assert.equal(A.routes.length, 0, 'an arrival went in while a departure waited');
 }
-// ... unless an arrival has stood STARVE (10 min) at the portal: then departures are held until it has gone in, though
-// this one (an express stood as long) is served first by rank
+// ... unless an arrival has stood STARVE (10 min) at the portal: then it is not held, and goes in first by rank
 {
   const S = quiet(sN), G = S.layout, k = wyeOf(S), bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), sg = G.signals[bSig];
   S.auto = true;
   const D = stand(S, spawnTrain(S, { type: 'X', dir: E, exit: 2, name: 'X 18' }), [sg.from], farOf(G, sg.from, sg.node));
   const A = spawnTrain(S, { type: 'M', dir: W, entry: 2, name: 'M 19' });
-  D.lastMoveTime = A.lastMoveTime = S.time - 10 * 60;
+  A.lastMoveTime = S.time - 10 * 60;
   step(S);
   assert.equal(S.routes.get(A.routes[0])?.signal, k.portalSig, 'the starved arrival was not let in');
   assert.equal(D.routes.length, 0, 'a departure went in past a starved arrival');
@@ -1666,6 +1665,71 @@ for (const exit of [1, 2]) {
   step(S);
   if (exit === 1) assert.ok(S.routes.get(X.routes[0])?.cand.wrongMain, 'the far-end express was not routed round M 2');
   else assert.ok(X.routes.every(r => !S.routes.get(r).cand.wrongMain), 'the branch-bound express was sent wrong main');
+}
+
+// the liveness valve on a frozen AUTO wedge (tools/freeze-wedge.mjs: s142 busy at 10:18 under the sim before the valve,
+// layout included, where it held for good): P 411, bound for the branch, has stood 18 min at b' with its way up the
+// stem occupied by P 264, which waits on L 268, opposed by M 425, which waits on Z 419, which waits on P 411. P 411
+// gives the branch up at once and runs for the far end; within the hour no train stands an hour.
+{
+  const fx = JSON.parse(readFileSync(new URL('./fixtures/wedge-s142.json', import.meta.url), 'utf8'));
+  const S = createSim(fx.layout, fx.seed, { density: 'busy', slowOrders: false }), G = S.layout, br = G.portals[2];
+  Object.assign(S, { time: fx.time, nextTrainId: fx.nextTrainId, nextRouteId: fx.nextRouteId, auto: true });
+  S.nextSpawn = S.nextSpawn.map(() => Infinity); // the frozen trains only
+  for (const t of fx.trains) S.trains.set(t.id, { ...t, events: [] });
+  for (const { exitNode, sense, ...r } of fx.routes) {
+    const cand = S.routesFrom.get(r.signal).find(c => c.exitNode === exitNode);
+    S.routes.set(r.id, { ...r, cand, dir: cand.dir, sense: new Map(sense) });
+  }
+  for (const [e, id] of fx.occ) S.edgeState[e].occ.add(id);
+  for (const [e, id] of fx.locks) S.edgeState[e].route = id;
+  for (const [n, lie] of fx.lies) S.switchState.get(n).lie = lie;
+  for (const [t, id] of fx.reserved) S.reserved.set(t, id);
+  const P = [...S.trains.values()].find(t => t.name === 'P 411');
+  assert.ok(P.exit === br.id && P.dest === null && S.time - P.lastMoveTime >= 10 * 60 && G.nodes[headNode(S, P)].x === G.wye.x1, 'the frozen wedge');
+  step(S);
+  assert.ok(S.log.some(e => e.text === `P 411 missed ${br.name}`), 'P 411 kept the branch');
+  for (let i = 0; i < 3600; i++) {
+    step(S);
+    for (const T of S.trains.values()) if (T.state !== 'dwelling' && T.state !== 'holding')
+      assert.ok(S.time - T.lastMoveTime < 3600, `${T.name} stood an hour after the valve`);
+  }
+  assert.equal(S.completed.find(c => c.name === 'P 411')?.to, G.portals[0].name, 'P 411 not out by the far end');
+}
+
+// a branch-bound train a human left on the wrong main (westbound on Main 2) gives the branch up too, at once, and
+// leaves by the far end within the hour: at the boundary east of the wye's module neighbour, every way on is wrong
+// main, which the operator never sets for a train bound for the branch; at b' with an arrival standing at the stem
+// signal, that arrival needs the section it stands in. Traffic flows on.
+for (const seed of [sN, sS]) for (const shape of ['module', 'gate']) {
+  const S = shape === 'gate' ? quiet(seed) : createSim(generate(seed), seed), G = S.layout, k = wyeOf(S), br = k.portal;
+  const x = shape === 'gate' ? k.b2 : G.modules.find(m => m.x0 - 1 === k.b2).x1 + 1, nd = k.N(x, G.mainRow[E]), sg = G.signals[sigAt(S, nd, W)];
+  const X = stand(S, spawnTrain(S, { type: 'X', dir: W, exit: br.id, name: 'X 9' }), [sg.from], farOf(G, sg.from, nd));
+  const A = shape === 'gate' ? stand(S, spawnTrain(S, { type: 'M', dir: E, entry: br.id, name: 'M 10' }), S.routesFrom.get(k.portalSig)[0].edges, br.node) : null;
+  assert.ok(isWrongMain(S, X), `${seed} ${shape}: X 9 not wrong main`);
+  S.auto = true;
+  for (let i = 0; i < 3600 && (S.trains.has(X.id) || (A && S.trains.has(A.id))); i++) step(S);
+  assert.ok(S.log.some(e => e.text === `X 9 missed ${br.name}`), `${seed} ${shape}: X 9 kept the branch`);
+  assert.equal(S.completed.find(c => c.name === 'X 9')?.to, portalOf(S, E).name, `${seed} ${shape}: X 9 not out by the far end`);
+  if (A) assert.ok(S.completed.some(c => c.name === 'M 10'), `${seed}: the arrival never left`);
+  else {
+    const e0 = S.completed.length;
+    for (let i = 0; i < 3600; i++) step(S);
+    assert.ok(S.completed.length - e0 >= 10 && !S.log.some(e => e.text.startsWith('STALL')), `${seed}: traffic stopped after X 9`);
+  }
+}
+
+// an un-entered human route running up the stem out of the branch portal (dir E) lets no eastbound arrival in: it
+// starts at b, not at the portal's signal, so the arrival could never take it
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S), bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E);
+  const r = setRoute(S, bSig, k.portal.node, { human: true }).route;
+  S.queue[2].push(entryOf(S, 'M', E, 2, 1, 'M 20'));
+  step(S);
+  assert.equal(S.trains.size, 0, 'an arrival entered under a departure route');
+  cancelRoute(S, r.id);
+  step(S);
+  assert.equal(S.trains.size, 1, 'the arrival did not enter once the stem was clear');
 }
 
 // a human route lined from the branch portal signal before any train is there: the next branch arrival enters (either

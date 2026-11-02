@@ -54,6 +54,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
 
 // The west or east portal a dir train enters by (the far end's is portalFor(-dir), where it leaves).
 const portalFor = (sim, dir) => sim.layout.portals.find(p => p.dir === dir).id;
+const branchOf = sim => sim.layout.portals.find(p => p.dir === 0); // a junction's branch portal, or undefined
 export const entryNode = (sim, train) => sim.layout.portals[train.entry].node;
 export const exitNodesOf = (sim, portalId, dir) => sim.exits[portalId][dir]; // dir's home main first (createSim)
 export const exitNodes = (sim, train) => exitNodesOf(sim, train.exit, train.dir);
@@ -645,12 +646,14 @@ function newEntry(sim, portalId) {
 }
 
 function canEnter(sim, q) {
-  const st = sim.edgeState[forwardEdges(sim, sim.layout.portals[q.entry].node, q.dir)[0]];
+  const node = sim.layout.portals[q.entry].node, st = sim.edgeState[forwardEdges(sim, node, q.dir)[0]];
   const r = st.route === null ? null : sim.routes.get(st.route);
-  // Rule: the portal edge must be unoccupied and unrouted, except for an un-entered human route (trainId null) of its
-  // direction (or, at the branch portal, of either: dir 0), which the entering train adopts; otherwise a route lined
-  // from the portal before any train came blocks it for good.
-  if (st.occ.size || (r && (r.entered || r.trainId !== null || (r.dir !== q.dir && r.dir !== 0)))) return false;
+  // Rule: the portal edge must be unoccupied and unrouted, except for an un-entered human route (trainId null) from
+  // this portal's signal, of its direction (at the branch portal, dir 0: either), which the entering train adopts;
+  // otherwise a route lined from the portal before any train came blocks it for good. A route running out over the
+  // portal edge (a departure up the stem) is never the entering train's to take.
+  if (st.occ.size || (r && (r.entered || r.trainId !== null || r.signal !== signalAhead(sim, node, null)
+    || (r.dir !== q.dir && r.dir !== 0)))) return false;
   // A train still waiting at this portal for its first route occupies nothing: never stack another behind it.
   for (const t of sim.trains.values()) if (t.entry === q.entry && !t.path.length) return false;
   return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest));
@@ -781,21 +784,25 @@ function deadRoute(sim, r) {
 }
 
 // Rule: a junction's branch turns round (spec "Stem one at a time"). A departure waiting at a signal into it (bound for
-// the branch, its path ending at a signal with a route up the stem) stands on the main and holds up the trains behind
-// it; an arrival waiting at the branch portal holds up nothing. So while a departure waits no arrival is let into the
-// stem, unless one has stood STARVE at the portal: then it is, and no departure is let in until it has gone in. Trains
-// already in the branch always run out, so it drains, and the waiting side gets it. Without this, busy arrivals follow
-// each other down the stem (same sense) and a departure at b waited 14 min while the main behind it backed up.
-// Returns null without a junction, else { branch: its portal id, node: its portal node, in: true if the branch is fed
-// inbound only (departures held), false if outbound only (arrivals held), null if both }.
-function branchFeed(sim) {
-  const br = sim.layout.portals.find(p => p.dir === 0);
-  if (!br) return null;
-  const trains = [...sim.trains.values()], feed = { branch: br.id, node: br.node, in: null };
-  const gate = u => sim.routesFrom.get(signalAheadOf(sim, u))?.some(c => c.exitNode === br.node && c.dir === u.dir);
-  if (trains.some(u => u.entry === br.id && !u.path.length && sim.time - u.lastMoveTime >= STARVE)) feed.in = true;
-  else if (trains.some(u => u.exit === br.id && u.dest === null && gate(u))) feed.in = false;
-  return feed;
+// the branch, its path ending at b or b') stands on the main and holds up the trains behind it; an arrival waiting at
+// the branch portal holds up nothing. So while a departure waits no arrival is let into the stem, and the branch drains
+// (trains in it always run out) for the departure. Without this, busy arrivals follow each other down the stem (same
+// sense) and a departure at b waited 14 min while the main behind it backed up. An arrival that has stood STARVE is
+// not held: it is served first by rank like any train stood that long, and a departure cannot slip in behind an
+// outbound train on the single stem, so it gets in next. A departure stood STARVE gives the branch up (the valve).
+function arrivalsHeld(sim, br) {
+  if (!br) return false;
+  const trains = [...sim.trains.values()];
+  return !trains.some(u => u.entry === br.id && !u.path.length && sim.time - u.lastMoveTime >= STARVE)
+    && trains.some(u => u.exit === br.id && u.dest === null && intoBranch(sim, signalAheadOf(sim, u), u.dir, br));
+}
+// Signal sig has a route of dir up the stem to the branch portal br (it stands at b or b').
+const intoBranch = (sim, sig, dir, br) => !!sim.routesFrom.get(sig)?.some(c => c.exitNode === br.node && c.dir === dir);
+// The train gives up the branch it was bound for and runs for the far end of its dir.
+function missBranch(sim, t, br) {
+  logEvent(sim, `${t.name} missed ${br.name}`);
+  t.exit = portalFor(sim, -t.dir);
+  t.goal = { exit: t.exit };
 }
 
 // A train whose path ends at a signal with no route from it gets the route to the next signal along its pathfound
@@ -822,12 +829,19 @@ function operator(sim) {
   // busy traffic a higher-priority main train waits every time the main frees, and a local at a merge starved.
   // ponytail: a fixed threshold, not aging; worst stand 16.8 min over 60 busy seeds. Age it if denser traffic starves.
   const rank = t => t.prio + (sim.time - t.lastMoveTime >= STARVE ? 10 : 0);
-  const feed = branchFeed(sim);
+  const br = branchOf(sim), held = arrivalsHeld(sim, br);
   for (const t of [...sim.trains.values()].sort((a, b) => rank(b) - rank(a) || a.id - b.id)) {
     if (t.state === 'dwelling' || t.state === 'holding' || t.holdFor !== null) continue; // holding or on its way in
     const node = headNode(sim, t), last = t.path.at(-1) ?? null, sig = signalAhead(sim, node, last);
     if (sig === undefined || routeFrom(sim, sig)) continue;
     if (t.dest !== null && trackAhead(sim, t) === t.dest) continue; // arriving: it dwells before going on
+    // Rule (liveness valve): a train bound for the branch that is wrong main (a human sent it: the operator never does,
+    // below), or has stood STARVE at b or b' with its way up the stem refused, gives the branch up and runs for the far
+    // end. The atomic routes through the junction keep it safe, not live: on s142 a branch-bound train at b' waited on
+    // a train standing across its way in the gap, which waited (three trains on) on the train behind the first.
+    // Switching its exit then cleared every stand within the hour.
+    if (br && t.dest === null && t.exit === br.id
+      && (isWrongMain(sim, t) || (sim.time - t.lastMoveTime >= STARVE && intoBranch(sim, sig, t.dir, br)))) missBranch(sim, t, br);
     const path = findPath(sim, node, t.dir, t.goal,
       { trainId: t.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST }, last);
     if (!path) {
@@ -837,11 +851,7 @@ function operator(sim) {
         logEvent(sim, `${t.name} missed ${tracks[t.dest].name}`);
         sim.reserved.delete(t.dest);
         Object.assign(t, { dest: null, goal: { exit: t.exit } });
-      } else if (t.exit !== portalFor(sim, -t.dir)) {
-        logEvent(sim, `${t.name} missed ${sim.layout.portals[t.exit].name}`);
-        t.exit = portalFor(sim, -t.dir);
-        t.goal = { exit: t.exit };
-      }
+      } else if (br && t.exit === br.id) missBranch(sim, t, br);
       continue;
     }
     // At a dir 0 signal (the stem's) only the routes of its dir, or both dirs, are the train's to take.
@@ -861,11 +871,12 @@ function operator(sim) {
     // ponytail: findPath doesn't price tracks, so a way round through one can still beat the other main and the train
     // waits. Price tracks other than the goal in findPath if passing ever looks too rare.
     if (!cand || (into !== null && into !== t.dest)) continue;
-    if (feed?.in != null && (feed.in ? cand.exitNode === feed.node : sim.layout.signals[sig].node === feed.node)) continue;
+    if (held && sim.layout.signals[sig].node === br.node) continue; // an arrival held at the portal (arrivalsHeld)
     // Rule: a train bound for the branch is never sent wrong main (its moves through the junction gap are exempt and not
     // wrongMain). Stood at b or b' on the other main its only way on is the branch, and an arrival holding that inbound
-    // can need the very section it stands in: a deadlock on three of 17 junction seeds in 8 busy hours.
-    if (cand.wrongMain && t.dest === null && t.exit === feed?.branch) continue;
+    // can need the very section it stands in: a deadlock on three of 17 junction seeds in 8 busy hours. One already
+    // wrong main gave the branch up above (the valve), so this only keeps the rest off the other main.
+    if (cand.wrongMain && t.dest === null && t.exit === br?.id) continue;
     if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok)
       logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${cand.wrongMain ? ' (wrong main)' : ''}`);
   }
