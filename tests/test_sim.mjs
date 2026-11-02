@@ -29,6 +29,36 @@ const exitsOf = (S, d) => exitNodesOf(S, portalOf(S, -d).id, d); // the far end 
 const exitGoal = (S, d) => ({ exit: portalOf(S, -d).id });
 // The signal at node for trains of dir, looked up as signals were keyed before they faced an edge.
 const sigAt = (S, node, dir) => S.layout.signals.find(s => s.node === node && s.dir === dir)?.id;
+// Junction seeds (spec "The wye"): the first of s0..s99 with a wye on that side whose modules have destination tracks on
+// both sides of it (eastbound west of the wye, westbound east of it), so trains run to and from the branch with calls.
+const tx = (G, t) => G.nodes[G.edges[G.tracks[t].edges[0]].a].x; // a track's column (its entry end)
+function wyeSeed(side) {
+  for (let i = 0; i < 100; i++) {
+    const G = generate(`s${i}`), w = G.wye, dest = (t, d) => t.cls !== 'siding' && t.dir === d;
+    if (w?.side === side && G.tracks.some(t => dest(t, E) && tx(G, t.id) < w.x0) && G.tracks.some(t => dest(t, W) && tx(G, t.id) > w.x1))
+      return `s${i}`;
+  }
+  assert.fail(`no ${side} junction seed in s0..s99`);
+}
+const sN = wyeSeed('north'), sS = wyeSeed('south');
+// A junction sim's wye: legs off F1 and F2, stem edges from the apex out, the stem signal and its node, the branch portal
+// and its signal, the row of the main the feet are on, b and b' (the gap's boundary columns), the branch section.
+function wyeOf(S) {
+  const G = S.layout, w = G.wye, leg = f => G.edges.find(e => e.cls === 'wye' && (e.a === f || e.b === f)).id;
+  const portal = G.portals.find(p => p.dir === 0);
+  return { w, portal, legF1: leg(w.F1), legF2: leg(w.F2), stem: G.edges.filter(e => e.cls === 'branch').map(e => e.id),
+    stemSig: w.stemSignal, stemNode: G.signals[w.stemSignal].node, portalSig: signalAhead(S, portal.node, null),
+    y: G.mainRow[w.feetMain], b: w.x0, b2: w.x1, N: (x, y) => G.nodes.find(n => n.x === x && n.y === y).id,
+    branchSec: G.edges.find(e => e.cls === 'branch').section };
+}
+// The sense a train runs branch edge e in, from its path chained from pathStart: +1 inbound (toward the main the feet are
+// on), -1 outbound; 0 if e is not on its path.
+function branchSense(S, T, e) {
+  const G = S.layout, yM = G.mainRow[G.wye.feetMain], off = n => Math.abs(G.nodes[n].y - yM);
+  let n = T.pathStart;
+  for (const p of T.path) { const m = farOf(G, p, n); if (p === e) return off(m) < off(n) ? 1 : -1; n = m; }
+  return 0;
+}
 
 // fresh sim shape
 assert.equal(sim.time, 6 * 3600);
@@ -110,46 +140,58 @@ for (const seed of ['lebanon', 's0', 's7', 's42', 's47']) {
   for (const [k, id] of S.signalAt) assert.equal(k, `${G.signals[id].node}:${G.signals[id].from}`);
 }
 
-// reachability on the empty layout: every track of a dir is reachable from that dir's portal, every exit portal from
-// the entry and from every track of the dir, so the menu admits everything it did before reachability
+// reachability on the empty layout: every track of a dir is reachable from that dir's portal, the far end from the entry
+// and from every track of the dir, so the menu admits everything it did before reachability. A junction's branch portal
+// is an exit for either dir from both main portals and from every track before the wye (west of it eastbound, east of it
+// westbound); entering there a dir train reaches the tracks beyond the wye for its dir and the far end, never the branch.
+const ids = set => [...set].sort((a, b) => a - b);
 for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]) {
-  const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
+  const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout, w = G.wye;
+  const br = G.portals.find(p => p.dir === 0), before = (t, d) => !!w && (d === E ? tx(G, t) < w.x0 : tx(G, t) > w.x1);
+  assert.equal(!br, !w, `${seed}: a branch portal iff a wye`);
   for (const d of [E, W]) {
     const p = portalOf(S, d), x = portalOf(S, -d), mine = G.tracks.filter(t => t.dir === d).map(t => t.id);
-    assert.deepEqual([...S.reach.tracks[`${p.id}:${d}`]].sort((a, b) => a - b), mine, `${seed} ${d}: tracks from the portal`);
-    assert.deepEqual([...S.reach.exits[`p${p.id}:${d}`]], [x.id], `${seed} ${d}: the far end is the only exit from the portal`);
-    for (const t of mine) assert.deepEqual([...S.reach.exits[`t${t}:${d}`]], [x.id], `${seed} ${d}: exit from track ${t}`);
+    assert.deepEqual(ids(S.reach.tracks[`${p.id}:${d}`]), mine, `${seed} ${d}: tracks from the portal`);
+    assert.deepEqual(ids(S.reach.exits[`p${p.id}:${d}`]), br ? [x.id, br.id] : [x.id], `${seed} ${d}: exits from the portal`);
+    for (const t of mine) assert.deepEqual(ids(S.reach.exits[`t${t}:${d}`]), before(t, d) ? [x.id, br.id] : [x.id], `${seed} ${d}: exits from track ${t}`);
     assert.deepEqual(trafficMenu(S, d, p.id), trafficMenu(S, d), `${seed} ${d}: the portal of that dir by default`);
     assert.equal(S.reach.tracks[`${x.id}:${d}`].size, 0, `${seed} ${d}: nothing from the far portal against its dir`);
+    if (!br) continue;
+    assert.deepEqual(ids(S.reach.tracks[`${br.id}:${d}`]), mine.filter(t => (d === E ? tx(G, t) > w.x1 : tx(G, t) < w.x0)),
+      `${seed} ${d}: tracks from the branch`);
+    assert.deepEqual(ids(S.reach.exits[`p${br.id}:${d}`]), [x.id], `${seed} ${d}: exits from the branch`);
   }
 }
 
-// every signal has >= 1 candidate; candidates end at a node that has a signal of that dir or is an exit node
+// every signal has >= 1 candidate; candidates end at a node with a signal facing their last edge, or at an exit node.
+// A junction's dir 0 signals (the stem's, the branch portal's) walk both dirs: each candidate carries the dir whose rule
+// admitted it, 0 when both did (straight down the stem); along it x moves only that way, vertical stem edges are neutral.
 for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]) {
   const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
-  const swAt = new Map(G.switches.map(s => [s.node, s]));
+  const swAt = new Map(G.switches.map(s => [s.node, s])), facing = (n, e) => G.signals.find(s => s.node === n && s.from === e)?.id;
   for (const sig of G.signals) {
-    assert.ok(S.routesFrom.get(sig.id).length >= 1, `${seed}: signal ${sig.id} has no candidates`);
-    // A junction wye's routes are Task 4's: its dir 0 signals (the stem's and the branch portal's), and every route
-    // into or through its gap (into the stem, or two through routes to one exit, crossing at either pair).
-    if (sig.dir === 0) continue;
-    const cs = S.routesFrom.get(sig.id).filter(c => !c.edges.some(e => G.edges[e].junction || ['wye', 'branch'].includes(G.edges[e].cls)));
-    // over and back inside one crossover pair is dropped: it ends where the straight route does
+    const cs = S.routesFrom.get(sig.id);
+    assert.ok(cs.length >= 1, `${seed}: signal ${sig.id} has no candidates`);
+    // setRoute names a route by its exit node: over and back inside one crossover pair is dropped (it ends where the
+    // straight route does), and of two ways through a junction gap to one exit (crossing at either pair) one is kept
     assert.equal(new Set(cs.map(c => c.exitNode)).size, cs.length, `${seed}: signal ${sig.id} has two candidates to one exit`);
     assert.ok(cs.every(c => c.edges.filter(e => G.edges[e].cls === 'crossover').length < 2), `${seed}: over and back in one pair`);
     for (const c of cs) {
       const ns = walk(G, sig.node, c.edges), last = G.edges[c.edges.at(-1)];
-      ns.slice(1).forEach((n, i) => assert.equal(Math.sign(G.nodes[n].x - G.nodes[ns[i]].x), sig.dir, `${seed}: candidate runs against dir`));
+      assert.ok(sig.dir === 0 ? [E, W, 0].includes(c.dir) : c.dir === sig.dir, `${seed}: candidate dir ${c.dir} from a dir ${sig.dir} signal`);
+      ns.slice(1).forEach((n, i) => {
+        const dx = Math.sign(G.nodes[n].x - G.nodes[ns[i]].x);
+        assert.ok(dx === c.dir || (dx === 0 && G.edges[c.edges[i]].cls === 'branch'), `${seed}: candidate runs against dir`);
+      });
       assert.ok(c.edges.every((e, i) => [null, ns[i]].includes(G.edges[e].oneWay)), `${seed}: candidate uses an edge against its oneWay`);
       assert.equal(c.exitNode, ns.at(-1));
       // a route carries its dir, the nodes it runs through and the edge its signal faces
-      assert.deepEqual([c.dir, c.nodes, c.from], [sig.dir, ns, sig.from], `${seed}: candidate dir / nodes / from`);
+      assert.deepEqual([c.nodes, c.from], [ns, sig.from], `${seed}: candidate nodes / from`);
       assert.equal(c.nodes.length, c.edges.length + 1);
-      const exitSig = sigAt(S, c.exitNode, sig.dir) ?? null;
+      const exitSig = facing(c.exitNode, c.edges.at(-1)) ?? null;
       assert.equal(c.exitSignal, exitSig);
-      if (exitSig === null) assert.ok(exitsOf(S, sig.dir).includes(c.exitNode), `${seed}: candidate ends at neither a signal nor an exit`);
-      else assert.equal(G.signals[exitSig].from, c.edges.at(-1), `${seed}: exit signal faces the route's last edge`);
-      assert.ok(ns.slice(1, -1).every(n => sigAt(S, n, sig.dir) === undefined), `${seed}: candidate runs past a signal`);
+      if (exitSig === null) assert.ok(c.dir !== 0 && G.portals.some(p => exitNodesOf(S, p.id, c.dir).includes(c.exitNode)), `${seed}: candidate ends at neither a signal nor an exit`);
+      assert.ok(c.edges.slice(0, -1).every((e, i) => facing(ns[i + 1], e) === undefined), `${seed}: candidate runs past a signal`);
       assert.ok(Math.abs(c.len - c.edges.reduce((s, e) => s + G.edges[e].len, 0)) < 1e-9);
       assert.equal(c.slow, SLOW.includes(last.cls));
       assert.equal(c.diverging, c.switches.some(s => s.lie === 'reverse'));
@@ -1039,14 +1081,17 @@ for (const seed of ['s1', 's3']) {
 }
 
 // soak: 8 sim-hours busy over the brief's three seeds plus s47 (a local stood 45 min at a merge there before the
-// operator served long-standing trains first); never two trains on one edge, never a stall, and the spawn gate
-// (a queued train with a destination enters only while that track is free, and reserves it)
+// operator served long-standing trains first) and two junctions (sN north, sS south); never two trains on one edge,
+// never a stall, and the spawn gate (a queued train with a destination enters only while that track is free, and
+// reserves it). At a junction also: one sense at a time on the branch, wrong-main running inside the gap exempt and
+// never standing there, trains to and from the branch.
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
 let sawWrongMain = false;
-for (const seed of ['lebanon', 's7', 's42', 's47']) {
-  const S = busySim(seed), G = S.layout, dwelt = new Map();
-  let entered = 0, wrongTicks = 0;
+for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS]) {
+  const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0);
+  const branchSec = w ? G.edges.find(e => e.cls === 'branch').section : null, rows = [G.mainRow[E], G.mainRow[W]];
+  let entered = 0, wrongTicks = 0, exemptTicks = 0;
   for (let i = 0; i < 8 * 3600; i++) {
     // every train new after the step (queued earlier or drawn this very tick) is checked against the tracks before it
     const free = G.tracks.map(t => trackFree(S, t.id)), before = new Set(S.trains.keys());
@@ -1065,8 +1110,9 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       if (st.occ.size === 1 && st.route !== null) assert.equal(S.routes.get(st.route).trainId, [...st.occ][0], `${seed}: edge ${e} routed for another train`);
     });
     assert.ok(S.queue.every(q => q.length <= 8), `${seed}: queue ${S.queue.map(q => q.length).join(' / ')}`);
-    // traffic locking: no section holds trains of both directions; one wrong-main train at a time
+    // traffic locking: no main section holds trains of both directions; one wrong-main train at a time
     for (const [sec, es] of S.sectionEdges) {
+      if (sec === branchSec) continue; // below
       const dirs = new Set(es.flatMap(e => [...S.edgeState[e].occ].map(id => S.trains.get(id)?.dir)));
       dirs.delete(undefined);
       assert.ok(dirs.size <= 1, `${seed}: opposing trains in section ${sec}`);
@@ -1075,6 +1121,25 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
     const wrong = wrongMainTrains(S).length;
     assert.ok(wrong <= 1, `${seed}: two wrong-main trains`);
     if (wrong) { wrongTicks++; sawWrongMain = true; }
+    if (w) {
+      // the branch carries one sense at a time (inbound toward the main, or outbound), over the trains on it (their
+      // sense from their paths) and the routes locking it
+      const senses = new Set();
+      for (const e of S.sectionEdges.get(branchSec)) {
+        for (const id of S.edgeState[e].occ) senses.add(branchSense(S, S.trains.get(id), e));
+        if (S.edgeState[e].route !== null) senses.add(S.routes.get(S.edgeState[e].route).sense.get(branchSec));
+      }
+      assert.ok([...senses].every(v => v === 1 || v === -1) && senses.size <= 1, `${seed}: senses ${[...senses]} on the branch`);
+      // wrong-main running that does not count (exempt) is on junction edges only, and a train on one holds its way out
+      // of the gap: its path ends at a signal outside it (or the branch portal), never on a main inside it
+      for (const T of S.trains.values()) {
+        const on = T.path.filter(e => S.edgeState[e].occ.has(T.id) && G.edges[e].main === -T.dir);
+        if (!on.length) continue;
+        if (!isWrongMain(S, T)) { assert.ok(on.every(e => G.edges[e].junction), `${seed}: ${T.name} exempt off the junction`); exemptTicks++; }
+        const h = G.nodes[headNode(S, T)];
+        if (on.some(e => G.edges[e].junction)) assert.ok(!(h.x > w.x0 && h.x < w.x1 && rows.includes(h.y)), `${seed}: ${T.name} routed to a stand inside the gap`);
+      }
+    }
     for (const T of S.trains.values()) {
       if (T.state === 'dwelling') dwelt.set(T.name, G.tracks[T.dest].cls);
       else if (T.state === 'holding') {
@@ -1092,7 +1157,10 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   if (G.tracks.some(t => t.cls === 'yard')) assert.ok(S.completed.some(c => ['yard', 'spur'].includes(dwelt.get(c.name))), `${seed}: no freight served the yard`);
   for (const c of S.completed) {
     assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'from', 'name', 'spawnTime', 'stops', 'to', 'type']);
-    assert.deepEqual([c.from, c.to], (Number(c.name.split(' ')[1]) % 2 ? [W, E] : [E, W]).map(d => portalOf(S, d).name), `${seed}: ${c.name} from / to`);
+    // in at its dir's portal or the branch, out at the far end or the branch, never in and out by the branch
+    const d = Number(c.name.split(' ')[1]) % 2 ? W : E;
+    assert.ok([portalOf(S, d).name, br?.name].includes(c.from) && [portalOf(S, -d).name, br?.name].includes(c.to) && c.from !== c.to,
+      `${seed}: ${c.name} from ${c.from} to ${c.to}`);
     assert.ok(c.exitTime > c.spawnTime && c.distance > 0);
     // the per-train log (spec "Delay"): queued at spawnTime, entered, ..., out at exitTime, in time order
     assert.deepEqual([c.events[0], c.events[1].kind, c.events.at(-1)], [{ t: c.spawnTime, kind: 'queued' }, 'entered', { t: c.exitTime, kind: 'out' }]);
@@ -1105,7 +1173,12 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
     assert.ok(at('entered') < at('route') && at('route') < at('arrived') && at('arrived') < at('departed')
       && at('departed') < kinds.lastIndexOf('route'), `${seed}: ${P.name} events ${kinds}`);
     assert.ok(G.tracks.some(t => t.cls === 'platform' && t.name === arrived.track), `${seed}: arrived at ${arrived.track}`);
-    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EW]\d+[A-Z]d?$/.test(e.signal)));
+    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EWNS]\d+[A-Z]d?$/.test(e.signal)));
+  }
+  if (w) {
+    const arrivals = S.completed.filter(c => c.from === br.name).length, departures = S.completed.filter(c => c.to === br.name).length;
+    assert.ok(arrivals >= 5 && departures >= 5, `${seed}: ${arrivals} trains in from the branch, ${departures} out by it`);
+    assert.ok(exemptTicks > 0, `${seed}: no exempt wrong-main running at the junction`);
   }
 }
 assert.ok(held.size > 0, 'the overtake rule never held a train');
@@ -1377,3 +1450,307 @@ for (const moving of [false, true]) {
 }
 }
 console.log('traffic ok');
+
+// ---- Wyes: three portals, branch traffic, junction interlocking (spec "Portals and traffic", "Interlocking additions").
+// sN: a north junction (feet on Main 1), sS: a south one (feet on Main 2).
+{
+const quiet = seed => { const S = createSim(generate(seed), seed); S.nextSpawn = S.nextSpawn.map(() => Infinity); return S; };
+const entryOf = (S, type, dir, entry, exit, name, dest = null) => ({ id: S.nextTrainId++, name, type, dir, entry, exit, dest,
+  len: trainLength(type), spawnTime: S.time, sched: S.time });
+// T stands on path from start, its head FOUL short of the path's end (or at headDist), occupying every path edge
+const stand = (S, T, path, start, headDist = null) => {
+  Object.assign(T, { path: [...path], pathStart: start, state: 'stopped' });
+  T.headDist = headDist ?? pathLength(S, T) - FOUL;
+  path.forEach(e => S.edgeState[e].occ.add(T.id));
+  return T;
+};
+const allFree = S => S.edgeState.every(st => st.route === null);
+const block = S => { for (const p of S.layout.portals) { const g = signalAhead(S, p.node, null); setRoute(S, g, S.routesFrom.get(g)[0].exitNode, { trainId: 99 }); } };
+
+for (const seed of [sN, sS]) {
+  const S = quiet(seed), G = S.layout, k = wyeOf(S), home = d => G.mainRow[d];
+  assert.equal(k.portal.id, 2);
+  // forwardEdges on the stem never doubles back (it is vertical, so the x rule alone would allow it); at the apex off
+  // the stem (its trunk) onto the leg of the train's dir, off a leg only up the stem, never leg <-> leg
+  for (const d of [E, W]) {
+    assert.deepEqual(forwardEdges(S, k.stemNode, d, k.stem[1]), [k.stem[0]], `${seed}: down the stem, never back up`);
+    assert.deepEqual(forwardEdges(S, k.stemNode, d, k.stem[0]), [k.stem[1]], `${seed}: up the stem, never back down`);
+    assert.deepEqual(forwardEdges(S, k.w.A, d, k.stem[0]), [d === E ? k.legF2 : k.legF1], `${seed}: apex, off the stem`);
+    // the branch portal is left down the stem by either dir, and is the only exit node of the branch for both
+    assert.deepEqual(forwardEdges(S, k.portal.node, d), [k.stem.at(-1)]);
+    assert.deepEqual(exitNodesOf(S, 2, d), [k.portal.node]);
+  }
+  assert.deepEqual(forwardEdges(S, k.w.A, E, k.legF1), [k.stem[0]], `${seed}: off the west leg, up the stem only`);
+  assert.deepEqual(forwardEdges(S, k.w.A, W, k.legF2), [k.stem[0]], `${seed}: off the east leg, up the stem only`);
+
+  // the stem signal (dir 0) walks both dirs: eastbound candidates end at b', westbound at b; the way onto the dir's home
+  // main crosses over when the feet are on the other main (eastbound off a north wye, westbound off a south one); the
+  // way onto the other main is wrong main
+  const cs = S.routesFrom.get(k.stemSig);
+  for (const d of [E, W]) {
+    const mine = cs.filter(c => c.dir === d);
+    assert.ok(mine.some(c => G.nodes[c.exitNode].y === home(d)), `${seed}: no ${d} way home from the stem signal`);
+    for (const c of mine) {
+      const end = G.nodes[c.exitNode], xo = c.edges.some(e => G.edges[e].cls === 'crossover');
+      assert.equal(end.x, d === E ? k.b2 : k.b, `${seed}: stem candidate ${d} ends at column ${end.x}`);
+      assert.deepEqual([c.edges[0], c.edges[1]], [k.stem[0], d === E ? k.legF2 : k.legF1]);
+      assert.equal(c.wrongMain, end.y !== home(d), `${seed}: stem candidate ${d} to row ${end.y} wrong main`);
+      if (end.y === home(d)) assert.equal(xo, k.y !== home(d), `${seed}: ${d} home from the stem crosses iff the feet are on the other main`);
+    }
+  }
+  assert.ok(cs.every(c => c.dir !== 0));
+  // the branch portal signal: one route, down to the stem signal, either dir
+  assert.deepEqual(S.routesFrom.get(k.portalSig).map(c => [c.dir, c.exitNode, c.exitSignal]), [[0, k.stemNode, k.stemSig]]);
+  // of two ways through the gap from b (b') to the other main at b' (b), crossing at either pair, the one with less
+  // wrong-main running is kept (crossing at the other pair runs >= 7 edges wrong main)
+  for (const [x, d, x2] of [[k.b, E, k.b2], [k.b2, W, k.b]]) for (const y of [home(E), home(W)]) {
+    const c = S.routesFrom.get(sigAt(S, k.N(x, y), d)).find(c2 => c2.exitNode === k.N(x2, y === home(E) ? home(W) : home(E)));
+    assert.ok(c.edges.filter(e => G.edges[e].main === -d).length <= 3, `${seed}: ${d} from ${x},${y} crosses at the far pair`);
+  }
+
+  // senses on the branch section are +1 inbound (toward the main) and -1 outbound, never 0: two inbound routes in
+  // sequence (the stem signal's, then the portal's behind it) do not oppose each other; on main sections, the dir
+  const toHome = cs.find(c => c.dir === E && G.nodes[c.exitNode].y === home(E));
+  const r1 = setRoute(S, k.stemSig, toHome.exitNode), r2 = setRoute(S, k.portalSig, k.stemNode);
+  assert.ok(r1.ok && r2.ok, `${seed}: two inbound routes: ${r1.reason} ${r2.reason}`);
+  assert.deepEqual([r1.route.dir, r2.route.dir, r1.route.sense.get(k.branchSec), r2.route.sense.get(k.branchSec)], [E, 0, 1, 1]);
+  for (const [s, v] of r1.route.sense) if (s !== k.branchSec) assert.equal(v, E);
+  assert.deepEqual([...r2.route.sense.keys()], [k.branchSec]);
+  cancelRoute(S, r1.route.id); cancelRoute(S, r2.route.id);
+  const bSig = sigAt(S, k.N(k.b, home(E)), E), dep = S.routesFrom.get(bSig).find(c => c.exitNode === k.portal.node);
+  const r3 = setRoute(S, bSig, dep.exitNode);
+  assert.ok(r3.ok, r3.reason);
+  assert.equal(r3.route.sense.get(k.branchSec), -1, `${seed}: a departure into the stem runs outbound`);
+  cancelRoute(S, r3.route.id);
+  assert.ok(allClear(S));
+
+  // an eastbound arrival on its way down the east leg (inbound): a departure from b up the west leg and the stem is
+  // refused 'opposing' and locks nothing, though both are eastbound (a train's sense comes from its path); a second
+  // inbound route behind it, from the portal down to the stem signal, is allowed
+  { const S2 = quiet(seed);
+    stand(S2, spawnTrain(S2, { type: 'M', dir: E, entry: 2 }), [k.legF2], k.w.A, 1);
+    assert.equal(setRoute(S2, bSig, dep.exitNode).reason, 'opposing', `${seed}: departure under an arrival`);
+    assert.ok(allFree(S2), `${seed}: a refused route left a lock`);
+    assert.ok(setRoute(S2, k.portalSig, k.stemNode).ok, `${seed}: second inbound route refused`); }
+  // ... and the other way: a departure on its way up the west leg (outbound) refuses both inbound routes
+  { const S2 = quiet(seed);
+    stand(S2, spawnTrain(S2, { type: 'M', dir: E }), [k.legF1], k.w.F1, 1);
+    assert.equal(setRoute(S2, k.stemSig, toHome.exitNode).reason, 'opposing', `${seed}: arrival under a departure`);
+    assert.equal(setRoute(S2, k.portalSig, k.stemNode).reason, 'opposing', `${seed}: entry under a departure`);
+    assert.ok(allFree(S2)); }
+  // a westbound train standing at the stem signal: the departure is refused (it holds the stem) and locks nothing; it
+  // will not take an eastbound human route from its signal, which no train can take now, so the operator clears that
+  // after the grace and routes the train west
+  { const S2 = quiet(seed), pe = S2.routesFrom.get(k.portalSig)[0].edges;
+    const T = stand(S2, spawnTrain(S2, { type: 'M', dir: W, entry: 2 }), pe, k.portal.node);
+    assert.equal(signalAheadOf(S2, T), k.stemSig);
+    assert.equal(setRoute(S2, bSig, dep.exitNode).reason, 'occupied');
+    assert.ok(allFree(S2));
+    const h = setRoute(S2, k.stemSig, toHome.exitNode, { human: true }).route;
+    assert.ok(h, `${seed}: human route from the stem signal`);
+    moveTrains(S2);
+    assert.deepEqual([T.path, h.trainId], [pe, null], `${seed}: a westbound train took an eastbound route`);
+    S2.auto = true;
+    for (let i = 0; i < 200 && S2.routes.has(h.id); i++) step(S2);
+    assert.ok(!S2.routes.has(h.id) && S2.time - h.setAt >= 180, `${seed}: the eastbound route at a westbound train stood`);
+    const text = `AUTO: cleared route ${signalLabel(S2, k.stemSig)} → ${signalLabel(S2, toHome.exitSignal)} (no train can take it)`;
+    assert.ok(S2.log.some(e => e.text === text), `${seed}: no "${text}"`);
+    for (let i = 0; i < 60 && !T.routes.length; i++) step(S2);
+    assert.equal(S2.routes.get(T.routes[0])?.dir, W, `${seed}: the westbound train was not routed on`); }
+
+  // labels: the stem and portal signals face down (north wye) or up (south) the stem; a route into the stem ends at the
+  // branch portal
+  for (const g of [k.stemSig, k.portalSig]) assert.equal(signalLabel(S, g)[0], seed === sN ? 'S' : 'N');
+  assert.equal(exitLabel(S, dep), `exit to ${k.portal.name}`);
+}
+
+// branch traffic, run by the operator. On each side one dir must cross between the branch and its home main (dX:
+// eastbound off a north wye, westbound off a south one). Its arrival goes stem -> leg -> feet main -> the pair beyond the
+// wye -> home main -> out at b' (b), and while it runs wrong main inside the gap it is exempt; its departure from its
+// portal with exit 2 crosses at the pair before the wye, climbs the near leg and the stem and runs out by the branch.
+for (const seed of [sN, sS]) {
+  const S = quiet(seed), G = S.layout, k = wyeOf(S), dX = -k.w.feetMain, branch = k.portal.name;
+  const near = portalOf(S, dX).id, far = portalOf(S, -dX).id, legIn = dX === E ? k.legF1 : k.legF2, legOut = dX === E ? k.legF2 : k.legF1;
+  const inGap = n => G.nodes[n].x > k.b && G.nodes[n].x < k.b2, side = e => Math.sign((G.nodes[G.edges[e].a].x - G.nodes[k.w.A].x) * dX);
+  S.auto = true;
+  const run = q => {
+    S.queue[q.entry].push(q);
+    const seen = new Set();
+    let exempt = 0;
+    for (let i = 0; i < 3600 && !S.completed.some(c => c.name === q.name); i++) {
+      step(S);
+      const T = S.trains.get(q.id);
+      if (!T) continue;
+      T.path.forEach(e => seen.add(e));
+      if (T.path.some(e => S.edgeState[e].occ.has(T.id) && G.edges[e].junction && G.edges[e].main === -T.dir)) {
+        exempt++;
+        assert.ok(!isWrongMain(S, T) && !wrongMainTrains(S).includes(T), `${seed}: ${T.name} counted wrong main inside the gap`);
+      }
+    }
+    const done = S.completed.find(c => c.name === q.name);
+    assert.ok(done, `${seed}: ${q.name} never left`);
+    return { seen: [...seen], exempt, done };
+  };
+  const a = run(entryOf(S, 'X', dX, 2, far, 'X 8'));
+  assert.ok(S.log.some(e => e.text === `X 8 entered from ${branch}`), `${seed}: no "X 8 entered from ${branch}"`);
+  assert.deepEqual([a.done.from, a.done.to], [branch, G.portals[far].name]);
+  assert.ok([...k.stem, legOut].every(e => a.seen.includes(e)) && !a.seen.includes(legIn), `${seed}: X 8 not down the far leg`);
+  assert.ok(a.seen.some(e => G.edges[e].cls === 'crossover' && inGap(G.edges[e].a) && side(e) > 0), `${seed}: X 8 never crossed beyond the wye`);
+  const bEnd = k.N(dX === E ? k.b2 : k.b, G.mainRow[dX]);
+  assert.ok(a.seen.some(e => G.edges[e].main === dX && [G.edges[e].a, G.edges[e].b].includes(bEnd) && inGap(farOf(G, e, bEnd))),
+    `${seed}: X 8 never ran out of the gap on its home main`);
+  assert.ok(a.exempt > 0, `${seed}: X 8 never ran wrong main inside the gap`);
+  const d = run(entryOf(S, 'M', dX, near, 2, 'M 10'));
+  assert.deepEqual([d.done.from, d.done.to], [G.portals[near].name, branch]);
+  assert.ok(S.log.some(e => e.text.startsWith(`M 10 out via ${branch} (`)), `${seed}: no "M 10 out via ${branch}"`);
+  assert.ok([legIn, ...k.stem].every(e => d.seen.includes(e)) && !d.seen.includes(legOut), `${seed}: M 10 not up the near leg`);
+  assert.ok(d.seen.some(e => G.edges[e].cls === 'crossover' && inGap(G.edges[e].a) && side(e) < 0), `${seed}: M 10 never crossed before the wye`);
+  assert.ok(d.exempt > 0, `${seed}: M 10 never ran wrong main inside the gap`);
+  assert.ok(allClear(S));
+}
+
+// a human route can send a train out by another portal than its exit: up the stem it leaves by the branch; past the wye
+// a branch-bound train gives up the branch and runs for the far end
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S), branch = k.portal.name;
+  S.auto = true;
+  const bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), cs = S.routesFrom.get(bSig);
+  const up = cs.find(c => c.exitNode === k.portal.node), on = cs.find(c => c.exitNode === k.N(k.b2, G.mainRow[E]));
+  const out = name => { for (let i = 0; i < 3600 && !S.completed.some(c => c.name === name); i++) step(S); return S.completed.find(c => c.name === name); };
+  assert.equal(setRoute(S, bSig, up.exitNode, { human: true }).ok, true);
+  S.queue[0].push(entryOf(S, 'M', E, 0, 1, 'M 12'));
+  assert.equal(out('M 12')?.to, branch, 'M 12 did not leave by the branch');
+  assert.ok(S.log.some(e => e.text.startsWith(`M 12 out via ${branch} (`)));
+  assert.equal(setRoute(S, bSig, on.exitNode, { human: true }).ok, true);
+  S.queue[0].push(entryOf(S, 'M', E, 0, 2, 'M 14'));
+  assert.equal(out('M 14')?.to, G.portals[1].name, 'M 14 did not leave by the far end');
+  assert.ok(S.log.some(e => e.text === `M 14 missed ${branch}`));
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
+}
+
+// the branch turns round: a departure waiting at b holds a new arrival at the portal (the arrival, an express, is
+// served first by rank and would otherwise take the stem) ...
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S), bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), sg = G.signals[bSig];
+  S.auto = true;
+  const D = stand(S, spawnTrain(S, { type: 'M', dir: E, exit: 2, name: 'M 16' }), [sg.from], farOf(G, sg.from, sg.node));
+  const A = spawnTrain(S, { type: 'X', dir: W, entry: 2, name: 'X 17' });
+  step(S);
+  assert.equal(S.routes.get(D.routes[0])?.cand.exitNode, k.portal.node, 'the departure waiting at b did not get the stem');
+  assert.equal(A.routes.length, 0, 'an arrival went in while a departure waited');
+}
+// ... unless an arrival has stood STARVE (10 min) at the portal: then departures are held until it has gone in, though
+// this one (an express stood as long) is served first by rank
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S), bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), sg = G.signals[bSig];
+  S.auto = true;
+  const D = stand(S, spawnTrain(S, { type: 'X', dir: E, exit: 2, name: 'X 18' }), [sg.from], farOf(G, sg.from, sg.node));
+  const A = spawnTrain(S, { type: 'M', dir: W, entry: 2, name: 'M 19' });
+  D.lastMoveTime = A.lastMoveTime = S.time - 10 * 60;
+  step(S);
+  assert.equal(S.routes.get(A.routes[0])?.signal, k.portalSig, 'the starved arrival was not let in');
+  assert.equal(D.routes.length, 0, 'a departure went in past a starved arrival');
+}
+// a train bound for the branch is never sent wrong main: with M 2 stood on Main 2 through the first module, an express
+// bound for the far end is routed round it on Main 1 from the portal; one bound for the branch waits instead (stood at
+// b or b' on the other main, its only way on would be the branch, which an arrival may hold needing that very section)
+for (const exit of [1, 2]) {
+  const S = quiet(sN), G = S.layout, ps = entrySig(S, E);
+  const M = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), home = S.routesFrom.get(ps).find(c => !c.wrongMain);
+  assert.equal(setRoute(S, ps, home.exitNode, { trainId: M.id }).ok, true);
+  assert.equal(setRoute(S, home.exitSignal, S.routesFrom.get(home.exitSignal).find(c => !c.diverging).exitNode, { trainId: M.id }).ok, true);
+  for (let i = 0; i < 3600 && M.state !== 'stopped'; i++) step(S);
+  M.lastMoveTime = S.time - PASS_WAIT;
+  S.auto = true;
+  const X = spawnTrain(S, { type: 'X', dir: E, exit, name: 'X 4' });
+  step(S);
+  if (exit === 1) assert.ok(S.routes.get(X.routes[0])?.cand.wrongMain, 'the far-end express was not routed round M 2');
+  else assert.ok(X.routes.every(r => !S.routes.get(r).cand.wrongMain), 'the branch-bound express was sent wrong main');
+}
+
+// a human route lined from the branch portal signal before any train is there: the next branch arrival enters (either
+// dir: the route is dir 0) and adopts it
+{
+  const S = quiet(sN), k = wyeOf(S);
+  S.nextSpawn[2] = S.time;
+  const r = setRoute(S, k.portalSig, k.stemNode, { human: true }).route;
+  step(S);
+  assert.equal(S.trains.size, 1, 'no branch arrival past the human route on the stem');
+  const T = [...S.trains.values()][0];
+  assert.equal(T.entry, 2);
+  step(S);
+  assert.ok(r.trainId === T.id && T.routes.includes(r.id) && r.entered);
+}
+
+// dead human routes at the wye: one from the stem signal onto the other main (wrong main, no train at the dir 0 signal),
+// one from b on the other main up into the stem (logged to the branch portal by name). Each cleared after GRACE.
+{
+  const k = wyeOf(quiet(sN)), S0 = quiet(sN), G = S0.layout;
+  const wm = S0.routesFrom.get(k.stemSig).find(c => c.wrongMain);
+  const bOther = sigAt(S0, k.N(k.b, G.mainRow[W]), E), up = S0.routesFrom.get(bOther).find(c => c.exitNode === k.portal.node);
+  for (const [sig, c, to] of [[k.stemSig, wm, signalLabel(S0, wm.exitSignal)], [bOther, up, k.portal.name]]) {
+    const S = quiet(sN);
+    S.auto = true;
+    const r = setRoute(S, sig, c.exitNode, { human: true }).route;
+    assert.ok(r, `human route from ${signalLabel(S, sig)}`);
+    for (let i = 0; i < 200 && S.routes.has(r.id); i++) step(S);
+    assert.ok(!S.routes.has(r.id) && S.time - r.setAt >= 180, `the route from ${signalLabel(S, sig)} stood`);
+    const text = `AUTO: cleared route ${signalLabel(S, sig)} → ${to} (no train can take it)`;
+    assert.ok(S.log.some(e => e.text === text), `no "${text}"`);
+  }
+}
+
+// a branch arrival bound east (north wye) never draws a destination west of the wye, which the west portal's do; bound
+// west, none east of it
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S);
+  const dests = (d, p) => trafficMenu(S, d, p).filter(m => m.dest !== null).map(m => m.dest);
+  assert.ok(dests(E, 0).some(t => tx(G, t) < k.b), 'the west portal draws eastbound destinations west of the wye');
+  assert.ok(dests(E, 2).length && !dests(E, 2).some(t => tx(G, t) < k.b), 'a branch arrival bound east drew one west of the wye');
+  assert.ok(!dests(W, 2).some(t => tx(G, t) > k.b2), 'a branch arrival bound west drew one east of the wye');
+}
+
+// the coins (both from sim.branchRng): about 30 % of the trains that can reach the branch from their destination (or
+// entry) leave by it, the rest keep the far end; branch arrivals pick east or west fairly, never leave by the branch, draw
+// only destinations they can reach, and are numbered with their dir (even eastbound, odd westbound)
+{
+  const S = createSim(generate(sN), sN), br = 2;
+  block(S);
+  const entries = [];
+  for (let i = 0; i < 200; i++) { S.nextSpawn = S.nextSpawn.map(() => S.time); step(S); for (const q of S.queue) entries.push(...q.splice(0)); }
+  assert.equal(S.trains.size, 0);
+  const can = q => S.reach.exits[q.dest !== null ? `t${q.dest}:${q.dir}` : `p${q.entry}:${q.dir}`].has(br);
+  const eligible = entries.filter(can), share = eligible.filter(q => q.exit === br).length / eligible.length;
+  assert.ok(eligible.length >= 200 && share >= 0.2 && share <= 0.4, `exit coin: ${(100 * share).toFixed(1)} % of ${eligible.length}`);
+  assert.ok(entries.filter(q => !can(q)).every(q => q.exit === portalOf(S, -q.dir).id), 'a train that cannot reach the branch was sent there');
+  const arr = entries.filter(q => q.entry === br), east = arr.filter(q => q.dir === E).length / arr.length;
+  assert.ok(arr.length >= 200 && east > 0.35 && east < 0.65, `branch arrivals: ${(100 * east).toFixed(1)} % eastbound`);
+  for (const q of arr) {
+    assert.equal(Number(q.name.split(' ')[1]) % 2, q.dir === E ? 0 : 1, `${q.name} bound ${q.dir}`);
+    assert.ok(q.dest === null || S.reach.tracks[`${br}:${q.dir}`].has(q.dest), `${q.name} drew a track it cannot reach`);
+    assert.equal(q.exit, portalOf(S, -q.dir).id);
+  }
+  assert.equal(new Set(entries.map(q => q.name)).size, entries.length, 'train numbers count per dir over all portals');
+  // traffic on a layout without a wye draws no branch coin from sim.rng: same entries as before (the s42 run fixture
+  // below says the same)
+}
+
+// spawn rate: each of three portals draws at DENSITY x 1.5 on average (traffic shared three ways), each of two at
+// DENSITY; QUEUE_MAX per portal
+for (const [seed, k] of [[sN, 1.5], ['lebanon', 1]]) {
+  const S = createSim(generate(seed), seed, { density: 'busy' }), t0 = S.time, n = S.layout.portals.map(() => 0);
+  block(S);
+  for (let i = 0; i < 48 * 3600; i++) { step(S); S.queue.forEach((q, p) => { n[p] += q.length; q.length = 0; }); }
+  for (const p of S.layout.portals) {
+    const mean = (S.nextSpawn[p.id] - t0) / n[p.id];
+    assert.ok(Math.abs(mean / (DENSITY.busy * k) - 1) < 0.15, `${seed}: portal ${p.id} mean interval ${mean.toFixed(0)} s`);
+  }
+}
+{
+  const S = createSim(generate(sS), sS, { density: 'busy' });
+  block(S);
+  for (let i = 0; i < 3 * 3600; i++) step(S);
+  assert.deepEqual(S.queue.map(q => q.length), [8, 8, 8], 'QUEUE_MAX per portal');
+}
+}
+console.log('junction ok');

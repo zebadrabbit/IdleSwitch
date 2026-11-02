@@ -1,6 +1,6 @@
 // Panel bodies as HTML strings built from sim state (no DOM). ui.js puts them in place and wires the buttons
 // through their data-* attributes. Everything from the sim or the URL goes through esc().
-import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, signalAheadOf, exitNodesOf, switchLocked,
+import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, signalAheadOf, portalAtNode, switchLocked,
   isWrongMain } from './sim.js';
 import { COLORS } from './render.js';
 import { SPEEDS, DAY_LENGTHS, formatClock, formatDelay } from './ui-util.js';
@@ -16,11 +16,12 @@ export const trackName = (L, id) => (L.tracks[id].cls === 'platform' ? `Platform
 export const switchLabel = (sim, node) => `${sim.layout.nodes[node].x}.${sim.layout.nodes[node].y}`;
 const trainLabel = (sim, id) => esc(sim.trains.get(id)?.name ?? sim.queue.flat().find(q => q.id === id)?.name ?? `#${id}`);
 
-// Where a candidate route ends: its exit signal, else off the panel at either main (or a buffer stop).
+// Where a candidate route ends: its exit signal, else off the panel by a portal (either main's end, or a junction's
+// branch), or a buffer stop.
 export function exitLabel(sim, c) {
   if (c.exitSignal !== null) return signalLabel(sim, c.exitSignal);
-  for (const p of sim.layout.portals) if (p.dir !== 0 && exitNodesOf(sim, p.id, -p.dir).includes(c.exitNode)) return `exit to ${p.name}`; // ponytail: Task 3 shim skips the branch portal
-  return 'end of track';
+  const p = portalAtNode(sim, c.exitNode);
+  return p ? `exit to ${p.name}` : 'end of track';
 }
 
 const lamp = code => `<i class="lamp ${code.at(-1)}${code[0] === 'F' ? ' flash' : ''}"></i>`;
