@@ -49,7 +49,7 @@ case "${1:-}" in
   deploy)
     # No build step: the site is the repo root. Ship it as-is, minus dev-only files.
     # --chmod: local dirs like favicon/ are 700, which the web server can't enter (404s).
-    rsync -avz --delete --chmod=D755,F644 \
+    rsync -avz --delete --delete-excluded --chmod=D755,F644 \
       --exclude .git --exclude .github --exclude .claude --exclude .superpowers --exclude .venv \
       --exclude docs --exclude tests --exclude tools \
       --exclude manage.sh --exclude CHANGELOG.md --exclude .gitignore --exclude '.server.*' \
