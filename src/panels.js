@@ -136,8 +136,8 @@ export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MAN
 
 export function legendHTML() {
   const cell = codes => (codes ? heads(codes.split(' ')) : '<span class="dim">—</span>');
-  const tracks = [['idle', COLORS.track], ['route set', COLORS.route], ['human route', COLORS.human], ['occupied', COLORS.occupied],
-    ['unset switch leg', COLORS.trackDim], ['slow order', COLORS.slow]];
+  const tracks = [['idle', COLORS.track], ['wye / branch', COLORS.track], ['route set', COLORS.route], ['human route', COLORS.human],
+    ['occupied', COLORS.occupied], ['unset switch leg', COLORS.trackDim], ['slow order', COLORS.slow]];
   return '<table class="legend"><thead><tr><th>Aspect</th><th>1 head</th><th>2 heads</th><th>dwarf</th></tr></thead><tbody>'
     + ASPECTS.map(([n, ...c]) => `<tr><td>${n}</td>${c.map(x => `<td>${cell(x)}</td>`).join('')}</tr>`).join('') + '</tbody></table>'
     + '<div class="sub">Track</div>' + tracks.map(([n, c]) => `<div><i class="bar" style="background:${c}"></i>${n}</div>`).join('')

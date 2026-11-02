@@ -31,6 +31,28 @@ const rgbOf = new Map(); // '#rrggbb' -> [r, g, b], parsed once
 const rgb = hex => rgbOf.get(hex) ?? rgbOf.set(hex, [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))).get(hex);
 const rgba = ([r, g, b], a) => `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a})`;
 
+// Screen directions, y down. facingOf: the unit vector a train passing the signal travels along, from the far node of
+// the edge it faces (signal.from) to its node; a portal signal (from null) points into the panel from the portal's
+// side. rightOf: v turned a quarter clockwise on screen, the right-hand side of travel (east -> below, as the rows
+// always had it; west -> above; down -> west; up -> east).
+const INTO = { west: { x: 1, y: 0 }, east: { x: -1, y: 0 }, north: { x: 0, y: 1 }, south: { x: 0, y: -1 } };
+export function facingOf(layout, signal) {
+  if (signal.from === null) return INTO[layout.portals.find(p => p.node === signal.node).side];
+  const e = layout.edges[signal.from], n = layout.nodes[signal.node], o = layout.nodes[e.a === signal.node ? e.b : e.a];
+  const dx = n.x - o.x, dy = n.y - o.y, l = Math.hypot(dx, dy);
+  return { x: dx / l, y: dy / l };
+}
+export const rightOf = v => ({ x: -v.y, y: v.x });
+// A w x h tag for a head block centred at (x, y) screen px travelling along unit u: its centre x and top y, on the right
+// of travel. On a row 10 px (gap) below eastbound, above westbound, as always; off a row (the stem, a leg, a ladder)
+// its nearest corner gap px off the train's line, the top on a whole px.
+export function tagAt(x, y, u, w, h, gap) {
+  const v = rightOf(u);
+  if (!v.x) return { cx: x, ty: v.y > 0 ? y + gap : y - gap - h };
+  const d = gap + Math.abs(v.x) * w / 2 + Math.abs(v.y) * h / 2;
+  return { cx: x + v.x * d, ty: Math.round(y + v.y * d - h / 2) };
+}
+
 function segDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
   const t = l2 ? clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
@@ -94,11 +116,15 @@ export function createRenderer(canvas) {
     ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI);
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
   }
-  // `size` is the half-height; the point faces dir (+1 east, -1 west).
-  function chevron(x, y, dir, size, color, width = 2) {
+  // `size` is the half-height; the point faces along unit vector u. n: across u, chosen so a chevron along a row
+  // strokes from its upper arm either way.
+  function chevron(x, y, u, size, color, width = 2) {
+    const n = u.x < 0 ? { x: u.y, y: -u.x } : { x: -u.y, y: u.x };
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(x - dir * size / 2, y - size); ctx.lineTo(x + dir * size / 2, y); ctx.lineTo(x - dir * size / 2, y + size);
+    ctx.moveTo(x - u.x * size / 2 - n.x * size, y - u.y * size / 2 - n.y * size);
+    ctx.lineTo(x + u.x * size / 2, y + u.y * size / 2);
+    ctx.lineTo(x - u.x * size / 2 + n.x * size, y - u.y * size / 2 + n.y * size);
     ctx.stroke();
   }
 
@@ -113,23 +139,27 @@ export function createRenderer(canvas) {
   // Signal sizes at this zoom (brief sizes at zoom >= 1, never below 3 px a lamp). Two heads stack outward
   // (top head nearest the track) when a row has room for them; at tighter zooms they sit side by side, the
   // bottom head upstream, so the glyph never reaches the neighbouring track. reach: the largest glyph's
-  // extent from the track centre.
+  // extent from the track centre. Rows and the stem column share the cell, so the same sizes serve a stem.
   function sigSize() {
     const z = r.camera.zoom, lw = lineW(), rad = clamp(4 * z, 3, 4), off = clamp(7 * z, 4, 7);
     const stack = CELL * z >= off + 4 * rad + 2 + lw;
     return { lw, rad, off, stack, reach: off + (stack ? 4 * rad + 1 : 2 * rad) };
   }
-  // Head centres in screen px, on the right-hand side of travel: +y eastbound, -y westbound.
+  // Head centres in screen px, on the right-hand side of travel past it (v = rightOf(f), f its facing): below an
+  // eastbound signal, above a westbound one, west of one facing down a stem, east of one facing up it. The second
+  // head goes further out along v, or upstream (-f) when side by side.
   function signalGeom(sim, sig) {
-    const n = sim.layout.nodes[sig.node], x = X(n.x), y = Y(n.y), v = sig.dir, { lw, rad, off, stack } = sigSize();
+    const n = sim.layout.nodes[sig.node], x = X(n.x), y = Y(n.y), f = facingOf(sim.layout, sig), v = rightOf(f);
+    const { lw, rad, off, stack } = sigSize();
     if (sig.kind === 'dwarf') {
-      const dr = clamp(3.5 * r.camera.zoom, 3, 3.5), c = [x, y + v * (lw / 2 + 2 + dr)];
-      return { x, y, v, rad: dr, heads: [c], centre: c, extent: dr };
+      const dr = clamp(3.5 * r.camera.zoom, 3, 3.5), c = [x + v.x * (lw / 2 + 2 + dr), y + v.y * (lw / 2 + 2 + dr)];
+      return { x, y, f, v, rad: dr, heads: [c], centre: c, extent: dr };
     }
-    const h1 = y + v * (off + rad), heads = [[x, h1]];
-    if (signalHeads(sim, sig.id) === 2) heads.push(stack ? [x, h1 + v * (2 * rad + 1)] : [x - v * (2 * rad + 1), h1]);
+    const h1 = [x + v.x * (off + rad), y + v.y * (off + rad)], heads = [h1];
+    if (signalHeads(sim, sig.id) === 2)
+      heads.push(stack ? [h1[0] + v.x * (2 * rad + 1), h1[1] + v.y * (2 * rad + 1)] : [h1[0] - f.x * (2 * rad + 1), h1[1] - f.y * (2 * rad + 1)]);
     const centre = [(heads[0][0] + heads.at(-1)[0]) / 2, (heads[0][1] + heads.at(-1)[1]) / 2];
-    return { x, y, v, rad, heads, centre, extent: rad + (heads.length - 1) * (rad + 0.5) };
+    return { x, y, f, v, rad, heads, centre, extent: rad + (heads.length - 1) * (rad + 0.5) };
   }
 
   // Fills the window (a fixed canvas keeps its 300x150 intrinsic size under inset:0) with a backing store
@@ -143,11 +173,12 @@ export function createRenderer(canvas) {
 
   // Fits columns 0..cols-1 and rows -1..rows (the module names above the top tracks, the portal labels
   // beyond both mains) with a 40 px margin, into box (screen px; default the whole window, the UI passes
-  // the area its docked panels leave free). fitted computes that camera, fit applies it.
+  // the area its docked panels leave free); from row -2 with a north junction, whose branch label sits above the
+  // module names. fitted computes that camera, fit applies it.
   r.fitted = (layout, box = { x: 0, y: 0, w: innerWidth, h: innerHeight }) => {
-    const { w, h } = box, bw = (layout.cols - 1) * CELL, bh = (layout.rows + 1) * CELL;
+    const top = layout.wye?.side === 'north' ? -2 : -1, { w, h } = box, bw = (layout.cols - 1) * CELL, bh = (layout.rows - top) * CELL;
     const zoom = Math.min((w - 2 * MARGIN) / bw, (h - 2 * MARGIN) / bh);
-    return { x: bw / 2 - (box.x + w / 2) / zoom, y: (layout.rows - 1) * CELL / 2 - (box.y + h / 2) / zoom, zoom };
+    return { x: bw / 2 - (box.x + w / 2) / zoom, y: (layout.rows + top) * CELL / 2 - (box.y + h / 2) / zoom, zoom };
   };
   r.fit = (layout, box) => Object.assign(r.camera, r.fitted(layout, box));
 
@@ -237,28 +268,40 @@ export function createRenderer(canvas) {
       if (a > 0.005 && d > 0) glow(fx + d * Math.cos(ang), fy + d * Math.sin(ang), d, 0.6 * cellPx, ang, rgb('#fff1c4'), a);
     }
 
-    // 4. Portals: a chevron pointing in just off the end of the main; the place name beyond the main on the
-    // right-hand side of travel (below Main 2 at the west end, above Main 1 at the east end), clear of the
-    // signals and the tag of a train standing there, running inward. 8. puts the queue count a line further out.
+    // 4. Portals: a chevron pointing in just off the end of the main or stem; the place name on the right-hand side
+    // of entering travel. At a west or east portal it sits beyond the main (below Main 2 at the west end, above Main 1
+    // at the east end), clear of the signals and the tag of a train standing there, running inward, and 8. puts the
+    // queue count a line further out. At a junction's branch portal (a stem's end at the top or bottom edge) the
+    // stem's signals and a train standing at them fill both sides of its last cells, so the name, with the count on
+    // the line under it, sits beyond the panel edge beside the chevron, running away from the stem: below the bottom
+    // edge; at the top above the module names' row (13 px, centred 6 px above row -1), since at overview zooms the
+    // label is wider than the stretch between the stem and the next module's name.
     const reach = Math.max(sigSize().reach + 12, 36);
-    const portalAt = p => { const n = nodes[p.node]; return { x: X(n.x), y: Y(n.y), align: p.dir > 0 ? 'left' : 'right' }; };
+    const portalAt = p => {
+      const n = nodes[p.node], x = X(n.x), y = Y(n.y), f = INTO[p.side];
+      if (!f.y) return { x, y, f, tx: x - f.x * 6, ty: y + f.x * reach, qy: y + f.x * (reach + 15), align: f.x > 0 ? 'left' : 'right' };
+      const v = rightOf(f), ty = f.y > 0 ? Y(-1) - 6 - 31 : y + 14;
+      return { x, y, f, tx: x + v.x * 12, ty, qy: ty + 15, align: v.x < 0 ? 'right' : 'left' };
+    };
     for (const p of L.portals) {
       const a = portalAt(p);
-      chevron(a.x - p.dir * 14, a.y, p.dir, 5, P.label);
-      text(`to ${p.name}`, a.x - p.dir * 6, a.y + p.dir * reach, `12px ${SANS}`, P.label, a.align);
+      chevron(a.x - a.f.x * 14, a.y - a.f.y * 14, a.f, 5, P.label);
+      text(`to ${p.name}`, a.tx, a.ty, `12px ${SANS}`, P.label, a.align);
     }
 
     // 5. Switches: a dot coloured like the trunk; a padlock when locked (fading in and out), above at or above Main 1,
-    // else below.
+    // else below; at a junction's apex (its trunk the stem) beside it, on the left of travel toward the main, away
+    // from the stem signal's heads and clear of the stem and both legs.
     for (const sw of L.switches) {
       const n = nodes[sw.node], x = X(n.x), y = Y(n.y), up = n.y <= L.mainRow[-1] ? -1 : 1, lk = `lock:${sw.node}`;
+      const te = edges[sw.trunk], t = nodes[te.a === sw.node ? te.b : te.a];
+      const [lx, ly] = t.x === n.x ? [x + Math.sign(n.y - t.y) * (lw / 2 + 9), y] : [x, y + up * (lw / 2 + 9)];
       disc(x, y, Math.max(2.5, 0.8 * lw), faded(`sw:${sw.node}`, edgeColor(sim, sw.trunk, P.track)));
       const locked = switchLocked(sim, sw.node), la = locked || fade.get(lk)?.[0] > 0.01 ? eased(lk, [locked ? 1 : 0], 120, [0])[0] : 0;
       if (la > 0.01) {
-        const ly = y + up * (lw / 2 + 9);
         ctx.globalAlpha = la; ctx.strokeStyle = P.label; ctx.lineWidth = 1.5;
-        ctx.strokeRect(x - 3.5, ly - 1.5, 7, 5.5);
-        ctx.beginPath(); ctx.arc(x, ly - 1.5, 2.5, Math.PI, 0); ctx.stroke();
+        ctx.strokeRect(lx - 3.5, ly - 1.5, 7, 5.5);
+        ctx.beginPath(); ctx.arc(lx, ly - 1.5, 2.5, Math.PI, 0); ctx.stroke();
         ctx.globalAlpha = 1;
       }
       if (ui.selectedSwitch === sw.node)
@@ -270,8 +313,8 @@ export function createRenderer(canvas) {
       const g = signalGeom(sim, sig), lp = lamps(aspectOf(sim, sig.id), sig.kind, g.heads.length);
       if (sig.kind !== 'dwarf') { // stub mast from the track to the heads; a bar joins side-by-side heads
         const [hx, hy] = g.heads.at(-1);
-        line(g.x, g.y + g.v * lw / 2, g.x, g.heads[0][1], P.track, 2, 'butt');
-        line(g.x, g.heads[0][1], hx, hy, P.track, 2, 'butt');
+        line(g.x + g.v.x * lw / 2, g.y + g.v.y * lw / 2, g.heads[0][0], g.heads[0][1], P.track, 2, 'butt');
+        line(g.heads[0][0], g.heads[0][1], hx, hy, P.track, 2, 'butt');
       }
       const ls = g.heads.map((_, i) => { // [lamp, halo rgb]; an unlit halo fades to black, which adds nothing
         const code = i ? lp.bottom : lp.top, lit = code[0] !== 'F' || ui.blink, hex = COLORS.lamp[code.at(-1)];
@@ -281,7 +324,7 @@ export function createRenderer(canvas) {
         if (ls[i][1].some(c => c >= 8)) glow(hx, hy, 3 * g.rad, 3 * g.rad, 0, ls[i][1], lerp(0.18, 0.45, night));
       });
       g.heads.forEach(([hx, hy], i) => disc(hx, hy, g.rad, ls[i][0], P.bg));
-      chevron(g.x + sig.dir * (g.rad + 5), g.heads[0][1], sig.dir, 4, P.label); // 4 px wide, pointing in dir
+      chevron(g.heads[0][0] + g.f.x * (g.rad + 5), g.heads[0][1] + g.f.y * (g.rad + 5), g.f, 4, P.label); // 4 px wide, along the facing
       const [cx, cy] = g.centre, rr = g.extent + 4;
       if (ui.refusedSignal === sig.id) ring(cx, cy, rr + 1, COLORS.lamp.R, 3); // NX refusal flash
       else if (ui.armedSignal === sig.id) {
@@ -312,23 +355,25 @@ export function createRenderer(canvas) {
       disc(X(bl.at(-1).x2), Y(bl.at(-1).y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
       ctx.globalAlpha = 1;
       const a = eased(`tag:${t.id}`, [1], 120, [0])[0]; // fades in when the train enters
-      tags.push({ t, col, sel, a, x: Math.round((X(bl[0].x1) + X(bl[0].x2)) / 2), y: Math.round((Y(bl[0].y1) + Y(bl[0].y2)) / 2) }); // whole px: crisp text, no shimmer
+      const h = bl[0], dx = h.x1 - h.x2, dy = h.y1 - h.y2, l = Math.hypot(dx, dy); // the head block's travel (head end first)
+      tags.push({ t, col, sel, a, x: Math.round((X(h.x1) + X(h.x2)) / 2), y: Math.round((Y(h.y1) + Y(h.y2)) / 2), // whole px: crisp text, no shimmer
+        u: l ? { x: dx / l, y: dy / l } : { x: t.dir, y: 0 } });
     }
     ctx.font = `11px ${MONO}`;
     const gap = Math.max(10, tw / 2 + 5);
-    for (const { t, col, sel, a, x, y } of tags) { // 10 px above the head block, below for eastbound
-      const tw2 = ctx.measureText(t.name).width + 8, th = 15, ty = t.dir > 0 ? y + gap : y - gap - th;
-      ctx.globalAlpha = a; ctx.fillStyle = TAG_BG; ctx.fillRect(x - tw2 / 2, ty, tw2, th);
+    for (const { t, col, sel, a, x, y, u } of tags) { // on the right of the head block's travel
+      const tw2 = ctx.measureText(t.name).width + 8, th = 15, { cx, ty } = tagAt(x, y, u, tw2, th, gap);
+      ctx.globalAlpha = a; ctx.fillStyle = TAG_BG; ctx.fillRect(cx - tw2 / 2, ty, tw2, th);
       ctx.strokeStyle = sel ? WHITE : col; ctx.lineWidth = sel ? 2 : 1;
-      ctx.strokeRect(x - tw2 / 2 + 0.5, ty + 0.5, tw2 - 1, th - 1);
-      text(t.name, x, ty + th / 2 + 0.5, `11px ${MONO}`, col);
+      ctx.strokeRect(cx - tw2 / 2 + 0.5, ty + 0.5, tw2 - 1, th - 1);
+      text(t.name, cx, ty + th / 2 + 0.5, `11px ${MONO}`, col);
     }
     ctx.globalAlpha = 1;
 
-    // 8. Queue at each entry portal, under its name.
+    // 8. Queue at each entry portal, with its name.
     for (const p of L.portals) {
       const n = sim.queue[p.id]?.length ?? 0, a = portalAt(p);
-      if (n) text(`+${n} waiting`, a.x - p.dir * 6, a.y + p.dir * (reach + 15), `12px ${SANS}`, P.dim, a.align);
+      if (n) text(`+${n} waiting`, a.tx, a.qy, `12px ${SANS}`, P.dim, a.align);
     }
 
     // Caption (the idle camera's), bottom-left of the box it frames: the box it was first shown in, until it fades to

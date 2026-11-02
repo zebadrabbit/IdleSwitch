@@ -159,4 +159,24 @@ const run = mutate => {
 };
 assert.deepEqual(run(true), run(false), 'the ease is unaffected by the caller mutating its camera');
 
+// A junction (s3, north): a busy hour offers no shot of a stem signal (dir 0: off the mains), never follows a train up
+// the stem to the branch (its exit is right above), and the head of a train on the stem, which a follow centres on,
+// runs on without a jump through the turn onto a leg.
+{
+  const J = createSim(generate('s3'), 's3', { density: 'busy' }), sx = J.layout.nodes[J.layout.wye.A].x, prev = new Map();
+  J.auto = true;
+  let vertical = 0, jump = 0;
+  for (let i = 0; i < 3600; i++) {
+    step(J);
+    assert.ok(signalCandidates(J).every(id => J.layout.signals[id].dir !== 0), 'no dir 0 signal shots');
+    assert.ok(followCandidates(J, lag).every(t => t.exit !== J.layout.wye.portal || pointAt(J, t, t.headDist).x !== sx), 'no follow up the stem');
+    for (const t of J.trains.values()) {
+      const h = t.path.length && pointAt(J, t, t.headDist), p = prev.get(t.id);
+      if (h && p && (h.x === sx || p.x === sx)) { jump = Math.max(jump, Math.hypot(h.x - p.x, h.y - p.y) - (t.adv ?? 0)); if (h.y !== p.y && h.x === sx) vertical++; }
+      if (h) prev.set(t.id, h); else prev.delete(t.id);
+    }
+  }
+  assert.ok(vertical > 0 && jump < 1e-9, `a head on the stem moves by its advance (${vertical} vertical steps, worst excess ${jump})`);
+}
+
 console.log('camera ok');

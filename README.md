@@ -30,6 +30,8 @@ The panel runs a day of light every few minutes on the sim clock: dusk dims it a
 
 Main 1 (upper) is home to westbound trains and Main 2 (lower) to eastbound, but both are signalled both ways, with a pair of crossovers in every gap between modules and at both ends. The operator may run a train on the other main round one that has stood a minute, returning it home at the first free pair; only one train runs on the wrong main at a time. A route into oncoming traffic is refused `opposing`, and one that would put a second train on the wrong main is refused `wrong main`; both show the usual red flash.
 
+About three terminals in five have a junction: a wye in one gap between modules, its two legs climbing from Main 1 to a single-track branch that runs to a third portal at the top edge (or dropping from Main 2 to the bottom edge). Trains come off the branch bound either way, and some trains leave by it; one bound for the branch from the other main crosses over in the gap to reach the foot of the wye. The branch carries one direction of flow at a time: while a departure waits to climb it, arrivals wait at the portal (ten minutes at most). There are no signals inside the junction gap, and the few cells of wrong main a move through it needs don't count against the one-train rule. A train bound for the branch that has stood ten minutes with its way up refused gives the branch up and runs for the far end (the log says it `missed` the branch).
+
 Signal aspects (American practice):
 
 | Name | High (1 head) | High (2 head) | Dwarf | Meaning |
@@ -43,7 +45,7 @@ Signal aspects (American practice):
 | Slow Clear | — | — | G | proceed at slow speed |
 | Stop | R | R / R | R | stop |
 
-Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf.
+Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf, and a branch's signals face north or south (`S68B`).
 
 Trains are a locomotive block plus one block per car, with an ID tag (type letter plus number; even eastbound, odd westbound):
 
@@ -121,7 +123,7 @@ Needs Node 22. No packages to install.
 
 ## Status
 
-v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable and resizable panels with a saved layout, the lighting cycle, slow orders and the idle camera all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), stub spurs with reversing moves, sound, and north/south running (spurs, wyes): its own spec.
+v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable and resizable panels with a saved layout, the lighting cycle, slow orders, the junction wye and the idle camera all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), a stub terminus off a wye (Phase 2, in progress), sound, and grade separation (crossings, diamonds, flyovers): its own spec.
 
 ## License
 
