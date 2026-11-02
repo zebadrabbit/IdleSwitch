@@ -131,6 +131,10 @@ One wye at most, placed by the seed in one inter-module gap (never a margin), on
 **north** (legs on Main 1, apex above it) or **south** (legs on Main 2, apex below it). Probability a
 terminal has a wye: `0.6`; given one, Phase 1 makes it a junction; Phase 2 makes it a junction or a
 terminus by a fair coin.
+(Amended 2026-11-01, Task 3: the wye's draws come from their own stream, `makeRng(seed + ':junction')`: the
+presence coin first, then side and gap only when there is a wye, then (Task 6) the kind. The generator's main stream
+is untouched, so every layout without a wye is as before. The plan's `:wye` stream was tried first: on it the frozen
+fixture seed s47 drew a wye at every draw order.)
 
 **Gap layout** (west to east; `b` = boundary signal column of the module to the west, `x1 + 1`; `b'` =
 `x0 − 1` of the module to the east; `.` = one empty column):
@@ -164,6 +168,14 @@ gap, so a seed's presence, side and gap are the same as before termini existed.)
   `P′ → b′`. The one-route crossing that keeps the terminus safe is `P → P′`, across both feet and past the two
   shunt signals, which end no route. The shunt signals stand on the feet, switch nodes, as the one exception. Their
   own routes are the near leg into the stub and the main onward.)
+  (Amended 2026-11-01, Task 3: **one candidate per exit node.** Through a junction gap a signal has two ways to the
+  same far exit, crossing at either pair, and `setRoute` names a route by its exit node. So `candidates()` keeps, of
+  the candidates sharing an exit node, the one with fewer wrong-main edges, then the shorter. Over and back inside
+  one pair (two crossover edges) is dropped, since it ends where the straight route does. A human loses only an NX
+  choice that differs by which pair it crosses at.)
+  (Amended 2026-11-01, Task 4: the stem signal has up to four candidates, each dir to each main at the gap's end. The
+  eastbound one to `b'` on Main 1 of a north wye runs down the east leg and straight on, no crossover, and ends wrong
+  main: a legitimate candidate, kept by the dedupe as its own exit node, refused while another train is wrong main.)
 - `P` marks the **pull-ahead columns** of a terminus: signals in both main directions on both mains, as
   at module boundaries. The 7-cell **run** between a foot and its `P` is a single edge, so a terminus
   train stopped at `P` (`FOUL` short) has its tail `7 − 0.3 − 5.6 = 1.1` cells clear of the foot and its
@@ -207,17 +219,58 @@ gap, so a seed's presence, side and gap are the same as before termini existed.)
   section is occupied by a train whose sense there is opposite, or route-locked by a route whose sense
   there is opposite. `route.sense` is stored per section at `setRoute`; a train's sense in a section comes
   from the node order of its path edges there. On main sections this is exactly today's rule.
+  (Amended 2026-11-01, Task 3: slow orders land on main sections only. The branch section is long enough to qualify
+  but is on no main: 13 % of orders fell on it and logged as `Main 2`.)
 - **Junction exemption to one-wrong-main.** Wrong-main edges tagged `junction` do not count toward the
-  one-wrong-main-train rule (`isWrongMain` ignores them), so a train whose only wrong-main running is
-  inside the junction gap may be routed while another train is wrong main elsewhere. Reason: an eastbound
-  arrival onto Main 1 (north wye) crosses to Main 2 at the east pair a few cells on; an eastbound
-  departure crosses to Main 1 at the west pair to reach `F1`; on a south wye the westbound moves use the
-  one-cell Main 2 piece inside a pair. Safe because every junction move is one atomic route set from
-  outside the gap: a wrong-main train inside the gap always holds its route out of it, and traffic
-  locking per section keeps opposing trains out of the pieces it uses. The soak keeps "at most one" for
-  non-exempt trains and asserts that exempt wrong-main running only ever happens on `junction` edges.
+  one-wrong-main-train rule for a train **running out by the branch**: its path, or a route set for it,
+  ends at the branch portal (`isWrongMain`). Such a move may be routed while another train is wrong main
+  elsewhere. Reason: an eastbound departure for a north wye's branch crosses to Main 1 at the west pair
+  to reach `F1`; on a south wye the westbound departure uses the one-cell Main 2 piece inside a pair.
+  Safe because its route runs in one piece from `b` (or `b'`) to the portal: the train never stands
+  inside the gap, its tail clears the gap behind it, and traffic locking per section keeps opposing
+  trains out of the pieces it uses. **Every other move that runs on the other main inside the gap
+  counts.** `candidate()` marks it `gapWrong`: a junction layout, a route that does not end at the branch
+  portal, an edge tagged `junction` with `main === −dir`. `setRoute` refuses it `wrong main` while
+  another train is wrong main, as it refuses any wrong-main route, and its train counts as the one
+  wrong-main train while it holds those edges. Chiefly this is the arrival that must cross to its home
+  main, e.g. eastbound off a north wye: stem, east leg, Main 1, east pair, Main 2, out at `b'`. Its route
+  ends at `b'`, and the pair is 1–4 cells behind that signal. A train standing there waiting for the main
+  ahead keeps its tail on Main 1's junction edges (a long one also on the leg), against Main 1's
+  through traffic in the gap. The exemption is keyed on the route, not on `train.exit`: a human route up
+  the stem exempts a train bound for the far end, and a route across the gap counts a train bound for
+  the branch. A human route that is `gapWrong` is a wrong-main route for the rest of the interlocking
+  too: untaken, it counts as the one wrong-main move, and with no train at its signal it is dead after
+  GRACE. The soak keeps "at most one" for counted trains and asserts that exempt wrong-main running only
+  ever happens on `junction` edges.
+  (Amended 2026-11-02, final review: the first wording exempted every train's `junction` edges, on the
+  argument that "a wrong-main train inside the gap always holds its route out of it". That is false for
+  the crossing arrival, whose route ends at `b'` (or `b`) with its body still in the gap. In pure AUTO
+  two of 146 busy junction seeds gridlocked for good: s687 from 06:35 and s364 in its third hour. The
+  arrival stood at `b` with its tail on the other main's junction edges, opposing a through train in the
+  gap. The train already wrong main elsewhere waited on that through train, and the arrival waited on a
+  train queued behind the wrong-main one: a closed cycle of four or five trains. Three of 42 runs with a
+  human clicking at random for four hours did not recover within an hour of hands-off. Under the rule
+  above none of the 146 seeds wedges in 8 busy hours and all 42 runs recover;
+  `tests/fixtures/wedge-s687.json` pins the state 16 s before the route that closed the cycle.)
 - **Stem one at a time.** The branch section's sense rule means one direction of flow at a time on the
   stem. A train standing at the stem signal waiting for the main is the normal picture.
+  (Amended 2026-11-01, Task 4: **the operator turns the branch round.** While a departure waits at `b` or `b'` with a
+  route up the stem, no arrival is let in from the branch portal, so the stem drains for the departure: trains in it
+  always run out. An arrival that has stood STARVE (10 min) at the portal is not held, and goes in first by rank.
+  Without the hold, busy arrivals followed each other down the stem (the same sense) and a departure at `b` waited
+  14 min while the main backed up behind it; without the cap, s3 stalled. It costs branch throughput on busy seeds.)
+  (Amended 2026-11-01, Task 4: **a train bound for the branch is never sent wrong main** by the operator. Standing at
+  `b` or `b'` on the other main, its only way on is the branch, and an arrival holding that inbound can need the very
+  section it stands in: a deadlock on s15, s17 and s20 in 8 busy hours. It costs a branch-bound train its passing of a
+  standing train.)
+  (Amended 2026-11-02, Task 4 fix: **the branch liveness valve.** A train bound for the branch that is wrong main
+  (only a human can send it there) gives the branch up at once (`<train> missed <Branch>`) and runs for the far end.
+  So does one that has stood STARVE at `b` or `b'` when its route up the stem is refused. The atomic routes keep the
+  junction safe, not live: on s142 a branch-bound train at `b'` waited on a train standing across its way in the gap,
+  which waited, three trains on, on the train behind the first.)
+  (Amended 2026-11-02, final review: the valve's STARVE clause applies only once the operator has tried the route up
+  the stem on this tick and `setRoute` refused it. Before, it fired on time stood alone, so a train left standing ten
+  minutes in MANUAL gave the branch up on the first AUTO tick even with its way up free.)
 - Everything else (trunk lock, one un-entered route per signal, sectional release, dead routes) stands.
   `deadRoute`'s "wrong main with no train at its signal" clause treats a `dir 0` signal as having a train
   when any train's head is at it.
@@ -253,7 +306,8 @@ menu for both main portals with weight `6 × pax`, types `P` and `X`, like a pla
    ends at the `P` signal and it stops there; with the goal reached the operator sets nothing further.
 2. **Reverse 1.** Stopped at `P`: `reverse(sim, t, −arrivalDir)`. Its head node is now the far foot (the
    run is one edge and the tail cleared the foot by 1.1 cells), where the shunt signal stands.
-   `goal = { track: stub }`. State `'reversing'`, status word `backing in`.
+   `goal = { track: stub }`. State `'reversing'`, status word `backing in`. (Amended 2026-11-02, final review:
+   `exit` = the portal it arrived from, set here rather than at reverse 2, since its dir now runs that way.)
 3. **Back in.** The operator (or a human) routes it from the shunt signal down the near leg to the stub's
    exit-signal node and on to the buffer (one candidate, `slow`; the foot's points may move for it per
    the `switchLocked` rule above). It runs at `PUSH_MPH`, stops `FOUL` short of the buffer (the path's
@@ -334,6 +388,12 @@ swaps them.)
   vertical tracks (the stub) draw the box rotated along the edge and the name reading upward beside it,
   on the right of travel of its exit direction. The branch portal's `to <name>` label sits beside the
   portal node on the right of entering travel, with the queue count under it.
+  (Amended 2026-11-01, Task 5: the stem's two signals and the tag of an arrival standing at them fill both sides of
+  the stem's last cells. So the branch label, with the queue count on the line under it, sits beyond the panel edge
+  beside the portal's chevron, running away from the stem: below the bottom edge on a south junction, and on a north
+  junction above the module-name row (about row −2), since at overview zooms it is wider than the stretch between the
+  stem and the next module's name. The overview fit starts at row −2 on a north junction to keep it in frame, which
+  costs about 50 px of label distance at follow zoom.)
   (Amended 2026-11-02, Task 8: the stub's box lies along its `S`–buffer edge, not from `A`. As on a row, it starts a
   cell clear of the exit signal at `S` and ends half a cell short of the buffer, with the same thickness and lights.
   It sits on the right of departure travel (from the buffer toward `A`): west of a north stub, east of a south one.
@@ -357,14 +417,17 @@ swaps them.)
   `backing in`. `Kind` reads `high`, `dwarf` or `shunt`. A switch's `Locked` names an un-entered route through the
   points (`route from <signal>`) when neither a train nor a route holds its trunk: a shunt route alone holds its
   foot. A terminus train's `exit` changes only when it departs the stub, so while it backs in its `Direction`
-  reads the reversed dir toward the far end, e.g. `westbound to <east portal>`.)
+  reads the reversed dir toward the far end, e.g. `westbound to <east portal>`.) (Amended 2026-11-02, final review:
+  its `exit` becomes the portal it came in by at reverse 1, so from then on the inspector, the board's To column and
+  a follow caption read `westbound to <west portal>`, the way it is now heading.)
 - **Legend**: a `wye / branch` line under Track. README "What's on the panel" gains two short
   paragraphs (junction; terminus). (Amended 2026-11-02, Task 8: the line reads `wye / branch / stub`.)
 - **Camera**: `followCandidates` and `signalCandidates` are unchanged (main rows only); a follow shot
   continues up the stem since it tracks the head point. The caption's `eastbound to <portal>` uses
   `train.exit`. (Amended 2026-11-02, Task 8: a follow's caption is read from its train every frame, its dir and
   `exit` as they are then, and the caption's crossfade carries the change. A terminus train followed through its
-  reversal at `P` goes from `eastbound to …` to `westbound to …` in the same shot. At a reversal the follow target
+  reversal at `P` goes from `eastbound to <east portal>` to `westbound to <west portal>` in the same shot (its exit
+  changes at reverse 1: final review). At a reversal the follow target
   (the head plus 3 cells along dir) swings by about the train's length plus 6 cells, eased by the chase: accepted.
   A signal shot on a `P` signal counts a terminus train's reversal there as a pass, because its head moves back
   past the node and its dir flips, so the shot ends 6 s later: accepted.)
@@ -380,10 +443,12 @@ swaps them.)
   by at least one dir; determinism. Non-wye seeds: identical node, edge, switch and track lists to the
   previous generator except `dirs` → `oneWay` and signals gaining `from`.
 - `test_sim`: `forwardEdges` on a straight main equals the old rule; at the apex, trunk ↔ leg only;
-  `candidates` from the stem signal give one eastbound and one westbound candidate; a branch arrival
-  bound east is routed stem → east leg → Main 1 → east pair → Main 2 and is exempt from the wrong-main
-  count; a departure bound for the branch from the west crosses at the west pair and climbs the west
-  leg; `opposing` refuses an outbound route while an inbound train is on the stem and vice versa, and
+  `candidates` from the stem signal give at least one eastbound and one westbound candidate, each ending
+  at the gap's boundary column (amended 2026-11-01, Task 3: up to four, each dir to each main); a branch
+  arrival bound east is routed stem → east leg → Main 1 → east pair → Main 2 and counts as the one
+  wrong-main train while it holds Main 1's junction edges (amended 2026-11-02, final review: first
+  written "is exempt from the wrong-main count"; see "Junction exemption"); a departure bound for the
+  branch from the west crosses at the west pair and climbs the west leg, exempt; `opposing` refuses an outbound route while an inbound train is on the stem and vice versa, and
   allows two inbound routes in sequence; the branch portal queue spawns both dirs and names count per
   dir; three-portal spawn intervals; `exitNodes(train)` per exit; `signalAhead` and labels with `N`/`S`;
   Phase 2: `reverse` preserves the occupied edge set, flips `locoAtTail`, puts the head node at the foot
@@ -403,13 +468,14 @@ swaps them.)
 - No signals inside the junction gap (atomic routes through it) and a gap-wide wrong-main exemption,
   after the builder check showed that an intermediate signal at the feet deadlocks a branch-bound train
   against a branch arrival, that signals on switch nodes break the trunk lock, and that the south wye's
-  moves use the one-cell Main 2 piece inside a pair.
+  moves use the one-cell Main 2 piece inside a pair. (The exemption was narrowed in the final review: see
+  the last item.)
 - Terminus shunt signals are route-transparent dwarfs at the feet; the points may move for the standing
   train that reads them.
 - Destinations and exits are filtered by reachability (computed once per layout), the exit coin is
   always drawn.
 - Wye gaps carry two crossover pairs so every move at the junction is at most a few cells wrong main,
-  and those cells are exempt from the one-wrong-main rule.
+  and those cells are exempt from the one-wrong-main rule (for a move out by the branch: final review).
 - The branch (Keddie) is single track with one direction of flow at a time; its signals are "either
   direction" (`dir 0`) and its arrivals pick east or west by a fair coin.
 - Total traffic is shared across three portals, not increased.
@@ -425,3 +491,20 @@ swaps them.)
   train's ends crossfade at a reversal, the stub's box lies on the right of departure travel, its name reads bottom
   to top, the buffer stop is a bar, shunt dwarfs stand back from the points, and the follow caption is read every
   frame.
+- (2026-11-01/02, Tasks 3–5; details in the amendment notes above.) The wye draws on its own `:junction` stream
+  (presence, side, gap, then the kind). `candidates()` keeps one candidate per exit node, fewer wrong-main edges
+  first. The stem signal has up to four candidates, and its wrong-main one to `b'` on Main 1 is legitimate. Slow
+  orders land on main sections only. The operator turns the branch round: arrivals wait at the portal while a
+  departure waits, ten minutes at most. A train bound for the branch is never sent wrong main, and the branch
+  liveness valve gives the branch up for one that is wrong main or has stood ten minutes refused its way up. A
+  departure past a train standing at the stem signal is refused `occupied` (the order of the checks), not
+  `opposing`. On the panel: a north junction's branch label sits above the module names, with the fit from row −2;
+  tags are placed by `tagAt` (the old placement on rows, 10 px clear of the line on diagonals and verticals); the
+  apex padlock sits beside the apex; and tags still have no collision avoidance, so one descending a leg may cross
+  the other leg for under a cell below the apex.
+- (2026-11-02, final review; details in "Junction exemption", "Stem one at a time" and the inspector and camera
+  notes.) Only a move out by the branch is exempt in a junction gap: any other route on the other main inside it
+  (`gapWrong`) counts as the one wrong-main move, keyed on the route rather than the train's exit. A human `gapWrong`
+  route is a wrong-main route throughout (untaken it counts as one; with no train at its signal it is dead after
+  GRACE). The valve's ten-minute clause fires only after that tick's route up the stem is refused. A terminus
+  train's exit becomes its entry portal at reverse 1.
