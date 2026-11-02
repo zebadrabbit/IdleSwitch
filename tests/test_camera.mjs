@@ -180,8 +180,8 @@ assert.deepEqual(run(true), run(false), 'the ease is unaffected by the caller mu
 }
 
 // A follow caption reads the train every frame: a terminus train (s8) followed in to its pull-ahead signal reverses there,
-// and the caption crossfades from eastbound to westbound (to the same exit: it changes when the train departs the stub)
-// within the one follow shot.
+// and the caption crossfades from `eastbound to <east portal>` to `westbound to <west portal>`, the portal it came in by
+// and now heads back for (its exit changes at that reversal), within the one follow shot.
 {
   const K = createSim(generate('s8'), 's8'), w = K.layout.wye, entry = K.layout.portals.find(p => p.dir === 1);
   const exit = K.layout.portals.find(p => p.dir === -1), px = K.layout.nodes[w.P[1]].x;
@@ -207,7 +207,7 @@ assert.deepEqual(run(true), run(false), 'the ease is unaffected by the caller mu
     if (since !== null) assert.equal(u.shot.since, since, 'one follow shot through the reversal');
   }
   assert.ok(T.reversed1 && T.pushing, 'the train reversed and backed in under the follow');
-  assert.deepEqual(seen, [`following P 2 · eastbound to ${exit.name}`, `following P 2 · westbound to ${exit.name}`], `captions ${seen}`);
+  assert.deepEqual(seen, [`following P 2 · eastbound to ${exit.name}`, `following P 2 · westbound to ${entry.name}`], `captions ${seen}`);
 }
 
 console.log('camera ok');

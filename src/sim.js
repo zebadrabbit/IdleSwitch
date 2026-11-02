@@ -442,7 +442,8 @@ export const trainLength = type => LOCO + TYPES[type].cars * CAR;
 // id: the spawner hands in the id it gave the queue entry, so a train holding for a queued one finds it later.
 // entry, exit: portal ids, by default the portal of its dir and the far end.
 // A train for a terminus's stub is a terminus train (spec "The terminus mission"): bound first for the pull-ahead node
-// past the wye for its dir (arrival, kept: dir flips when it reverses), its exit the far end until it departs. run: cells
+// past the wye for its dir (arrival, kept: dir flips when it reverses), its exit the far end until it turns round at P,
+// then the portal it came in by (where its reversed dir now runs, so the board and captions read true). run: cells
 // run before its last reversal (pathOff restarts there); locoAtTail and pushing while it backs in; reversed1 once it has
 // turned round at P.
 export function spawnTrain(sim, { type, dir, dest = null, name, id = sim.nextTrainId++, entry = portalFor(sim, dir),
@@ -850,7 +851,7 @@ function missions(sim) {
         logEvent(sim, `${t.name} departed ${tracks[t.dest].name}`);
         t.events.push({ t: sim.time, kind: 'departed', track: tracks[t.dest].name });
         sim.reserved.delete(t.dest);
-        if (t.terminus) { reverse(sim, t, -t.arrival); t.exit = t.entry; }
+        if (t.terminus) reverse(sim, t, -t.arrival); // its exit is its entry since reverse 1
         Object.assign(t, { dest: null, goal: { exit: t.exit }, state: 'running', lastMoveTime: sim.time });
       }
     } else if (t.state === 'stopped' && t.dest !== null && at === t.dest) {
@@ -862,7 +863,7 @@ function missions(sim) {
       && clearToReverse(sim, t, sim.feet)) { // !adv: not in the step it ran up to P, whose motion the renderer still draws
       const sig = signalLabel(sim, signalAheadOf(sim, t));
       reverse(sim, t, -t.arrival);
-      Object.assign(t, { goal: { track: t.dest }, state: 'reversing', reversed1: true });
+      Object.assign(t, { goal: { track: t.dest }, state: 'reversing', reversed1: true, exit: t.entry });
       logEvent(sim, `${t.name} reversing at ${sig}`);
       t.events.push({ t: sim.time, kind: 'reversing', signal: sig });
     }
@@ -1016,12 +1017,12 @@ function operator(sim) {
     if (sig === undefined || routeFrom(sim, sig)) continue;
     if (t.dest !== null && trackAhead(sim, t) === t.dest) continue; // arriving: it dwells before going on
     // Rule (liveness valve): a train bound for the branch that is wrong main (a human sent it: the operator never does,
-    // below), or has stood STARVE at b or b' with its way up the stem refused, gives the branch up and runs for the far
-    // end. The atomic routes through the junction keep it safe, not live: on s142 a branch-bound train at b' waited on
-    // a train standing across its way in the gap, which waited (three trains on) on the train behind the first.
-    // Switching its exit then cleared every stand within the hour.
-    if (br && t.dest === null && t.exit === br.id
-      && (isWrongMain(sim, t) || (sim.time - t.lastMoveTime >= STARVE && intoBranch(sim, sig, t.dir, br)))) missBranch(sim, t, br);
+    // below) gives the branch up and runs for the far end; so does one that has stood STARVE at b or b' when its route
+    // up the stem is refused (after setRoute, below). The atomic routes through the junction keep it safe, not live: on
+    // s142 a branch-bound train at b' waited on a train standing across its way in the gap, which waited (three trains
+    // on) on the train behind the first. Switching its exit then cleared every stand within the hour.
+    const forBranch = br && t.dest === null && t.exit === br.id;
+    if (forBranch && isWrongMain(sim, t)) missBranch(sim, t, br);
     // Rule (the terminus's valve): a terminus train that has stood 2 x STARVE at b or b' with its way into the gap
     // refused (terminusTurning has had STARVE to drain it) gives the stub up and runs through for the far end. Waiting
     // to cross to the feet main it stands on its own home main: on s263 behind a train whose way on was held, head on, by
@@ -1041,7 +1042,7 @@ function operator(sim) {
       if (t.dest !== null) {
         logEvent(sim, `${t.name} missed ${tracks[t.dest].name}`);
         sim.reserved.delete(t.dest);
-        if (t.terminus && t.reversed1) t.exit = t.entry; else t.terminus = false;
+        if (!t.reversed1) t.terminus = false; // reversed, its exit is already its entry
         Object.assign(t, { dest: null, goal: { exit: t.exit } });
       } else if (br && t.exit === br.id) missBranch(sim, t, br);
       continue;
@@ -1079,6 +1080,9 @@ function operator(sim) {
     if (wm && t.dest === null && t.exit === br?.id) continue;
     if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok)
       logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${wm || cand.gapWrong ? ' (wrong main)' : ''}`);
+    // the valve's second clause: only once this tick's route up the stem was refused, so a train left standing ten
+    // minutes in MANUAL keeps the branch when its way up is free
+    else if (forBranch && cand.exitNode === br.node && sim.time - t.lastMoveTime >= STARVE) missBranch(sim, t, br);
   }
 }
 

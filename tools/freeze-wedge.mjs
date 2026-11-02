@@ -2,7 +2,7 @@
 // switch lie and reservation at sim time T, so test_sim can replay a fix on exactly that state (the layout travels with
 // it, so later generator changes cannot move it: s142's has, its stem is four cells since Task 6, so its recipe below
 // needs the generator of that day too). Run it with the sim the wedge happened under:
-//   node tools/freeze-wedge.mjs [path/to/sim.js] [seed T]   (default: src/sim.js s142 37100)
+//   node tools/freeze-wedge.mjs path/to/sim.js [seed T]   (default: s142 37100)
 // - s142 at 37100 (10:18), busy, south junction. Under the sim of 5a6371f (before the liveness valve) P 411, bound for
 //   the branch, stood at b' with its way up the stem occupied by P 264, which waited on L 268, which was opposed by
 //   M 425 (wrong main), which waited on Z 419, which waited on P 411: for good.
@@ -19,7 +19,9 @@ import { resolve } from 'node:path';
 import { generate } from '../src/gen.js';
 
 const [simArg, SEED = 's142', time = '37100'] = process.argv.slice(2), T = Number(time);
-const simPath = resolve(simArg ?? new URL('../src/sim.js', import.meta.url).pathname);
+// No default sim: frozen from the current one, a fixed wedge would not be a wedge.
+if (!simArg) { console.error('usage: node tools/freeze-wedge.mjs path/to/sim.js [seed T]'); process.exit(1); }
+const simPath = resolve(simArg);
 const { createSim, step } = await import(pathToFileURL(simPath).href);
 
 const layout = generate(SEED), sim = createSim(layout, SEED, { density: 'busy' });

@@ -1831,6 +1831,21 @@ const named = (S, name) => [...S.trains.values()].find(t => t.name === name);
   assert.equal(S.completed.find(c => c.name === 'P 411')?.to, G.portals[0].name, 'P 411 not out by the far end');
 }
 
+// the valve's STARVE clause fires only once this tick's route up the stem is refused: a train bound for the branch left
+// standing ten minutes at b (in MANUAL, say) is routed up the stem on the first AUTO tick when its way up is free, and
+// gives the branch up for the far end when a westbound arrival stands at the stem signal, on the stem it needs
+for (const blocked of [false, true]) {
+  const S = quiet(sN), G = S.layout, k = wyeOf(S), bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), sg = G.signals[bSig];
+  const D = stand(S, spawnTrain(S, { type: 'M', dir: E, exit: 2, name: 'M 16' }), [sg.from], farOf(G, sg.from, sg.node));
+  if (blocked) stand(S, spawnTrain(S, { type: 'M', dir: W, entry: 2, name: 'M 17' }), S.routesFrom.get(k.portalSig)[0].edges, k.portal.node);
+  D.lastMoveTime = S.time - 10 * 60;
+  S.auto = true;
+  step(S);
+  const missed = S.log.some(e => e.text === `M 16 missed ${k.portal.name}`);
+  if (blocked) assert.ok(missed && D.exit === portalOf(S, W).id, 'the valve kept the branch for a train refused its way up');
+  else assert.ok(!missed && D.exit === 2 && S.routes.get(D.routes[0])?.cand.exitNode === k.portal.node, 'the valve took the branch from a train whose way up was free');
+}
+
 // the junction gridlock on a frozen AUTO wedge (s687 busy at 06:35 under the sim of e578790, where it held for good):
 // 16 s later that operator routed M 237, a branch arrival bound west, from the stem signal across Main 2's junction
 // edges to b (exempt then) while M 144 was wrong main. M 237 stood at b waiting for M 245 with its tail on those edges,
@@ -1866,14 +1881,16 @@ for (const seed of [sN, sS]) for (const shape of ['module', 'gate']) {
   const A = shape === 'gate' ? stand(S, spawnTrain(S, { type: 'M', dir: E, entry: br.id, name: 'M 10' }), S.routesFrom.get(k.portalSig)[0].edges, br.node) : null;
   assert.ok(isWrongMain(S, X), `${seed} ${shape}: X 9 not wrong main`);
   S.auto = true;
-  for (let i = 0; i < 3600 && (S.trains.has(X.id) || (A && S.trains.has(A.id))); i++) step(S);
+  // no stand of STALL length, read per tick (the log keeps only its last 200 lines)
+  const noStall = () => { for (const T of S.trains.values()) assert.ok(!T.stalled, `${seed} ${shape}: STALL ${T.name}`); };
+  for (let i = 0; i < 3600 && (S.trains.has(X.id) || (A && S.trains.has(A.id))); i++) { step(S); noStall(); }
   assert.ok(S.log.some(e => e.text === `X 9 missed ${br.name}`), `${seed} ${shape}: X 9 kept the branch`);
   assert.equal(S.completed.find(c => c.name === 'X 9')?.to, portalOf(S, E).name, `${seed} ${shape}: X 9 not out by the far end`);
   if (A) assert.ok(S.completed.some(c => c.name === 'M 10'), `${seed}: the arrival never left`);
   else {
     const e0 = S.completed.length;
-    for (let i = 0; i < 3600; i++) step(S);
-    assert.ok(S.completed.length - e0 >= 10 && !S.log.some(e => e.text.startsWith('STALL')), `${seed}: traffic stopped after X 9`);
+    for (let i = 0; i < 3600; i++) { step(S); noStall(); }
+    assert.ok(S.completed.length - e0 >= 10, `${seed}: traffic stopped after X 9`);
   }
 }
 
@@ -2126,7 +2143,7 @@ for (const seed of [tN, tS]) {
 }
 
 // a train for the stub (from either main portal): terminus, its arrival dir kept, bound first for the pull-ahead signal
-// past the wye for that dir; its exit the far end until it departs. Every other train is no terminus train.
+// past the wye for that dir; its exit the far end until it turns round there. Every other train is no terminus train.
 {
   const S = quiet(tN), w = S.layout.wye;
   for (const d of [E, W]) {
@@ -2185,6 +2202,8 @@ for (const [seed, d, other] of [[tN, E], [tS, E], [tN, W], [tS, W], [tN, E, true
     if (phase === 'in' && said('reversing at')) phase = 'back';
     if (phase === 'back' && said('arrived at')) phase = 'dwell';
     if (phase === 'dwell' && said('departed')) phase = 'out';
+    // its exit: the far end until it turns round at P, then the portal it came in by, toward which its dir now runs
+    assert.equal(T.exit, phase === 'in' ? portalOf(S, -d).id : entry.id, `${seed} ${d}: exit ${T.exit} (${phase})`);
     if (phase === 'in') assert.ok(!T.locoAtTail && T.dir === d);
     if (phase === 'back') assert.ok(T.speed <= PUSH_MPH * MPH + 1e-9 && T.locoAtTail && T.pushing && T.dir === -d, `${seed} ${d}: pushing at ${T.speed / MPH} mph`);
     if (phase === 'out') assert.ok(!T.locoAtTail && !T.pushing && T.dir === -d);
