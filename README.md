@@ -26,11 +26,13 @@ To route a train, click an entrance signal, then an exit signal; the route sets 
 
 Track: grey is idle, green is a route set by the operator, blue is a route you set, red is occupied. The unset leg of a switch draws dim.
 
-The panel runs a day of light every few minutes on the sim clock: dusk dims it a little, signal lamps and platforms glow, locos throw a headlight ahead, and the HUD's sun gives way to a moon. Passenger trains thin out at night and freight picks up. Every colour change fades rather than snaps, and the last car carries a blinking red marker. Now and then a stretch of main gets a slow order: 20 mph, drawn amber with a `SLOW 20` label and logged, lifted after a few minutes. The operator setting the routes is named in the HUD and hands the desk over at each shift change (06:00, 14:00, 22:00), which the log notes.
+The panel runs a day of light every few minutes on the sim clock: dusk dims it a little, signal lamps and platforms glow, locos throw a headlight ahead, and the HUD's sun gives way to a moon. Passenger trains thin out at night and freight picks up. Every colour change fades rather than snaps, and the trailing end of a train carries a blinking red marker. Now and then a stretch of main gets a slow order: 20 mph, drawn amber with a `SLOW 20` label and logged, lifted after a few minutes. The operator setting the routes is named in the HUD and hands the desk over at each shift change (06:00, 14:00, 22:00), which the log notes.
 
 Main 1 (upper) is home to westbound trains and Main 2 (lower) to eastbound, but both are signalled both ways, with a pair of crossovers in every gap between modules and at both ends. The operator may run a train on the other main round one that has stood a minute, returning it home at the first free pair; only one train runs on the wrong main at a time. A route into oncoming traffic is refused `opposing`, and one that would put a second train on the wrong main is refused `wrong main`; both show the usual red flash.
 
-About three terminals in five have a junction: a wye in one gap between modules, its two legs climbing from Main 1 to a single-track branch that runs to a third portal at the top edge (or dropping from Main 2 to the bottom edge). Trains come off the branch bound either way, and some trains leave by it; one bound for the branch from the other main crosses over in the gap to reach the foot of the wye. The branch carries one direction of flow at a time: while a departure waits to climb it, arrivals wait at the portal (ten minutes at most). There are no signals inside the junction gap, and the few cells of wrong main a move through it needs don't count against the one-train rule. A train bound for the branch that has stood ten minutes with its way up refused gives the branch up and runs for the far end (the log says it `missed` the branch).
+About three terminals in five have a wye in one gap between modules, a junction or a terminus by an even chance. A junction's two legs climb from Main 1 to a single-track branch that runs to a third portal at the top edge (or drop from Main 2 to the bottom edge). Trains come off the branch bound either way, and some trains leave by it; one bound for the branch from the other main crosses over in the gap to reach the foot of the wye. The branch carries one direction of flow at a time: while a departure waits to climb it, arrivals wait at the portal (ten minutes at most). There are no signals inside the junction gap, and the few cells of wrong main a move through it needs don't count against the one-train rule. A train bound for the branch that has stood ten minutes with its way up refused gives the branch up and runs for the far end (the log says it `missed` the branch).
+
+A terminus wye makes the Tampa move. Its stem is a stub platform ending at a buffer stop, and passenger trains and expresses from either end call there. One pulls past the wye on the main and stops at the pull-ahead signal beyond it, then reverses and backs through the far leg into the stub, loco trailing, at 15 mph: the headlight is on the leading car and the red marker on the loco. After ten minutes at the platform it pulls out loco first by the other leg and runs back toward the portal it came from. There is one terminus visit at a time: the stub is offered only while it is free and no train for it is waiting. Through trains cross the whole gap in one route, past the two shunt dwarfs at the feet of the wye (`E63Ks`, `W67Ks`), which only give a reversed train its way into the stub. A terminus train that has waited twenty minutes to get into the gap gives the stub up and runs through.
 
 Signal aspects (American practice):
 
@@ -45,7 +47,7 @@ Signal aspects (American practice):
 | Slow Clear | — | — | G | proceed at slow speed |
 | Stop | R | R / R | R | stop |
 
-Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf, and a branch's signals face north or south (`S68B`).
+Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf, `E63Ks` a terminus's shunt dwarf, and a branch's or a stub's signals face north or south (`S68B`).
 
 Trains are a locomotive block plus one block per car, with an ID tag (type letter plus number; even eastbound, odd westbound):
 
@@ -73,7 +75,7 @@ The Settings panel (5) holds sim speed, density, return to AUTO after 2 idle min
 ## Design notes
 
 - Each main has a home direction, Main 1 westbound and Main 2 eastbound, and is signalled both ways; traffic locking keeps opposing trains out of the same stretch of main between crossover pairs. A meet is an overtake: the lower-priority train steps into a siding or yard track, or a train held behind a standing one passes it on the other main.
-- Every track is a through track. Nothing reverses, so a train keeps its direction and ID from portal to portal.
+- Every track is a through track except a terminus's stub. Only a terminus train reverses, and it keeps its ID; every other train keeps its direction and ID from portal to portal.
 - A switch is held only by its trunk edge (occupied or routed); there is no flank protection.
 - Yard tracks must be clear to receive a train.
 - Human routes stand until a train takes them or you cancel them, with one exception: in AUTO the operator clears a human route no train can take (out of an empty track no train is bound for; into a track the train waiting at it doesn't fit; or a wrong-main route, or one from a signal on the other main, with no train standing at its signal) 3 sim minutes after it was set.
@@ -123,7 +125,7 @@ Needs Node 22. No packages to install.
 
 ## Status
 
-v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable and resizable panels with a saved layout, the lighting cycle, slow orders, the junction wye and the idle camera all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), a stub terminus off a wye (Phase 2, in progress), sound, and grade separation (crossings, diamonds, flyovers): its own spec.
+v0.1. The seeded generator, interlocking, traffic, canvas panel, AUTO and MANUAL (NX) routing, dockable and resizable panels with a saved layout, the lighting cycle, slow orders, the junction and terminus wyes and the idle camera all work, with tests in CI. Later: an efficiency score for how well trains were routed (the sim already logs what it needs), sound, grade separation (crossings, diamonds, flyovers: its own spec), and light rail.
 
 ## License
 

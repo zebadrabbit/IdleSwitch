@@ -216,6 +216,17 @@ gap, so a seed's presence, side and gap are the same as before termini existed.)
 - Everything else (trunk lock, one un-entered route per signal, sectional release, dead routes) stands.
   `deadRoute`'s "wrong main with no train at its signal" clause treats a `dir 0` signal as having a train
   when any train's head is at it.
+  (Amended 2026-11-02, Task 7: **an un-entered route owns its switches.** `switchLocked` also holds every switch
+  listed in the `cand.switches` of a set route that its train has not entered. Every other route through a switch
+  already holds it by its trunk lock. A route from a shunt signal leaves its foot by a leg and never locks the trunk,
+  and before this its points could be thrown under it. "Any set route", the first wording, changed traffic on every
+  seed: sectional release frees a trunk behind the train while the route lives on. Once entered, the train stands on
+  the run, which is the trunk, and its occupancy holds the points. The switch inspector's `Locked` names such a route
+  (`route from <signal>`) as it names a trunk route (Task 8).)
+  (Amended 2026-11-02, Task 7: **dead shunt routes.** In AUTO, `deadRoute` also clears a human route from a shunt
+  signal GRACE after it was set when no train's head is at that signal, i.e. its head node is the foot, arrived on
+  the signal's `from` edge. Only a reversed terminus train ever comes there; an unused back-in route at the other
+  foot kept an arrival reversing for hours.)
 
 ## Phase 2: reversing and the terminus
 
@@ -254,9 +265,51 @@ reversing at <signal>`, `<train> backing into <stub>`, `<train> departed <stub>`
 `fits`, `trackFree`, `reserved` and the spawn gate treat the stub like a platform. `holdingTracks` never
 includes it. A terminus train is never held or passed (`prio` as its type).
 
+(Amended 2026-11-02, Task 7: **five operator rules.** Long runs showed the terminus gap wedging without them. With
+them, every terminus seed in s0..s399 (116 seeds) ran 8 h busy in AUTO with no wedge and no STALL. Each costs some
+terminus visits under busy traffic; the alternative is a smarter gap scheduler.
+1. **Followers.** While a terminus train that has not reversed holds the feet main's junction edges, no other train
+   gets a route from `b` or `b'` onto them (`setRoute` refuses `terminus`, humans included). The train reverses only
+   with no other train and no route not its own on the sections it stands in, nor, at `P`, on those edges.
+2. **One in the offing.** The stub is on the menus only while it is free and no terminus train is queued. Otherwise
+   terminus entries fill every portal's queue and about a third fewer trains get through.
+3. **Turn-round hold.** When a terminus train has stood STARVE (10 min) at `b` or `b'` before reversing, or at the
+   stub signal after departing, the operator routes no train of the other direction into the gap and sends no train
+   wrong main, both only while no train is wrong main.
+4. **The visit is the wrong-main move.** From its first route into the gap until it is out again, a terminus train's
+   visit is the one wrong-main move: no other train is sent wrong main meanwhile, and its own routes count as wrong
+   main only past the gap (`wrongMainOut`). It leaves the stub against the feet main only while no train is wrong
+   main. Other trains get **no junction exemption in a terminus gap**: its `P` columns are stands inside it, and on
+   s200 an exempt through train stood at `P`, wrong main, on the main a wrong-main train had to get home by. Junction
+   wyes are unchanged.
+5. **The valve.** A terminus train that has stood 2 × STARVE (20 min) at `b` or `b'` with its way into the gap
+   refused gives the stub up (`missed <stub>`) and runs through for the far end. It fired twice in 116 seeds × 8 h.)
+
+(Amended 2026-11-02, Task 7: **five accepted deviations** from the text above.
+1. `runOff` is unchanged: true at any portal's exit node. The buffer is none, so the train stops `FOUL` short of it
+   as at any path end. Narrowing it to the train's own exit portal would strand a train a human routes out by another
+   portal.
+2. No train runs head first into the stub. With the shunt signals route-transparent, a `P` signal's walk up a leg
+   would reach the buffer; only a shunt signal's walk may end there.
+3. `reverse` drops the train's entered routes' locks too, not only its un-entered routes, and any path edge ahead
+   of its head. Otherwise its own stale back-in lock on the stub (outbound) opposes its departure (inbound).
+4. A reversal waits one still step (`!adv`): the step in which the train runs up to `P` is still being drawn with
+   the renderer's lag, and reversing a step later keeps the new tail exactly where the head is drawn.
+5. `reversing` is a state, which holds the train until it adopts a route. `backing in` is the status word for a
+   running train that is pushing, not a state value.
+
+A train sent on past `P` by a human before it reverses gives the stub up for good; one sent away from the stub
+after reversing runs back for its entry portal, still pushing at 15 mph.)
+
 **Rendering a pushing train.** `trainBlocks` returns the loco block at the head unless `locoAtTail`, in
 which case the loco is the last block; the headlight goes at the leading end (the path head) in both
 cases and the tail marker at the trailing end. The tag stays with the loco.
+(Amended 2026-11-02, Task 8: the tag's anchor is the loco block (the last while it pushes), on the right of that
+block's own travel, i.e. of the whole train's. For every other train it is the head block as before, so they are
+unchanged pixel for pixel. A reversal swaps the ends, so a train's headlight, tail marker and tag are keyed by
+which end its loco is at: the old ones fade out where they stood (the train is standing) while the new ones fade
+in, under half a second, instead of jumping (the standing rule: no hard cuts). Reverse 2 keeps the dir but still
+swaps them.)
 
 ## Rendering and panels
 
@@ -265,12 +318,28 @@ cases and the tail marker at the trailing end. The tag stays with the loco.
   `right(v) = (−v.y, v.x)` in screen coordinates (y down): east → +y, west → −y, south-facing (travelling
   down) → −x, north-facing → +x. Two-head stacking continues outward along `right`. The chevron points
   along `facing`. The pick radius is unchanged.
+  (Amended 2026-11-02, Task 8: shunt signals draw as dwarfs, on the right of their facing as dwarfs are. Each stands
+  on a foot, a switch node, where the right of one of them is inside the wye's triangle: drawn at the node, its
+  chevron lay on the leg and its head under the foot's padlock. So a shunt dwarf stands back from the points along
+  the run it faces, `dr + 13` px (16.5 at zoom 1), its chevron's tip 6 px short of the node.)
 - **Tags** sit on the right of travel of the head block (same `right()`), 10 px off; the existing above /
-  below rule is this rule for horizontal travel.
+  below rule is this rule for horizontal travel. (Amended 2026-11-02, Task 8: of the loco block, which is the head
+  block except while a train pushes; see "Rendering a pushing train".)
 - **Track labels and platform boxes** follow the track's first-to-last node segment: horizontal as today;
   vertical tracks (the stub) draw the box rotated along the edge and the name reading upward beside it,
   on the right of travel of its exit direction. The branch portal's `to <name>` label sits beside the
   portal node on the right of entering travel, with the queue count under it.
+  (Amended 2026-11-02, Task 8: the stub's box lies along its `S`–buffer edge, not from `A`. As on a row, it starts a
+  cell clear of the exit signal at `S` and ends half a cell short of the buffer, with the same thickness and lights.
+  It sits on the right of departure travel (from the buffer toward `A`): west of a north stub, east of a south one.
+  It hugs the stub at `lw/2 + 3 + bh/2` at every zoom, since nothing stands beside a stub to need the rows' mid-gap
+  rule. The name sits in the box turned a quarter, and **always reads bottom to top**, north or south. A name longer
+  than the box (at overview zooms "<Place> Union 1" is longer than the stub) starts 4 px in from the box's `S` end,
+  clear of a second head standing upstream at tight zooms, and runs on past the buffer into the margin beyond the
+  panel's edge row. The buffer stop is a bar across the track's end, 2 × `lw` long, in track colour. A departing
+  train's tag, on the right of its travel, draws over the box, as tags draw over everything; a train standing at `S`
+  to leave has its tag beside `S`'s heads, as at a junction's stem signal. The apex padlock, east of a north apex and
+  west of a south one, stays clear of the box.)
 - **Legs and stem** draw as track (`wye` and `branch` are track classes; `COLORS` unchanged). The
   junction section gets no special colour.
 - **Signal labels**: `${E|W|N|S}${x}${row letter}${d?}` with the letter from `facing` (dominant axis;
@@ -279,11 +348,21 @@ cases and the tail marker at the trailing end. The tag stays with the loco.
 - **Board**: From → To from the train's entry and exit portals; status words `backing in` and
   `reversing`. Inspector: `Direction` reads `eastbound to <exit portal>` / `westbound …` / for a `dir 0`
   head position on the stem the same with its dir; `Signal ahead` uses `signalAhead`.
+  (Amended 2026-11-02, Task 8: the inspector's `State` is the board's status word, so it reads `reversing` and
+  `backing in`. `Kind` reads `high`, `dwarf` or `shunt`. A switch's `Locked` names an un-entered route through the
+  points (`route from <signal>`) when neither a train nor a route holds its trunk: a shunt route alone holds its
+  foot. A terminus train's `exit` changes only when it departs the stub, so while it backs in its `Direction`
+  reads the reversed dir toward the far end, e.g. `westbound to <east portal>`.)
 - **Legend**: a `wye / branch` line under Track. README "What's on the panel" gains two short
-  paragraphs (junction; terminus).
+  paragraphs (junction; terminus). (Amended 2026-11-02, Task 8: the line reads `wye / branch / stub`.)
 - **Camera**: `followCandidates` and `signalCandidates` are unchanged (main rows only); a follow shot
   continues up the stem since it tracks the head point. The caption's `eastbound to <portal>` uses
-  `train.exit`.
+  `train.exit`. (Amended 2026-11-02, Task 8: a follow's caption is read from its train every frame, its dir and
+  `exit` as they are then, and the caption's crossfade carries the change. A terminus train followed through its
+  reversal at `P` goes from `eastbound to …` to `westbound to …` in the same shot. At a reversal the follow target
+  (the head plus 3 cells along dir) swings by about the train's length plus 6 cells, eased by the chase: accepted.
+  A signal shot on a `P` signal counts a terminus train's reversal there as a pass, because its head moves back
+  past the node and its dir flips, so the shot ends 6 s later: accepted.)
 
 ## Tests
 
@@ -334,3 +413,10 @@ cases and the tail marker at the trailing end. The tag stays with the loco.
 - A terminus train leaves toward the portal it arrived from (the Tampa story), by the other leg.
 - The trunk rule becomes "negative dot product with both other edges"; on the apex tie the west leg is
   `normal`.
+- (2026-11-01/02, Tasks 6–8; details in the amendment notes above.) The terminus gap is 36 columns, symmetric
+  about the apex. Shunt signals take an `s` suffix. A junction stem is at least four cells. The terminus needs five
+  operator rules against wedges, and Task 7 made five accepted deviations. An un-entered route owns its switches,
+  and a shunt route with no train at its signal is dead after GRACE. On the panel: the tag rides the loco, a
+  train's ends crossfade at a reversal, the stub's box lies on the right of departure travel, its name reads bottom
+  to top, the buffer stop is a bar, shunt dwarfs stand back from the points, and the follow caption is read every
+  frame.
