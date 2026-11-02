@@ -1,7 +1,7 @@
 // The app: boot from the seed, the frame loop, HUD, dockable panels with saved layout and settings, NX routing
 // by clicks, keybinds, camera. Panel bodies come from panels.js; pure helpers from ui-util.js.
 import { generate } from './gen.js';
-import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, headNode, logEvent, signalLabel, nightOf } from './sim.js';
+import { createSim, step, DENSITY, setRoute, cancelRoute, throwSwitch, routeFrom, signalAheadOf, logEvent, signalLabel, nightOf } from './sim.js';
 import { createRenderer, mix } from './render.js';
 import { createIdleCamera, tween, centreOn, pauseSkip, IDLE_CAM_MS } from './camera.js';
 import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
@@ -409,7 +409,7 @@ function selectTrain(id) {
   const t = sim.trains.get(id);
   if (!t) return;
   state.selected = { kind: 'train', id };
-  state.armedSignal = sim.signalAt.get(`${headNode(sim, t)}:${t.dir}`) ?? null; // pre-arm its next signal
+  state.armedSignal = signalAheadOf(sim, t) ?? null; // pre-arm its next signal
   refreshPanels();
 }
 function clickSignal(id) {

@@ -1,7 +1,7 @@
 // node tests/test_camera.mjs — the idle camera (src/camera.js): eased tweens, centring, shots, drift, caption fades.
 import assert from 'node:assert/strict';
 import { generate } from '../src/gen.js';
-import { createSim, step, pointAt, despawnTrain, spawnTrain, setRoute, moveTrains, entryPortalNode, exitNodes } from '../src/sim.js';
+import { createSim, step, pointAt, despawnTrain, spawnTrain, setRoute, moveTrains, signalAhead, exitNodes } from '../src/sim.js';
 import { makeRng } from '../src/rng.js';
 import { CELL } from '../src/render.js';
 import { smoothstep, tween, centreOn, createIdleCamera, followCandidates, signalCandidates, pauseSkip, MOVE_MS, CAPTION_MS,
@@ -44,7 +44,7 @@ assert.ok(first && Math.abs(first.zoom - fit.zoom) <= 0.05 * fit.zoom, 'starts o
 while (!followCandidates(S, lag).length) step(S);
 // Follow candidates still have 8 real s of running before their exit end at their speed: d cells to go at s cells per
 // sim second qualifies at simSpeed d / 8s (sim s per real s) and not above it.
-const fc = followCandidates(S, lag)[0], togo = Math.abs(S.layout.nodes[exitNodes(S, fc.dir)[0]].x - pointAt(S, fc, fc.headDist).x);
+const fc = followCandidates(S, lag)[0], togo = Math.abs(S.layout.nodes[exitNodes(S, fc)[0]].x - pointAt(S, fc, fc.headDist).x);
 const edge = togo / (fc.speed * 8);
 assert.ok(edge >= 10 && followCandidates(S, lag, edge * 0.99).includes(fc) && !followCandidates(S, lag, edge * 1.01).includes(fc),
   'follow margin: 8 real seconds at the sim speed');
@@ -55,7 +55,7 @@ for (const id of signalCandidates(S)) {
 // Signal candidates need a moving train of their direction approaching on their row: a lone train standing at the
 // portal with a route set ahead gives none, running toward the route's exit signal gives it (not the signal level
 // with it on the other main), stopped short of it none.
-const S2 = createSim(generate('lebanon'), 'lebanon'), sig0 = S2.signalAt.get(`${entryPortalNode(S2, 1)}:1`);
+const S2 = createSim(generate('lebanon'), 'lebanon'), sig0 = signalAhead(S2, S2.layout.portals.find(p => p.dir === 1).node, null);
 const cand = S2.routesFrom.get(sig0).find(c => c.exitSignal != null && S2.layout.nodes[c.exitNode].y === S2.layout.mainRow[1]);
 const other = S2.routesFrom.get(sig0).find(c => c !== cand && c.exitSignal != null), lone = spawnTrain(S2, { type: 'P', dir: 1 });
 assert.ok(S2.layout.nodes[other.exitNode].y === S2.layout.mainRow[-1]);
@@ -79,6 +79,7 @@ assert.match(shot.u.caption.text, /^following \S+ \d+ · (east|west)bound to \S+
 const fadeIn = cam.update(S, shot.t + 100, { fit, box, lag, active: true }).caption;
 assert.ok(fadeIn.text === shot.u.caption.text && Math.abs(fadeIn.alpha - 0.5) <= 0.1, `caption fades in (${fadeIn.alpha})`);
 const tr = [...S.trains.values()].find(t => shot.u.caption.text.startsWith(`following ${t.name}`));
+assert.ok(shot.u.caption.text.endsWith(`bound to ${S.layout.portals[tr.exit].name}`), 'the caption names its exit portal');
 const late = play(cam, shot.t + 100, shot.t + MOVE_MS + 5000);
 const head = pointAt(S, tr, tr.headDist), want = centreOn({ x: (head.x + 3 * tr.dir) * CELL, y: head.y * CELL }, box, late.zoom);
 assert.ok(Math.abs(late.x - want.x) < 0.7 * CELL && Math.abs(late.y - want.y) < 0.4 * CELL, 'follows the head led by 3 cells (drift allowed)');

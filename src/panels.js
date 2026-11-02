@@ -1,6 +1,6 @@
 // Panel bodies as HTML strings built from sim state (no DOM). ui.js puts them in place and wires the buttons
 // through their data-* attributes. Everything from the sim or the URL goes through esc().
-import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, headNode, exitNodes, switchLocked,
+import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, signalAheadOf, exitNodesOf, switchLocked,
   isWrongMain } from './sim.js';
 import { COLORS } from './render.js';
 import { SPEEDS, DAY_LENGTHS, formatClock, formatDelay } from './ui-util.js';
@@ -10,18 +10,16 @@ export const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': 
 const ASPECT_NAME = { CLEAR: 'Clear', APPROACH: 'Approach', ADVANCE_APPROACH: 'Advance Approach', DIVERGING_CLEAR: 'Diverging Clear',
   DIVERGING_APPROACH: 'Diverging Approach', RESTRICTING: 'Restricting', SLOW_CLEAR: 'Slow Clear', STOP: 'Stop' };
 
-// The entry portal's place for dir; trains of dir leave by the place where -dir enters.
-const portal = (L, dir) => L.portals.find(p => p.dir === dir).name;
 // ponytail: generated portal names are "Place Suffix" with a unique Place, so the first word tells them apart.
 const short = name => name.split(' ')[0];
 export const trackName = (L, id) => (L.tracks[id].cls === 'platform' ? `Platform ${L.tracks[id].name}` : L.tracks[id].name);
 export const switchLabel = (sim, node) => `${sim.layout.nodes[node].x}.${sim.layout.nodes[node].y}`;
-const trainLabel = (sim, id) => esc(sim.trains.get(id)?.name ?? sim.queue[1].concat(sim.queue[-1]).find(q => q.id === id)?.name ?? `#${id}`);
+const trainLabel = (sim, id) => esc(sim.trains.get(id)?.name ?? sim.queue.flat().find(q => q.id === id)?.name ?? `#${id}`);
 
 // Where a candidate route ends: its exit signal, else off the panel at either main (or a buffer stop).
 export function exitLabel(sim, c) {
   if (c.exitSignal !== null) return signalLabel(sim, c.exitSignal);
-  for (const d of [1, -1]) if (exitNodes(sim, d).includes(c.exitNode)) return `exit to ${portal(sim.layout, -d)}`;
+  for (const p of sim.layout.portals) if (exitNodesOf(sim, p.id, -p.dir).includes(c.exitNode)) return `exit to ${p.name}`;
   return 'end of track';
 }
 
@@ -44,24 +42,25 @@ function status(t) {
   return t.state;
 }
 
-// ---- Board: queued, active, then the last 5 completed (dim). Active rows select their train on click.
+// ---- Board: queued, active, then the last 5 completed (dim). Active rows select their train on click. From -> To are
+// the entry and exit portals' names.
 export function boardHTML(sim, selectedTrain) {
   const L = sim.layout, dest = d => (d === null ? '–' : trackName(L, d).replace('Platform ', 'Plat '));
-  const row = (cls, id, name, type, dir, track, status, delay) => {
-    const a = portal(L, dir), b = portal(L, -dir), t = esc(TYPES[type].name);
+  const portal = id => L.portals[id].name;
+  const row = (cls, id, name, type, a, b, track, status, delay) => {
+    const t = esc(TYPES[type].name);
     return `<tr class="${cls}"${id === null ? '' : ` data-train="${id}"`}><td class="id">${swatch(COLORS.types[type])}${esc(name)}</td>`
       + `<td title="${t}">${t}</td><td title="${esc(a)} → ${esc(b)}">${esc(short(a))}\u202f→\u202f${esc(short(b))}</td>`
       + `<td title="${esc(track)}">${esc(track)}</td><td title="${esc(status)}">${esc(status)}</td>`
       + `<td class="num">${delayHTML(delay)}</td></tr>`;
   };
   const rows = [
-    ...[1, -1].flatMap(dir => sim.queue[dir].map(q =>
-      row('queued', null, q.name, q.type, dir, dest(q.dest), `holding at ${portal(L, dir)}`, formatDelay(sim.time - q.sched)))),
-    ...[...sim.trains.values()].map(t =>
-      row(t.id === selectedTrain ? 'sel' : '', t.id, t.name, t.type, t.dir, dest(t.dest), trainStatus(t, sim), formatDelay(sim.time - t.sched))),
-    // ponytail: completed records carry no dir; the sim numbers trains even eastbound, odd westbound.
+    ...sim.queue.flat().map(q => row('queued', null, q.name, q.type, portal(q.entry), portal(q.exit), dest(q.dest),
+      `holding at ${portal(q.entry)}`, formatDelay(sim.time - q.sched))),
+    ...[...sim.trains.values()].map(t => row(t.id === selectedTrain ? 'sel' : '', t.id, t.name, t.type, portal(t.entry),
+      portal(t.exit), dest(t.dest), trainStatus(t, sim), formatDelay(sim.time - t.sched))),
     ...sim.completed.slice(-5).reverse().map(c =>
-      row('done', null, c.name, c.type, Number(c.name.match(/\d+$/)?.[0]) % 2 ? -1 : 1, '–', `out ${formatClock(c.exitTime)}`, formatDelay(c.delay, true))),
+      row('done', null, c.name, c.type, c.from, c.to, '–', `out ${formatClock(c.exitTime)}`, formatDelay(c.delay, true))),
   ];
   return `<table class="board"><colgroup><col class="c-id"><col class="c-type"><col class="c-ft"><col class="c-track"><col class="c-status"><col class="c-delay"></colgroup>`
     + '<thead><tr><th>ID</th><th>Type</th><th>From → To</th><th>Track</th><th>Status</th><th class="num">Delay</th></tr></thead>'
@@ -97,11 +96,11 @@ function signalHTML(sim, sig, armed) {
 }
 
 function trainHTML(sim, t, armed) {
-  const L = sim.layout, ahead = sim.signalAt.get(`${headNode(sim, t)}:${t.dir}`);
+  const L = sim.layout, ahead = signalAheadOf(sim, t);
   let state = trainStatus(t, sim);
   if (t.holdFor !== null) state += ` for ${trainLabel(sim, t.holdFor)}`;
   return kv([['Train', `${swatch(COLORS.types[t.type])}<b class="mono">${esc(t.name)}</b>`], ['Type', esc(TYPES[t.type].name)],
-    ['Direction', t.dir > 0 ? `eastbound to ${esc(portal(L, -1))}` : `westbound to ${esc(portal(L, 1))}`],
+    ['Direction', `${t.dir > 0 ? 'east' : 'west'}bound to ${esc(L.portals[t.exit].name)}`],
     ['Speed', `${Math.round(t.speed / MPH)} mph`], ['State', state],
     ['Destination', t.dest === null ? '–' : esc(trackName(L, t.dest))], ['Length', `${TYPES[t.type].cars} cars`],
     ['Delay', delayHTML(formatDelay(sim.time - t.sched))],

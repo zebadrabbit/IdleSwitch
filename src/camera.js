@@ -46,7 +46,7 @@ const headAt = (sim, t, lag = () => 0) => pointAt(sim, t, t.headDist - lag(t)); 
 // sim seconds per real second (default 10, the UI's 1x).
 export const followCandidates = (sim, lag, simSpeed = 10) => [...sim.trains.values()].filter(t => {
   const h = t.speed / MPH > 15 && t.path.length && headAt(sim, t, lag);
-  return h && Math.abs(sim.layout.nodes[exitNodes(sim, t.dir)[0]].x - h.x) / (t.speed * simSpeed) >= FOLLOW_S;
+  return h && Math.abs(sim.layout.nodes[exitNodes(sim, t)[0]].x - h.x) / (t.speed * simSpeed) >= FOLLOW_S;
 });
 
 // High signals on a main with a moving train of their direction approaching on their row within 12 cells (a standing
@@ -81,7 +81,7 @@ export function createIdleCamera({ rng }) {
     if (shot?.kind !== 'overview') return overview;
     const f = followCandidates(sim, lag, simSpeed), s = signalCandidates(sim);
     if (f.length && rng() < 0.6) {
-      const t = pick(rng, f), to = sim.layout.portals.find(p => p.dir === -t.dir).name;
+      const t = pick(rng, f), to = sim.layout.portals[t.exit].name;
       return { kind: 'follow', train: t.id, moved: now, until: now + 40000,
         text: `following ${t.name} · ${t.dir > 0 ? 'east' : 'west'}bound to ${to}` };
     }

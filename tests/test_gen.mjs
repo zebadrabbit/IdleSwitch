@@ -35,9 +35,9 @@ for (const seed of seeds) {
   assert.deepEqual(L.switches.map(s => s.node).sort(byNum), [...deg].filter(([, d]) => d === 3).map(([n]) => n).sort(byNum), `${seed}: 3-edge nodes are exactly the switches`);
   const T = L.mainRow[-1]; assert.equal(L.mainRow[1], T + 2);
   const mains = L.edges.filter(e => e.cls === 'main'), cross = L.edges.filter(e => e.cls === 'crossover');
-  for (const e of mains) { const y = L.nodes[e.a].y; assert.equal(y, L.nodes[e.b].y); assert.equal(e.main, y === T ? -1 : 1); assert.deepEqual(e.dirs, [1, -1]); assert.equal(typeof e.section, 'number'); }
+  for (const e of mains) { const y = L.nodes[e.a].y; assert.equal(y, L.nodes[e.b].y); assert.equal(e.main, y === T ? -1 : 1); assert.equal(e.oneWay, null); assert.equal(typeof e.section, 'number'); }
   for (const e of L.edges) if (e.cls !== 'main') assert.equal(e.main, null), assert.equal(e.section, null);
-  for (const e of cross) { assert.deepEqual(e.dirs, [1, -1]); assert.equal(Math.abs(L.nodes[e.a].x - L.nodes[e.b].x), 2); assert.deepEqual([L.nodes[e.a].y, L.nodes[e.b].y].sort(byNum), [T, T + 2]); assert.equal(e.speed, 30); }
+  for (const e of cross) { assert.equal(e.oneWay, null); assert.equal(Math.abs(L.nodes[e.a].x - L.nodes[e.b].x), 2); assert.deepEqual([L.nodes[e.a].y, L.nodes[e.b].y].sort(byNum), [T, T + 2]); assert.equal(e.speed, 30); }
   // a section is a contiguous run on one row that splits exactly at crossover-end nodes
   const xoNodes = new Set(cross.flatMap(e => [e.a, e.b]));
   for (const p of mains) for (const q of mains) if (p !== q && (p.b === q.a || p.a === q.b || p.a === q.a || p.b === q.b)) {
@@ -63,11 +63,13 @@ for (const seed of seeds) {
   for (const p of L.portals) assert.ok(L.signals.some(s => s.node === p.node && s.dir === p.dir), `${seed}: no signal at portal ${p.name}`);
   assert.deepEqual(L.portals.map(p => [p.id, p.side]), [[0, 'west'], [1, 'east']], `${seed}: portal ids and sides`);
   assert.equal(L.wye, null, `${seed}: wye`);
-  // oneWay: null (both ways) or one of the edge's own nodes; dirs (read by the sim until it moves to oneWay) derived from it
+  // oneWay: null (both ways) or one of the edge's own nodes; the old x-sign dirs list is gone
   for (const e of L.edges) {
     assert.ok(e.oneWay === null || e.oneWay === e.a || e.oneWay === e.b, `${seed}: edge ${e.id} oneWay ${e.oneWay}`);
-    assert.deepEqual(e.dirs, e.oneWay === null ? [1, -1] : [Math.sign(far(e, e.oneWay).x - L.nodes[e.oneWay].x)], `${seed}: edge ${e.id} dirs`);
+    assert.ok(!('dirs' in e), `${seed}: edge ${e.id} still carries dirs`);
   }
+  // the x direction a train travels a one-way edge in (entered from its oneWay node); null both ways
+  const oneWayDir = e => (e.oneWay === null ? null : Math.sign(far(e, e.oneWay).x - L.nodes[e.oneWay].x));
   // a signal faces the unique edge a train of its dir arrives on (from the side opposite its dir); portal signals face none
   const portalNodes = new Set(L.portals.map(p => p.node));
   for (const s of L.signals) {
@@ -79,12 +81,12 @@ for (const seed of seeds) {
   }
   const sigKeys = L.signals.map(s => `${s.node}:${s.dir}`);
   assert.equal(new Set(sigKeys).size, sigKeys.length, `${seed}: two signals share a node:dir`);
-  // BFS following dirs, leaving each node only through edges on the far side (x increasing for +1)
+  // BFS following oneWay, leaving each node only through edges on the far side (x increasing for +1)
   const reach = (start, dir) => {
     const nodes = new Set([start]), edges = new Set(), q = [start];
     while (q.length) { const id = q.shift();
       for (const e of adj[id]) { const o = far(e, id);
-        if (!e.dirs.includes(dir) || Math.sign(o.x - L.nodes[id].x) !== dir) continue;
+        if ((e.oneWay !== null && e.oneWay !== id) || Math.sign(o.x - L.nodes[id].x) !== dir) continue;
         edges.add(e.id); if (!nodes.has(o.id)) { nodes.add(o.id); q.push(o.id); } } }
     return { nodes, edges };
   };
@@ -97,8 +99,8 @@ for (const seed of seeds) {
   for (const t of L.tracks) {
     const tn = [...new Set(t.edges.flatMap(e => [L.edges[e].a, L.edges[e].b]))];
     const end = tn.reduce((m, n) => (L.nodes[n].x - L.nodes[m].x) * t.dir > 0 ? n : m); // exit-end node
-    assert.ok(t.edges.every(e => L.edges[e].track === t.id && L.edges[e].dirs.join() === String(t.dir)), `${seed}: track ${t.name} edges`);
-    // every track reachable (following dirs) from its direction's entry portal, and both far ends reachable from the track
+    assert.ok(t.edges.every(e => L.edges[e].track === t.id && oneWayDir(L.edges[e]) === t.dir), `${seed}: track ${t.name} edges`);
+    // every track reachable (following oneWay) from its direction's entry portal, and both far ends reachable from the track
     assert.ok(t.edges.every(e => fromPortal[t.dir].edges.has(e)), `${seed}: track ${t.name} unreachable from portal`);
     assert.ok(exitPortal[t.dir].every(n => reach(end, t.dir).nodes.has(n)), `${seed}: far end unreachable from track ${t.name}`);
     // for each track: capacity >= CAPACITY_MIN[cls]

@@ -111,11 +111,9 @@ export function generate(seed) {
     if (!at.has(k)) { at.set(k, nodes.length); nodes.push({ id: nodes.length, x, y }); }
     return at.get(k);
   };
-  // dirs: the sign of dx a train may travel the edge with, derived from oneWay for the sim, which still reads it.
   const edge = (a, b, cls, oneWay, track = null, extra) => {
     const dx = Math.abs(nodes[a].x - nodes[b].x), diag = nodes[a].y !== nodes[b].y;
-    const dirs = oneWay === null ? [1, -1] : [Math.sign(nodes[oneWay === a ? b : a].x - nodes[oneWay].x)];
-    edges.push({ id: edges.length, a, b, cls, oneWay, dirs, speed: CLASS_SPEED[cls], len: diag ? dx * Math.SQRT2 : dx, track,
+    edges.push({ id: edges.length, a, b, cls, oneWay, speed: CLASS_SPEED[cls], len: diag ? dx * Math.SQRT2 : dx, track,
       main: null, section: null, ...extra });
     return edges.length - 1;
   };

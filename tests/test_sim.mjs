@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { generate } from '../src/gen.js';
 import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, switchLocked,
-  releaseEdge, sectionalRelease, entryPortalNode, exitNodes, routeFrom, isWrongMain, wrongMainTrains, PASS_WAIT,
+  releaseEdge, sectionalRelease, entryNode, exitNodes, exitNodesOf, signalAhead, signalAheadOf, routeFrom, isWrongMain,
+  wrongMainTrains, PASS_WAIT,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
   trainBlocks, headNode,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
   WRONG_MAIN_COST, MOVING_COST, STANDING_COST, nightLevel, SLOW_ORDER, edgeSpeed, slowOrderLabel, OPERATORS } from '../src/sim.js';
-import { trainStatus } from '../src/panels.js';
+import { trainStatus, boardHTML, exitLabel } from '../src/panels.js';
 
 // ---- Task 3: interlocking core
 const L = generate('lebanon');
@@ -19,6 +21,14 @@ const farOf = (G, e, n) => { const ed = G.edges[e]; assert.ok(ed.a === n || ed.b
 const walk = (G, from, es) => es.reduce((ns, e) => [...ns, farOf(G, e, ns.at(-1))], [from]); // node ids along an edge list
 const allClear = S => S.routes.size === 0 && S.edgeState.every(s => s.route === null && s.occ.size === 0);
 const close = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
+// Portals by dir: a dir train enters at portalOf(d) and leaves by portalOf(-d) (west id 0 eastbound, east id 1 westbound).
+const portalOf = (S, d) => S.layout.portals.find(p => p.dir === d);
+const pnode = (S, d) => portalOf(S, d).node;
+const entrySig = (S, d) => signalAhead(S, pnode(S, d), null);
+const exitsOf = (S, d) => exitNodesOf(S, portalOf(S, -d).id, d); // the far end for d, home main first
+const exitGoal = (S, d) => ({ exit: portalOf(S, -d).id });
+// The signal at node for trains of dir, looked up as signals were keyed before they faced an edge.
+const sigAt = (S, node, dir) => S.layout.signals.find(s => s.node === node && s.dir === dir)?.id;
 
 // fresh sim shape
 assert.equal(sim.time, 6 * 3600);
@@ -29,20 +39,88 @@ assert.equal(sim.adj.size, L.nodes.length);
 assert.equal(sim.edgeState.length, L.edges.length);
 assert.ok(allClear(sim));
 assert.ok([sim.trains, sim.reserved, sim._aspects].every(m => m instanceof Map && m.size === 0));
-assert.deepEqual(sim.queue, { 1: [], '-1': [] });
+assert.deepEqual(sim.queue, [[], []], 'one queue per portal, by portal id');
+assert.deepEqual(sim.nextSpawn, [sim.time, sim.time]);
 assert.deepEqual(sim.completed, []);
 assert.deepEqual([...sim.switchState.keys()].sort(), L.switches.map(s => s.node).sort());
 assert.ok([...sim.switchState.values()].every(s => s.lie === 'normal'));
 
-// portals and forwardEdges: x rule plus dirs; exits at the far end of both mains, home main first
-assert.deepEqual([E, W].map(d => entryPortalNode(sim, d)), [L.portals.find(p => p.dir === E).node, L.portals.find(p => p.dir === W).node]);
-assert.deepEqual(exitNodes(sim, E).map(n => [L.nodes[n].x, L.nodes[n].y]), [[L.cols - 1, L.mainRow[1]], [L.cols - 1, L.mainRow[-1]]]);
-assert.deepEqual(exitNodes(sim, W).map(n => [L.nodes[n].x, L.nodes[n].y]), [[0, L.mainRow[-1]], [0, L.mainRow[1]]]);
+// portals and forwardEdges: x rule plus oneWay; exits at the far end of both mains, home main first
+assert.deepEqual([portalOf(sim, E).id, portalOf(sim, W).id], [0, 1]);
+assert.deepEqual(exitNodesOf(sim, 1, E).map(n => [L.nodes[n].x, L.nodes[n].y]), [[L.cols - 1, L.mainRow[1]], [L.cols - 1, L.mainRow[-1]]]);
+assert.deepEqual(exitNodesOf(sim, 0, W).map(n => [L.nodes[n].x, L.nodes[n].y]), [[0, L.mainRow[-1]], [0, L.mainRow[1]]]);
 for (const d of [E, W]) {
-  assert.equal(forwardEdges(sim, entryPortalNode(sim, d), d).length, 1);
-  for (const n of exitNodes(sim, d)) {
+  assert.equal(forwardEdges(sim, pnode(sim, d), d).length, 1);
+  for (const n of exitsOf(sim, d)) {
     assert.deepEqual(forwardEdges(sim, n, d), []);
     assert.equal(forwardEdges(sim, n, -d).length, 1, 'the main runs both ways');
+  }
+}
+// a train knows its portals: it enters at its entry and its exit nodes are the far end of its dir (the old exitNodes(dir))
+{
+  const S = createSim(L, 'portals'), east = spawnTrain(S, { type: 'M', dir: E }), west = spawnTrain(S, { type: 'M', dir: W });
+  assert.deepEqual([east.entry, east.exit, west.entry, west.exit], [0, 1, 1, 0]);
+  assert.deepEqual([entryNode(S, east), entryNode(S, west)], [pnode(S, E), pnode(S, W)]);
+  assert.deepEqual([east.pathStart, west.pathStart], [pnode(S, E), pnode(S, W)], 'the path starts at the entry portal');
+  assert.deepEqual(exitNodes(S, east).map(n => [L.nodes[n].x, L.nodes[n].y]), [[L.cols - 1, L.mainRow[1]], [L.cols - 1, L.mainRow[-1]]]);
+  assert.deepEqual(exitNodes(S, west), exitNodesOf(S, 0, W));
+  assert.deepEqual([east.goal, west.goal], [{ exit: 1 }, { exit: 0 }]);
+}
+
+// forwardEdges with the arriving edge: on every node of these layouts it equals the old x rule (leave on the far side of
+// the train's dir, along the edge's allowed direction) for every edge a train of that dir can arrive by, and for none.
+for (const seed of ['lebanon', 's0', 's7', 's42', 's47']) {
+  const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
+  const side = (n, e) => Math.sign(G.nodes[farOf(G, e, n)].x - G.nodes[n].x);
+  const old = (n, d) => S.adj.get(n).filter(e => side(n, e) === d && (G.edges[e].oneWay === null || G.edges[e].oneWay === n));
+  for (const n of G.nodes) for (const d of [E, W]) {
+    assert.deepEqual(forwardEdges(S, n.id, d), old(n.id, d), `${seed}: node ${n.id} dir ${d}`);
+    for (const from of S.adj.get(n.id).filter(e => side(n.id, e) === -d))
+      assert.deepEqual(forwardEdges(S, n.id, d, from), old(n.id, d), `${seed}: node ${n.id} dir ${d} from ${from}`);
+  }
+}
+// ... and at a switch only trunk <-> leg. At a ladder switch on lebanon's main, a train off the trunk may take the legs
+// it can run along, one off a leg only the trunk; asked to run on toward the legs from a leg, the other leg (which the
+// x rule alone would allow) is refused: never leg <-> leg.
+{
+  const sw = L.switches.find(s => L.edges[s.reverse].cls === 'ladder'), n = sw.node;
+  const d = Math.sign(L.nodes[n].x - L.nodes[farOf(L, sw.trunk, n)].x); // the dir a train off the trunk runs in
+  const legs = [sw.normal, sw.reverse], free = e => L.edges[e].oneWay === null || L.edges[e].oneWay === n;
+  assert.deepEqual(forwardEdges(sim, n, d, sw.trunk).sort(), legs.filter(free).sort(), 'trunk -> legs');
+  for (const leg of legs) {
+    assert.deepEqual(forwardEdges(sim, n, -d, leg), [sw.trunk].filter(free), 'leg -> trunk');
+    const other = legs.find(e => e !== leg);
+    if (free(other)) assert.deepEqual(forwardEdges(sim, n, d, leg), [], 'leg -> leg refused');
+  }
+  assert.ok(legs.some(free) && L.switches.some(s => [s.normal, s.reverse].every(e => L.edges[e].oneWay === null)),
+    'lebanon has a switch whose legs both run both ways (a main with a crossover)');
+  const both = L.switches.find(s => [s.normal, s.reverse].every(e => L.edges[e].oneWay === null)), m = both.node;
+  const dm = Math.sign(L.nodes[m].x - L.nodes[farOf(L, both.trunk, m)].x);
+  assert.deepEqual(forwardEdges(sim, m, dm, both.normal), [], 'leg -> other leg refused, though the x rule allows it');
+  assert.deepEqual(forwardEdges(sim, m, dm, both.reverse), []);
+  assert.deepEqual(forwardEdges(sim, m, -dm, both.normal), [both.trunk]);
+}
+
+// signals face an edge: signalAhead(node, from) finds every signal, and is the old node:dir lookup
+for (const seed of ['lebanon', 's0', 's7', 's42', 's47']) {
+  const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
+  const old = new Map(G.signals.map(s => [`${s.node}:${s.dir}`, s.id]));
+  for (const s of G.signals) assert.equal(signalAhead(S, s.node, s.from), old.get(`${s.node}:${s.dir}`), `${seed}: signal ${s.id}`);
+  assert.equal(S.signalAt.size, G.signals.length);
+  for (const [k, id] of S.signalAt) assert.equal(k, `${G.signals[id].node}:${G.signals[id].from}`);
+}
+
+// reachability on the empty layout: every track of a dir is reachable from that dir's portal, every exit portal from
+// the entry and from every track of the dir, so the menu admits everything it did before reachability
+for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]) {
+  const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
+  for (const d of [E, W]) {
+    const p = portalOf(S, d), x = portalOf(S, -d), mine = G.tracks.filter(t => t.dir === d).map(t => t.id);
+    assert.deepEqual([...S.reach.tracks[`${p.id}:${d}`]].sort((a, b) => a - b), mine, `${seed} ${d}: tracks from the portal`);
+    assert.deepEqual([...S.reach.exits[`p${p.id}:${d}`]], [x.id], `${seed} ${d}: the far end is the only exit from the portal`);
+    for (const t of mine) assert.deepEqual([...S.reach.exits[`t${t}:${d}`]], [x.id], `${seed} ${d}: exit from track ${t}`);
+    assert.deepEqual(trafficMenu(S, d, p.id), trafficMenu(S, d), `${seed} ${d}: the portal of that dir by default`);
+    assert.equal(S.reach.tracks[`${x.id}:${d}`].size, 0, `${seed} ${d}: nothing from the far portal against its dir`);
   }
 }
 
@@ -59,12 +137,16 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
     for (const c of cs) {
       const ns = walk(G, sig.node, c.edges), last = G.edges[c.edges.at(-1)];
       ns.slice(1).forEach((n, i) => assert.equal(Math.sign(G.nodes[n].x - G.nodes[ns[i]].x), sig.dir, `${seed}: candidate runs against dir`));
-      assert.ok(c.edges.every(e => G.edges[e].dirs.includes(sig.dir)), `${seed}: candidate uses an edge against its dirs`);
+      assert.ok(c.edges.every((e, i) => [null, ns[i]].includes(G.edges[e].oneWay)), `${seed}: candidate uses an edge against its oneWay`);
       assert.equal(c.exitNode, ns.at(-1));
-      const exitSig = S.signalAt.get(`${c.exitNode}:${sig.dir}`) ?? null;
+      // a route carries its dir, the nodes it runs through and the edge its signal faces
+      assert.deepEqual([c.dir, c.nodes, c.from], [sig.dir, ns, sig.from], `${seed}: candidate dir / nodes / from`);
+      assert.equal(c.nodes.length, c.edges.length + 1);
+      const exitSig = sigAt(S, c.exitNode, sig.dir) ?? null;
       assert.equal(c.exitSignal, exitSig);
-      if (exitSig === null) assert.ok(exitNodes(S, sig.dir).includes(c.exitNode), `${seed}: candidate ends at neither a signal nor an exit`);
-      assert.ok(ns.slice(1, -1).every(n => !S.signalAt.has(`${n}:${sig.dir}`)), `${seed}: candidate runs past a signal`);
+      if (exitSig === null) assert.ok(exitsOf(S, sig.dir).includes(c.exitNode), `${seed}: candidate ends at neither a signal nor an exit`);
+      else assert.equal(G.signals[exitSig].from, c.edges.at(-1), `${seed}: exit signal faces the route's last edge`);
+      assert.ok(ns.slice(1, -1).every(n => sigAt(S, n, sig.dir) === undefined), `${seed}: candidate runs past a signal`);
       assert.ok(Math.abs(c.len - c.edges.reduce((s, e) => s + G.edges[e].len, 0)) < 1e-9);
       assert.equal(c.slow, SLOW.includes(last.cls));
       assert.equal(c.diverging, c.switches.some(s => s.lie === 'reverse'));
@@ -76,17 +158,20 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
 }
 
 // setRoute on the westbound entry portal signal to its first straight candidate -> ok
-const sigAt = (node, dir) => sim.signalAt.get(`${node}:${dir}`);
 const straight = sig => sim.routesFrom.get(sig).find(c => !c.diverging && !c.slow);
-const portalSig = sigAt(entryPortalNode(sim, W), W);
+const portalSig = entrySig(sim, W);
 const c0 = straight(portalSig);
 let r = setRoute(sim, portalSig, c0.exitNode);
 assert.equal(r.ok, true);
 const R0 = r.route;
-assert.deepEqual(R0, { id: R0.id, signal: portalSig, cand: c0, trainId: null, human: false, entered: false, setAt: sim.time });
+// a route carries its dir and its sense in each section it touches (on a main section, its dir)
+const sense0 = new Map(c0.edges.filter(e => L.edges[e].section !== null).map(e => [L.edges[e].section, W]));
+assert.ok(sense0.size > 0);
+assert.deepEqual(R0, { id: R0.id, signal: portalSig, cand: c0, dir: W, sense: sense0, trainId: null, human: false, entered: false,
+  setAt: sim.time });
 assert.equal(sim.routes.get(R0.id), R0);
 assert.ok(c0.edges.every(e => sim.edgeState[e].route === R0.id));
-assert.deepEqual(setRoute(sim, portalSig, entryPortalNode(sim, W)), { ok: false, reason: 'no such route' });
+assert.deepEqual(setRoute(sim, portalSig, pnode(sim, W)), { ok: false, reason: 'no such route' });
 assert.deepEqual(setRoute(sim, portalSig, c0.exitNode), { ok: false, reason: 'already set' });
 
 // a second setRoute over a shared edge -> {ok:false, reason:'locked'}. No other candidate can reach the
@@ -139,10 +224,10 @@ assert.notEqual(sim.switchState.get(sw.node).lie, sw.lie);
 // hand-made wye: signal on the switch node 1, a train standing on the trunk 0-1, routes out to 2 or 3.
 const Y = createSim({
   nodes: [[0, 0], [1, 0], [2, 0], [2, 1]].map(([x, y], id) => ({ id, x, y })),
-  edges: [[0, 1, 'main'], [1, 2, 'main'], [1, 3, 'ladder']].map(([a, b, cls], id) => ({ id, a, b, cls, dirs: [E], len: 1, track: null })),
+  edges: [[0, 1, 'main'], [1, 2, 'main'], [1, 3, 'ladder']].map(([a, b, cls], id) => ({ id, a, b, cls, oneWay: a, len: 1, track: null })),
   switches: [{ node: 1, trunk: 0, normal: 1, reverse: 2 }],
-  signals: [{ id: 0, node: 0, dir: E, kind: 'high' }, { id: 1, node: 1, dir: E, kind: 'high' }],
-  portals: [], cols: 3, mainRow: { 1: 0, '-1': 0 },
+  signals: [{ id: 0, node: 0, from: null, dir: E, kind: 'high' }, { id: 1, node: 1, from: 0, dir: E, kind: 'high' }],
+  portals: [], tracks: [], cols: 3, mainRow: { 1: 0, '-1': 0 },
 }, 'wye');
 Y.edgeState[0].occ.add(1);
 assert.deepEqual(setRoute(Y, 1, 3), { ok: false, reason: 'switch busy' });
@@ -174,7 +259,7 @@ assert.ok(!sim.routes.has(R3.id));
 // sectionalRelease: a train shape (Task 5 fields) whose tail has left the first edge only, then all of them
 r = setRoute(sim, home, c1.exitNode, { trainId: 5 });
 const R4 = r.route, [e0, e1] = c1.edges, lenOf = e => L.edges[e].len;
-const fake = { id: 5, len: 1, path: [...c1.edges], pathOff: 0, headDist: lenOf(e0) + 0.5 };
+const fake = { id: 5, len: 1, path: [...c1.edges], pathStart: L.signals[home].node, pathOff: 0, headDist: lenOf(e0) + 0.5 };
 for (const e of c1.edges) sim.edgeState[e].occ.add(5);
 assert.deepEqual(setRoute(sim, other.sig, other.c.exitNode), { ok: false, reason: 'occupied' }, 'occupied is checked before locked');
 sectionalRelease(sim, fake); // head past e0, tail still on it: nothing to release
@@ -184,36 +269,38 @@ fake.headDist = lenOf(e0) + 1.5;
 sectionalRelease(sim, fake);
 assert.deepEqual(fake.path, c1.edges.slice(1));
 assert.equal(fake.pathOff, lenOf(e0));
+assert.equal(fake.pathStart, c1.nodes[1], 'the path start moves up with the released edge');
 assert.ok(!sim.edgeState[e0].occ.has(5) && sim.edgeState[e0].route === null);
 assert.ok(sim.edgeState[e1].occ.has(5) && sim.edgeState[e1].route === R4.id && sim.routes.has(R4.id));
 fake.headDist = c1.len + fake.len;
 sectionalRelease(sim, fake);
 assert.deepEqual(fake.path, []);
 assert.ok(Math.abs(fake.pathOff - c1.len) < 1e-9);
+assert.equal(fake.pathStart, c1.exitNode);
 assert.ok(!sim.routes.has(R4.id));
 assert.equal(cancelRoute(sim, R0.id), true);
 assert.ok(allClear(sim), 'everything released');
 
-// findPath {exit: true} from each entry portal returns edges with strictly increasing (decreasing) x, ending at an exit
+// findPath {exit: portal} from each entry portal returns edges with strictly increasing (decreasing) x, ending at an exit
 for (const d of [E, W]) {
-  const p = findPath(sim, entryPortalNode(sim, d), d, { exit: true });
+  const p = findPath(sim, pnode(sim, d), d, exitGoal(sim, d));
   assert.ok(p && p.length > 0);
-  const pn = walk(L, entryPortalNode(sim, d), p);
+  const pn = walk(L, pnode(sim, d), p);
   pn.slice(1).forEach((n, i) => assert.equal(Math.sign(L.nodes[n].x - L.nodes[pn[i]].x), d, 'x strictly monotonic'));
-  assert.ok(exitNodes(sim, d).includes(pn.at(-1)));
+  assert.ok(exitsOf(sim, d).includes(pn.at(-1)));
 }
 
 // findPath to {track: id of first platform} ends inside that track's edges (at its first edge)
 const plat = L.tracks.find(t => t.cls === 'platform');
-const pp = findPath(sim, entryPortalNode(sim, plat.dir), plat.dir, { track: plat.id });
+const pp = findPath(sim, pnode(sim, plat.dir), plat.dir, { track: plat.id });
 assert.ok(pp && plat.edges.includes(pp.at(-1)));
 assert.equal(pp.at(-1), plat.edges[0]);
-walk(L, entryPortalNode(sim, plat.dir), pp); // contiguous from the portal
-assert.equal(findPath(sim, entryPortalNode(sim, -plat.dir), -plat.dir, { track: plat.id }), null, 'wrong-way platform unreachable');
+walk(L, pnode(sim, plat.dir), pp); // contiguous from the portal
+assert.equal(findPath(sim, pnode(sim, -plat.dir), -plat.dir, { track: plat.id }), null, 'wrong-way platform unreachable');
 
 // a manually occupied edge (edgeState[e].occ.add(99)) makes setRoute over it return reason 'occupied' and findPath avoid it
 const busy = c1.edges.reduce((a, b) => (lenOf(b) > lenOf(a) ? b : a)); // the main through the first module
-const from = entryPortalNode(sim, W), to = { exit: true };
+const from = pnode(sim, W), to = exitGoal(sim, W);
 assert.ok(findPath(sim, from, W, to).includes(busy), 'shortest path takes the main');
 assert.ok(!findPath(sim, from, W, to, { [busy]: 1000 }).includes(busy), 'penalty steers off it');
 sim.edgeState[busy].occ.add(99);
@@ -287,17 +374,21 @@ assert.ok(allClear(sim));
 { const S = createSim(L, 'nose'), G = S.layout, T = G.mainRow[-1];
   const node = G.signals.find(s => G.nodes[s.node].y === T && G.signals.filter(o => o.node === s.node).length === 2).node;
   const into = d => [...S.routesFrom].flatMap(([id, cs]) => cs.filter(c => c.exitNode === node && G.signals[id].dir === d).map(c => ({ id, c })))[0];
-  const a = into(E), b = into(W);
-  assert.equal(setRoute(S, a.id, a.c.exitNode).ok, true);
-  assert.equal(setRoute(S, b.id, b.c.exitNode).reason, 'opposing'); }
+  const a = into(E), b = into(W), ra = setRoute(S, a.id, a.c.exitNode);
+  assert.equal(ra.ok, true);
+  assert.equal(setRoute(S, b.id, b.c.exitNode).reason, 'opposing');
+  // traffic locking reads the route's sense per section (not its signal's dir): turned round, it no longer opposes
+  for (const k of ra.route.sense.keys()) ra.route.sense.set(k, W);
+  assert.equal(setRoute(S, b.id, b.c.exitNode).ok, true); }
 // wrong main: only one train at a time; the train at the signal is exempt
 { const S = createSim(L, 'wm'), G = S.layout;
   const [sigA, sigB] = G.signals.filter(s => S.routesFrom.get(s.id).some(c => c.wrongMain));
   const cA = S.routesFrom.get(sigA.id).find(c => c.wrongMain), cB = S.routesFrom.get(sigB.id).find(c => c.wrongMain);
-  const t = spawnTrain(S, { type: 'M', dir: sigA.dir }); t.path = [...cA.edges]; // standing on the wrong main
+  const t = spawnTrain(S, { type: 'M', dir: sigA.dir }); t.path = [...cA.edges]; t.pathStart = sigA.node; // standing on the wrong main
   assert.equal(isWrongMain(S, t), true); assert.deepEqual(wrongMainTrains(S), [t]);
   assert.equal(setRoute(S, sigB.id, cB.exitNode).reason, 'wrong main');
-  const next = S.signalAt.get(`${headNode(S, t)}:${t.dir}`), cN = S.routesFrom.get(next).find(c => c.wrongMain);
+  const next = signalAheadOf(S, t), cN = S.routesFrom.get(next).find(c => c.wrongMain);
+  assert.equal(next, sigAt(S, cA.exitNode, t.dir));
   if (cN) assert.equal(setRoute(S, next, cN.exitNode, { trainId: t.id }).ok, true, 'the wrong-main train may continue'); }
 // an untaken human wrong-main route counts as a wrong-main train: a wrong-main route at another signal is refused
 { const S = createSim(L, 'wmh'), G = S.layout;
@@ -305,8 +396,12 @@ assert.ok(allClear(sim));
   const wm = sig => S.routesFrom.get(sig.id).find(c => c.wrongMain).exitNode;
   assert.equal(setRoute(S, sigA.id, wm(sigA), { human: true }).ok, true);
   assert.equal(setRoute(S, sigB.id, wm(sigB)).reason, 'wrong main'); }
-// signalLabel unique over 50 seeds
-for (let i = 0; i < 50; i++) { const S = createSim(generate(`lab${i}`), 'x'); const ls = S.layout.signals.map(s => signalLabel(S, s.id)); assert.equal(new Set(ls).size, ls.length, `lab${i}`); }
+// signalLabel unique over 50 seeds; the facing letter (from the edge it faces, or the portal's side) is E for eastbound
+for (let i = 0; i < 50; i++) {
+  const S = createSim(generate(`lab${i}`), 'x'), ls = S.layout.signals.map(s => signalLabel(S, s.id));
+  assert.equal(new Set(ls).size, ls.length, `lab${i}`);
+  S.layout.signals.forEach((s, k) => assert.equal(ls[k][0], s.dir === E ? 'E' : 'W', `lab${i}: ${ls[k]}`));
+}
 
 console.log('sim core ok');
 
@@ -331,12 +426,12 @@ for (const s of sigs) assert.equal(A(s.id), ASPECT.STOP, 'fresh sim: every signa
 // every other one's next is CLEAR). Drop the last route: its signal STOP, the one before APPROACH, the rest ADVANCE_APPROACH.
 for (const dir of [E, W]) {
   const chain = [];
-  for (let sig = S4.signalAt.get(`${entryPortalNode(S4, dir)}:${dir}`); sig !== null;) {
+  for (let sig = entrySig(S4, dir); sig !== null;) {
     const c = S4.routesFrom.get(sig).find(plain);
     chain.push(set(sig, c));
     sig = c.exitSignal;
   }
-  assert.ok(chain.length >= 3 && exitNodes(S4, dir).includes(chain.at(-1).cand.exitNode));
+  assert.ok(chain.length >= 3 && exitsOf(S4, dir).includes(chain.at(-1).cand.exitNode));
   assert.deepEqual(chain.map(r => A(r.signal)), chain.map(() => ASPECT.CLEAR), `${dir}: full chain`);
   const last = chain.pop();
   undo(last);
@@ -425,17 +520,19 @@ assert.deepEqual(TYPES.X, { name: 'Express', prio: 5, cars: 8, max: 60, acc: 1.0
 assert.deepEqual(TYPES.L, { name: 'Local', prio: 0, cars: 6, max: 40, acc: 0.5, dec: 0.8 });
 for (const t of Object.keys(TYPES)) assert.ok(close(trainLength(t), LOCO + TYPES[t].cars * CAR));
 const X = spawnTrain(S, { type: 'X', dir: W, name: 'X 101' });
-const exitW = exitNodes(S, W)[0];
+const exitW = exitNodes(S, X)[0];
 assert.equal(S.trains.get(X.id), X);
-assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, prio: 5, len: trainLength('X'), maxSpeed: 60 * MPH,
-  path: [], routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null, goal: { exit: true }, dwellUntil: 0,
-  holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false, events: [] });
-assert.equal(headNode(S, X), entryPortalNode(S, W));
+assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, entry: 1, exit: 0, prio: 5, len: trainLength('X'),
+  maxSpeed: 60 * MPH, path: [], pathStart: pnode(S, W), routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null,
+  goal: { exit: 0 }, dwellUntil: 0, holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false,
+  events: [] });
+assert.equal(headNode(S, X), pnode(S, W));
+assert.equal(signalAheadOf(S, X), entrySig(S, W), 'before its first route it reads the portal signal');
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
 
 // set the straight route from the portal signal and every onward straight main route by hand
 const routes = [];
-for (let sig = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`); sig !== null;) {
+for (let sig = entrySig(S, W); sig !== null;) {
   const cand = straightOf(sig), res = setRoute(S, sig, cand.exitNode, { trainId: X.id });
   assert.equal(res.ok, true, res.reason);
   routes.push(res.route);
@@ -466,7 +563,7 @@ while (S.trains.has(X.id) && steps < 2 * 3600) {
     assert.deepEqual(X.path, routes.flatMap(r => r.cand.edges), 'adopted the whole chain');
     assert.ok(routes.every(r => r.trainId === X.id));
     assert.equal(headNode(S, X), exitW);
-    const portal = G.nodes[entryPortalNode(S, W)];
+    const portal = G.nodes[pnode(S, W)];
     assert.deepEqual(pointAt(S, X, 0), { x: portal.x, y: portal.y });
     assert.equal(pointAt(S, X, -0.01), null);
     assert.equal(routes[0].entered, true, 'head on the portal edge');
@@ -514,7 +611,7 @@ assert.deepEqual([P.speed, P.stops, P.lastMoveTime], [0, 0, P.spawnTime]);
 assert.ok(S.edgeState.every(st => st.occ.size === 0), 'not on the board yet');
 
 // given only the portal route (no trainId: the train at the signal adopts it), it stops FOUL short of the home signal
-const pSig = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`), pc = straightOf(pSig);
+const pSig = entrySig(S, E), pc = straightOf(pSig);
 const pr = setRoute(S, pSig, pc.exitNode).route;
 let movedAt = null; // sim.time of the last step the head advanced in; the arrival step (speed 0 after it) counts
 for (let i = 0; i < 600; i++) {
@@ -573,7 +670,7 @@ assert.ok(allClear(S));
 // way on is set it runs out.
 for (const dir of [W, E]) {
   const T = spawnTrain(S, { type: 'L', dir });
-  const sig0 = S.signalAt.get(`${entryPortalNode(S, dir)}:${dir}`), c0 = straightOf(sig0), hs = c0.exitSignal;
+  const sig0 = entrySig(S, dir), c0 = straightOf(sig0), hs = c0.exitSignal;
   const R0 = setRoute(S, sig0, c0.exitNode).route, R = setRoute(S, hs, straightOf(hs).exitNode).route;
   tick();
   assert.deepEqual(T.routes, [R0.id, R.id]);
@@ -658,9 +755,9 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // doesn't hide the way; a free way round is still preferred
 {
   const S = createSim(L, 'soft');
-  const from = entryPortalNode(S, W), to = { exit: true };
+  const from = pnode(S, W), to = exitGoal(S, W);
   const straightW = sig => S.routesFrom.get(sig).find(k => !k.diverging && !k.slow);
-  const ps = S.signalAt.get(`${from}:${W}`), c0 = straightW(ps), c = straightW(c0.exitSignal);
+  const ps = entrySig(S, W), c0 = straightW(ps), c = straightW(c0.exitSignal);
   const main = c.edges.reduce((a, b) => (L.edges[b].len > L.edges[a].len ? b : a)); // the main through the module
   const plain = findPath(S, from, W, to);
   assert.deepEqual(findPath(S, from, W, to, { blockedCost: 1000 }), plain, 'nothing blocked: same path');
@@ -680,15 +777,15 @@ for (const seed of ['lebanon', 's7', 's42']) {
   const S = createSim(L, 'despawn');
   const T = spawnTrain(S, { type: 'M', dir: W, name: 'M 9' });
   T.sched = S.time + 125;
-  const sig = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`), far1 = S.routesFrom.get(sig)[0].exitSignal;
+  const sig = entrySig(S, W), far1 = S.routesFrom.get(sig)[0].exitSignal;
   const stray = setRoute(S, far1, S.routesFrom.get(far1)[0].exitNode, { trainId: T.id }).route;
   S.reserved.set(L.tracks[0].id, T.id);
   S.time += 600;
   despawnTrain(S, T);
   assert.ok(!S.routes.has(stray.id) && allClear(S));
   assert.equal(S.reserved.size, 0);
-  assert.deepEqual(S.completed, [{ name: 'M 9', type: 'M', delay: 475, spawnTime: T.spawnTime, exitTime: S.time, stops: 0,
-    distance: 0, events: [{ t: S.time, kind: 'out' }] }]);
+  assert.deepEqual(S.completed, [{ name: 'M 9', type: 'M', from: portalOf(S, W).name, to: portalOf(S, E).name, delay: 475,
+    spawnTime: T.spawnTime, exitTime: S.time, stops: 0, distance: 0, events: [{ t: S.time, kind: 'out' }] }]);
   assert.equal(S.log.at(-1).text, `M 9 out via ${L.portals.find(p => p.dir === E).name} (+8 min)`);
 }
 
@@ -696,7 +793,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
 {
   const S = createSim(L, 'missed');
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  S.nextSpawn = [Infinity, Infinity]; // no traffic
   const plat = L.tracks.find(t => t.cls === 'platform' && t.dir === E);
   const home = L.signals.find(g => S.routesFrom.get(g.id).some(c => L.edges[c.edges.at(-1)].track === plat.id));
   const through = S.routesFrom.get(home.id).find(c => L.edges[c.edges.at(-1)].track === null);
@@ -713,7 +810,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // signalLabel and logEvent
 {
   const S = createSim(L, 'label');
-  const pw = S.signalAt.get(`${entryPortalNode(S, W)}:${W}`), pe = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const pw = entrySig(S, W), pe = entrySig(S, E);
   const row = y => String.fromCharCode(65 + y); // A = row 0
   assert.equal(signalLabel(S, pw), `W${L.cols - 1}${row(L.mainRow[W])}`);
   assert.equal(signalLabel(S, pe), `E0${row(L.mainRow[E])}`);
@@ -729,9 +826,10 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // is not free enters first; the freight enters only once its track is free
 {
   const S = createSim(generate('s42'), 's42'), G = S.layout;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // only the hand-made queue below
-  const spur = G.tracks.find(t => t.cls === 'spur'), dir = spur.dir, q = S.queue[dir];
-  const entry = (type, dest, name) => ({ id: S.nextTrainId++, name, type, dir, dest, len: trainLength(type), spawnTime: S.time, sched: S.time });
+  S.nextSpawn = [Infinity, Infinity]; // only the hand-made queue below
+  const spur = G.tracks.find(t => t.cls === 'spur'), dir = spur.dir, q = S.queue[portalOf(S, dir).id];
+  const entry = (type, dest, name) => ({ id: S.nextTrainId++, name, type, dir, entry: portalOf(S, dir).id, exit: portalOf(S, -dir).id, dest,
+    len: trainLength(type), spawnTime: S.time, sched: S.time });
   const F = entry(spur.industry.trainType, spur.id, 'F 1'), X = entry('X', null, 'X 3');
   q.push(F, X);
   S.reserved.set(spur.id, 999); // a train still working the spur
@@ -749,8 +847,8 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // a human route lined from the entry portal signal before any train is there: the next train enters and adopts it
 {
   const S = createSim(L, 'portal');
-  S.nextSpawn = { 1: S.time, '-1': Infinity }; // one eastbound draw now
-  const sig = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  S.nextSpawn = [S.time, Infinity]; // one eastbound draw now
+  const sig = entrySig(S, E);
   const r = setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { human: true }).route;
   step(S);
   assert.equal(S.trains.size, 1, 'a train entered past the human route on the portal edge');
@@ -760,7 +858,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
   assert.ok(T.routes.includes(r.id) && r.entered);
   // still refused while the portal edge is routed for another train
   const U = createSim(L, 'portal2');
-  U.nextSpawn = { 1: U.time, '-1': Infinity };
+  U.nextSpawn = [U.time, Infinity];
   setRoute(U, sig, U.routesFrom.get(sig)[0].exitNode, { trainId: 99 });
   step(U);
   assert.equal(U.trains.size, 0);
@@ -777,7 +875,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
     step(S);
     for (const U of S.trains.values()) {
       const r = U.holdFor === null ? null : S.routes.get(U.routes.at(-1));
-      const h = r && (S.trains.get(U.holdFor) ?? S.queue[U.dir].find(q => q.id === U.holdFor));
+      const h = r && (S.trains.get(U.holdFor) ?? S.queue.flat().find(q => q.id === U.holdFor));
       if (!r || r.entered || !h || !['X', 'Z'].includes(h.type)) continue;
       const main = S.routesFrom.get(r.signal).find(c => G.edges[c.edges.at(-1)].track === null);
       assert.equal(cancelRoute(S, r.id), true);
@@ -797,7 +895,7 @@ for (const seed of ['lebanon', 's7', 's42']) {
 
 // step: one sim second; the first spawn of each direction is due at 06:00 and the head enters at once
 {
-  const S = busySim('lebanon');
+  const S = busySim('lebanon'), G = S.layout;
   step(S);
   assert.equal(S.time, 6 * 3600 + 1);
   assert.equal(S.trains.size, 2, 'one train in from each portal');
@@ -806,16 +904,16 @@ for (const seed of ['lebanon', 's7', 's42']) {
     assert.equal(n % 2, dir === E ? 0 : 1, 'even eastbound, odd westbound');
     assert.ok(n >= 100 && n <= 400);
   }
-  assert.ok(S.log.some(e => / entered from /.test(e.text)));
+  for (const t of S.trains.values()) assert.ok(S.log.some(e => e.text === `${t.name} entered from ${G.portals[t.entry].name}`));
 }
 
 // STALL: logged in AUTO only, once per stand; moving re-arms it. M 6 stands at signals whose routes are set for a
 // train that isn't there (99), so neither it nor the operator can take them.
 {
   const S = createSim(L, 'stall');
-  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  S.nextSpawn = [Infinity, Infinity]; // no traffic
   spawnTrain(S, { type: 'M', dir: E, name: 'M 6' });
-  const ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const ps = entrySig(S, E);
   const block = sig => setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { trainId: 99 }).route;
   const stalls = () => S.log.filter(e => e.text === 'STALL M 6').length, r = block(ps);
   for (let i = 0; i < 40 * 60; i++) step(S);
@@ -833,12 +931,15 @@ for (const seed of ['lebanon', 's7', 's42']) {
 {
   const S = busySim('lebanon');
   for (const dir of [E, W]) {
-    const sig = S.signalAt.get(`${entryPortalNode(S, dir)}:${dir}`);
+    const sig = entrySig(S, dir);
     setRoute(S, sig, S.routesFrom.get(sig)[0].exitNode, { trainId: 99 }); // the portal edge is routed for another train
   }
   for (let i = 0; i < 3 * 3600; i++) step(S);
   assert.equal(S.trains.size, 0);
-  assert.deepEqual([S.queue[1].length, S.queue[-1].length], [8, 8]);
+  assert.deepEqual(S.queue.map(q => q.length), [8, 8]);
+  // a queue entry carries its dir and its portals: in at that portal, out at the far end
+  for (const d of [E, W]) assert.ok(S.queue[portalOf(S, d).id].every(q => q.dir === d && q.entry === portalOf(S, d).id
+    && q.exit === portalOf(S, -d).id), `queue entries of ${d}`);
 }
 
 // Lighting cycle: day, dusk midpoint, night, dawn midpoint; off when dayLength is 0
@@ -878,7 +979,7 @@ assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5
   while (S1.time < S2.time) step(S1); // compared at one sim time: S1 stopped when its order lifted
   while (S2.time < S1.time) step(S2);
   const num = name => Number(name.split(' ')[1]); // train number: unique, in the order the spawner named them
-  const names = S => [...S.queue[E], ...S.queue[W], ...S.trains.values(), ...S.completed].map(t => t.name).sort((a, b) => num(a) - num(b));
+  const names = S => [...S.queue.flat(), ...S.trains.values(), ...S.completed].map(t => t.name).sort((a, b) => num(a) - num(b));
   assert.ok(names(S1).length >= 20);
   assert.deepEqual(names(S1), names(S2), 'traffic unchanged by slow orders');
 }
@@ -945,7 +1046,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       // an occupied edge is unrouted (released behind its train, or never routed) or routed for its occupant
       if (st.occ.size === 1 && st.route !== null) assert.equal(S.routes.get(st.route).trainId, [...st.occ][0], `${seed}: edge ${e} routed for another train`);
     });
-    assert.ok(S.queue[1].length <= 8 && S.queue[-1].length <= 8, `${seed}: queue ${S.queue[1].length} / ${S.queue[-1].length}`);
+    assert.ok(S.queue.every(q => q.length <= 8), `${seed}: queue ${S.queue.map(q => q.length).join(' / ')}`);
     // traffic locking: no section holds trains of both directions; one wrong-main train at a time
     for (const [sec, es] of S.sectionEdges) {
       const dirs = new Set(es.flatMap(e => [...S.edgeState[e].occ].map(id => S.trains.get(id)?.dir)));
@@ -972,7 +1073,8 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
   if (G.tracks.some(t => t.cls === 'platform')) assert.ok(S.completed.some(c => dwelt.get(c.name) === 'platform'), `${seed}: no P called`);
   if (G.tracks.some(t => t.cls === 'yard')) assert.ok(S.completed.some(c => ['yard', 'spur'].includes(dwelt.get(c.name))), `${seed}: no freight served the yard`);
   for (const c of S.completed) {
-    assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'name', 'spawnTime', 'stops', 'type']);
+    assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'from', 'name', 'spawnTime', 'stops', 'to', 'type']);
+    assert.deepEqual([c.from, c.to], (Number(c.name.split(' ')[1]) % 2 ? [W, E] : [E, W]).map(d => portalOf(S, d).name), `${seed}: ${c.name} from / to`);
     assert.ok(c.exitTime > c.spawnTime && c.distance > 0);
     // the per-train log (spec "Delay"): queued at spawnTime, entered, ..., out at exitTime, in time order
     assert.deepEqual([c.events[0], c.events[1].kind, c.events.at(-1)], [{ t: c.spawnTime, kind: 'queued' }, 'entered', { t: c.exitTime, kind: 'out' }]);
@@ -1000,6 +1102,16 @@ assert.ok(sawWrongMain, 'no wrong-main run in 32 busy hours: the feature is dorm
   const C = busySim('s42');
   for (let i = 0; i < 3600; i++) step(C);
   assert.notEqual(snap(A), snap(C));
+}
+
+// run fixture (tools/freeze-run.mjs, frozen from the sim before travel moved onto the path): s42 busy in AUTO for two
+// hours logs the same last 200 lines and completes the same trains, in order, with the same delays
+{
+  const fx = JSON.parse(readFileSync(new URL('./fixtures/run-s42.json', import.meta.url), 'utf8'));
+  const S = busySim('s42');
+  for (let i = 0; i < 7200; i++) step(S);
+  assert.deepEqual(S.log.map(e => e.text), fx.log, 'run fixture: log');
+  assert.deepEqual(S.completed.map(c => [c.name, c.delay]), fx.completed, 'run fixture: completed');
 }
 
 // human override: an express on the main approaching a module with a holding track on its side is sent into it by
@@ -1086,7 +1198,7 @@ for (const [seed, cls] of [['s91', 'siding'], ['lebanon', 'platform']]) {
 {
   const S = createSim(L, 'fit'), G = S.layout;
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
+  S.nextSpawn = [Infinity, Infinity]; // no traffic
   const plat = G.tracks.find(t => t.cls === 'platform' && !fits(S, { len: trainLength('M') }, t.id));
   const home = G.signals.find(g => S.routesFrom.get(g.id).some(c => G.edges[c.edges.at(-1)].track === plat.id)).id;
   const c = S.routesFrom.get(home).find(k => G.edges[k.edges.at(-1)].track === plat.id);
@@ -1107,8 +1219,8 @@ for (const [seed, cls] of [['s91', 'siding'], ['lebanon', 'platform']]) {
 // round it on the other main from the portal (a crossover, logged and evented wrong main); still moving, it is followed.
 for (const moving of [false, true]) {
   const S = createSim(L, 'pass'), G = S.layout;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity }; // no traffic
-  const M = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  S.nextSpawn = [Infinity, Infinity]; // no traffic
+  const M = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), ps = entrySig(S, E);
   const home = S.routesFrom.get(ps).find(c => !c.wrongMain);
   assert.equal(setRoute(S, ps, home.exitNode, { trainId: M.id }).ok, true);
   assert.equal(setRoute(S, home.exitSignal, S.routesFrom.get(home.exitSignal).find(c => !c.diverging).exitNode, { trainId: M.id }).ok, true);
@@ -1132,15 +1244,15 @@ for (const moving of [false, true]) {
 {
   const S = createSim(L, 'wrongrow'), G = S.layout;
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity };
-  for (const e of S.sectionEdges.get(G.edges[S.adj.get(exitNodes(S, E)[0])[0]].section)) S.edgeState[e].occ.add(999);
-  const X = spawnTrain(S, { type: 'X', dir: E, name: 'X 6' }), pw = forwardEdges(S, entryPortalNode(S, W), W)[0];
+  S.nextSpawn = [Infinity, Infinity];
+  for (const e of S.sectionEdges.get(G.edges[S.adj.get(exitsOf(S, E)[0])[0]].section)) S.edgeState[e].occ.add(999);
+  const X = spawnTrain(S, { type: 'X', dir: E, name: 'X 6' }), pw = forwardEdges(S, pnode(S, W), W)[0];
   let q = null;
   for (let i = 0; i < 3600 && S.trains.has(X.id); i++) {
     step(S);
     assert.ok(S.edgeState.every(st => st.occ.size <= 1), 'two trains on one edge');
     if (q) assert.ok(!S.trains.has(q.id), 'the westbound entered under the eastbound');
-    else if (X.path.includes(pw)) S.queue[W].push(q = { id: S.nextTrainId++, name: 'M 7', type: 'M', dir: W, dest: null,
+    else if (X.path.includes(pw)) S.queue[1].push(q = { id: S.nextTrainId++, name: 'M 7', type: 'M', dir: W, entry: 1, exit: 0, dest: null,
       len: trainLength('M'), spawnTime: S.time, sched: S.time });
   }
   assert.ok(q, 'X 6 never routed off the end of Main 1');
@@ -1154,7 +1266,7 @@ for (const moving of [false, true]) {
 {
   const S = createSim(L, 'deadwm'), G = S.layout;
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  S.nextSpawn = [Infinity, Infinity];
   const all = [...S.routesFrom].flatMap(([sig, cs]) => cs.map(c => ({ sig, c }))).filter(k => k.c.exitSignal !== null);
   const dir = k => G.signals[k.sig].dir, onOther = k => G.nodes[G.signals[k.sig].node].y === G.mainRow[-dir(k)];
   const apart = (k, ...ks) => ks.every(o => dir(o) === dir(k) && !o.c.edges.some(e => k.c.edges.includes(e)));
@@ -1175,7 +1287,7 @@ for (const moving of [false, true]) {
 
 // board status: ' · wrong main' while the train is
 {
-  const S = createSim(L, 'status'), G = S.layout, ps = S.signalAt.get(`${entryPortalNode(S, E)}:${E}`);
+  const S = createSim(L, 'status'), G = S.layout, ps = entrySig(S, E);
   const T = spawnTrain(S, { type: 'M', dir: E });
   T.state = 'running';
   T.path = [...S.routesFrom.get(ps).find(c => c.wrongMain).edges];
@@ -1187,25 +1299,39 @@ for (const moving of [false, true]) {
   assert.equal(trainStatus(T, S), 'waiting');
 }
 
+// board: From -> To by the entry and exit portals, for queued, active and completed trains; an exit label names the portal
+{
+  const S = busySim('lebanon'), G = S.layout, short = n => n.split(' ')[0];
+  for (let i = 0; i < 3600 && !(S.completed.length && S.queue.flat().length); i++) step(S);
+  const html = boardHTML(S, null), ft = (a, b) => `title="${a} → ${b}">${short(a)}\u202f→\u202f${short(b)}<`;
+  for (const t of [...S.queue.flat(), ...S.trains.values()]) assert.ok(html.includes(ft(G.portals[t.entry].name, G.portals[t.exit].name)), t.name);
+  for (const c of S.completed.slice(-5)) assert.ok(html.includes(ft(c.from, c.to)), c.name);
+  for (const d of [E, W]) {
+    const c = [...S.routesFrom.values()].flat().find(k => k.exitSignal === null && k.dir === d); // a route off the far end
+    assert.equal(exitLabel(S, c), `exit to ${portalOf(S, -d).name}`);
+  }
+}
+
 // over and back: an eastbound wrong-main train stands at Main 1's end of a module, an eastbound stood PASS_WAIT on Main 2
 // past the next pair. findPath dips over that pair and back round it, which no candidate is (none uses two crossovers);
 // the operator takes the candidate ending where the path's first leg does, straight on or home, this tick.
 {
   const G = generate('s0'), S = createSim(G, 's0'), N = (x, y) => G.nodes.find(n => n.x === x && n.y === y).id;
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  S.nextSpawn = [Infinity, Infinity];
   const on = (x1, x2, y) => G.edges.find(e => e.cls === 'main' && [e.a, e.b].every(n => G.nodes[n].y === y)
     && [e.a, e.b].map(n => G.nodes[n].x).sort((a, b) => a - b).join() === `${x1},${x2}`).id;
   const [m, m1] = G.modules, T1 = G.mainRow[W], T2 = G.mainRow[E], e0 = on(m.x1, m.x1 + 1, T1);
   const X = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), Y = spawnTrain(S, { type: 'M', dir: E, name: 'M 4' });
-  Object.assign(X, { path: [e0], headDist: G.edges[e0].len - FOUL, state: 'stopped' });
-  Object.assign(Y, { path: [on(m1.x0, m1.x1, T2), on(m1.x1, m1.x1 + 1, T2)], lastMoveTime: S.time - 2 * PASS_WAIT, state: 'stopped' });
+  Object.assign(X, { path: [e0], pathStart: N(m.x1, T1), headDist: G.edges[e0].len - FOUL, state: 'stopped' });
+  Object.assign(Y, { path: [on(m1.x0, m1.x1, T2), on(m1.x1, m1.x1 + 1, T2)], pathStart: N(m1.x0, T2), lastMoveTime: S.time - 2 * PASS_WAIT,
+    state: 'stopped' });
   Y.headDist = pathLength(S, Y) - FOUL;
   for (const t of [X, Y]) t.path.forEach(e => S.edgeState[e].occ.add(t.id));
   assert.ok(isWrongMain(S, X));
-  const sig = S.signalAt.get(`${N(m.x1 + 1, T1)}:${E}`), cands = S.routesFrom.get(sig);
+  const sig = sigAt(S, N(m.x1 + 1, T1), E), cands = S.routesFrom.get(sig);
   const path = findPath(S, headNode(S, X), E, X.goal,
-    { trainId: X.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST });
+    { trainId: X.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST }, X.path.at(-1));
   assert.ok(!cands.some(c => c.edges.every((e, i) => path[i] === e)), 'findPath no longer dips over and back');
   step(S);
   const r = S.routes.get(X.routes[0]);
@@ -1220,7 +1346,7 @@ for (const moving of [false, true]) {
 {
   const S = createSim(L, 'lebanon');
   S.auto = true;
-  S.nextSpawn = { 1: Infinity, '-1': Infinity };
+  S.nextSpawn = [Infinity, Infinity];
   const C = spawnTrain(S, { type: 'C', dir: E, name: 'C 2' });
   for (let i = 0; i < 4; i++) step(S);
   const mine = () => [...S.routes.values()].filter(r => r.trainId === C.id && !r.entered);

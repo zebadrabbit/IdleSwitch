@@ -327,7 +327,7 @@ export function createRenderer(canvas) {
 
     // 8. Queue at each entry portal, under its name.
     for (const p of L.portals) {
-      const n = sim.queue[p.dir]?.length ?? 0, a = portalAt(p);
+      const n = sim.queue[p.id]?.length ?? 0, a = portalAt(p);
       if (n) text(`+${n} waiting`, a.x - p.dir * 6, a.y + p.dir * (reach + 15), `12px ${SANS}`, P.dim, a.align);
     }
 
