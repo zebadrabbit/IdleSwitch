@@ -6,7 +6,9 @@
 // with row T+1 empty between them and a crossover pair in every gap and both margins. Each module hangs
 // its westbound tracks above Main 1 (rows T-1 .. T-kt) and its eastbound tracks below Main 2 (rows
 // T+3 .. T+2+kb), each side with an entry ladder and an exit ladder. Ids are array indices:
-// nodes[i].id === i, likewise edges/signals/tracks.
+// nodes[i].id === i, likewise edges/signals/tracks/portals. An edge's oneWay is null (both ways) or the
+// node it may be entered from; a signal stands at its node for trains arriving on edge `from` (null at a
+// portal).
 import { makeRng, pick, randInt } from './rng.js';
 
 export const CLASS_SPEED = { main: 60, crossover: 30, ladder: 30, platform: 30, yard: 15, siding: 15, spur: 15 };
@@ -109,17 +111,20 @@ export function generate(seed) {
     if (!at.has(k)) { at.set(k, nodes.length); nodes.push({ id: nodes.length, x, y }); }
     return at.get(k);
   };
-  const edge = (a, b, cls, dirs, track = null, extra) => {
+  // dirs: the sign of dx a train may travel the edge with, derived from oneWay for the sim, which still reads it.
+  const edge = (a, b, cls, oneWay, track = null, extra) => {
     const dx = Math.abs(nodes[a].x - nodes[b].x), diag = nodes[a].y !== nodes[b].y;
-    edges.push({ id: edges.length, a, b, cls, dirs, speed: CLASS_SPEED[cls], len: diag ? dx * Math.SQRT2 : dx, track,
+    const dirs = oneWay === null ? [1, -1] : [Math.sign(nodes[oneWay === a ? b : a].x - nodes[oneWay].x)];
+    edges.push({ id: edges.length, a, b, cls, oneWay, dirs, speed: CLASS_SPEED[cls], len: diag ? dx * Math.SQRT2 : dx, track,
       main: null, section: null, ...extra });
     return edges.length - 1;
   };
-  const signal = (node, dir, kind) => signals.push({ id: signals.length, node, dir, kind });
-  // k unit diagonals from (x,y) stepping (dx,dy); returns node ids, index i = row index i (0 = on the main).
+  const signal = (node, dir, kind, from) => signals.push({ id: signals.length, node, from, dir, kind });
+  // k unit diagonals from (x,y) stepping (dx,dy), one-way for dir (entered from the end a dir train reaches
+  // first); returns node ids, index i = row index i (0 = on the main).
   const ladder = (x, y, dx, dy, k, dir) => {
     const ns = [node(x, y)];
-    for (let i = 1; i <= k; i++) { ns.push(node(x + i * dx, y + i * dy)); edge(ns[i - 1], ns[i], 'ladder', [dir]); }
+    for (let i = 1; i <= k; i++) { ns.push(node(x + i * dx, y + i * dy)); edge(ns[i - 1], ns[i], 'ladder', dx === dir ? ns[i - 1] : ns[i]); }
     return ns;
   };
 
@@ -131,39 +136,48 @@ export function generate(seed) {
   const pairs = [1, ...mods.map(m => m.x1 + 2)];
   const xs = [0, cols - 1, ...mods.flatMap(m => [m.x0 - 1, m.x0, m.x1, m.x1 + 1]),
     ...pairs.flatMap(a => [a, a + 2, a + 3, a + 5])].sort((a, b) => a - b);
+  const mainIn = new Map(); // `${node}:${dir}` -> the main edge a dir train arrives at node by
   for (const [y, main] of [[T, -1], [R2, 1]])
-    for (let i = 1; i < xs.length; i++) edge(node(xs[i - 1], y), node(xs[i], y), 'main', [1, -1], null, { main });
+    for (let i = 1; i < xs.length; i++) {
+      const a = node(xs[i - 1], y), b = node(xs[i], y), e = edge(a, b, 'main', null, null, { main });
+      mainIn.set(`${b}:1`, e); mainIn.set(`${a}:-1`, e);
+    }
   for (const a of pairs) {
-    edge(node(a, T), node(a + 2, R2), 'crossover', [1, -1]);
-    edge(node(a + 3, R2), node(a + 5, T), 'crossover', [1, -1]);
+    edge(node(a, T), node(a + 2, R2), 'crossover', null);
+    edge(node(a + 3, R2), node(a + 5, T), 'crossover', null);
   }
   const portals = [
-    { node: node(0, R2), name: west, dir: 1 },         // eastbound enters at the west end of Main 2
-    { node: node(cols - 1, T), name: east, dir: -1 },  // westbound enters at the east end of Main 1
+    { id: 0, node: node(0, R2), name: west, dir: 1, side: 'west' },        // eastbound enters at the west end of Main 2
+    { id: 1, node: node(cols - 1, T), name: east, dir: -1, side: 'east' }, // westbound enters at the east end of Main 1
   ];
-  for (const p of portals) signal(p.node, p.dir, 'high');
+  for (const p of portals) signal(p.node, p.dir, 'high', null);
 
   // Track i of a side runs from its entry ladder node to its exit ladder node, with its signal node
   // one cell before the exit. Capacity counts entry -> signal, less half a cell of clearance.
   const side = (list, dir, entry, exit) => list.forEach((t, k) => {
     const id = tracks.length, a = entry[k + 1], b = exit[k + 1];
     const sig = node(nodes[b].x - dir, nodes[b].y);
-    const e1 = edge(a, sig, t.cls, [dir], id), e2 = edge(sig, b, t.cls, [dir], id);
-    signal(sig, dir, DWARF.has(t.cls) ? 'dwarf' : 'high');
+    const e1 = edge(a, sig, t.cls, a, id), e2 = edge(sig, b, t.cls, sig, id);
+    signal(sig, dir, DWARF.has(t.cls) ? 'dwarf' : 'high', e1);
     tracks.push({ id, cls: t.cls, name: t.name, dir, edges: [e1, e2], capacity: edges[e1].len - 0.5, industry: t.industry });
   });
 
   for (const m of mods) {
     const { x0, x1 } = m, kt = m.top.length, kb = m.bot.length;
     // Boundary signals: both directions on both mains at each end of the module.
-    for (const x of [x0 - 1, x1 + 1]) for (const y of [T, R2]) for (const d of [1, -1]) signal(node(x, y), d, 'high');
+    for (const x of [x0 - 1, x1 + 1]) for (const y of [T, R2]) for (const d of [1, -1]) {
+      const nd = node(x, y);
+      signal(nd, d, 'high', mainIn.get(`${nd}:${d}`));
+    }
     // Westbound: enter up the right-hand ladder, leave down the left-hand one. Eastbound mirrors below.
     side(m.top, -1, ladder(x1, T, -1, -1, kt, -1), ladder(x0, T, 1, -1, kt, -1));
     side(m.bot, 1, ladder(x0, R2, 1, 1, kb, 1), ladder(x1, R2, -1, 1, kb, 1));
   }
 
-  // Switches: every 3-edge node. Trunk = the lone edge on one side; normal = the leg that continues
-  // the trunk's direction (main continues main, ladder continues ladder); reverse = the other leg.
+  // Switches: every 3-edge node. With v(e) the unit vector from the node along edge e: trunk = the edge
+  // whose v has a negative dot product with both others (the lone edge on one x-side; at a wye apex, the
+  // stem); normal = the leg nearest the trunk's continuation -v(trunk) (main continues main, ladder
+  // continues ladder; on a tie, the leg whose far node is further west); reverse = the other leg.
   const inc = nodes.map(() => []);
   for (const e of edges) { inc[e.a].push(e); inc[e.b].push(e); }
   const far = (e, n) => nodes[e.a === n ? e.b : e.a];
@@ -171,12 +185,13 @@ export function generate(seed) {
   for (const nd of nodes) {
     const es = inc[nd.id];
     if (es.length !== 3) continue;
-    const sideOf = e => Math.sign(far(e, nd.id).x - nd.x);
-    const trunk = es.find(e => es.filter(f => sideOf(f) === sideOf(e)).length === 1);
-    const t = far(trunk, nd.id), legs = es.filter(e => e !== trunk);
-    const normal = legs.find(e => { const o = far(e, nd.id);
-      return Math.sign(o.x - nd.x) === Math.sign(nd.x - t.x) && Math.sign(o.y - nd.y) === Math.sign(nd.y - t.y); });
-    switches.push({ node: nd.id, trunk: trunk.id, normal: normal.id, reverse: legs.find(e => e !== normal).id });
+    const v = es.map(e => { const o = far(e, nd.id), dx = o.x - nd.x, dy = o.y - nd.y, l = Math.hypot(dx, dy); return [dx / l, dy / l]; });
+    const dot = (i, j) => v[i][0] * v[j][0] + v[i][1] * v[j][1];
+    const t = [0, 1, 2].find(i => [0, 1, 2].every(j => j === i || dot(i, j) < 0));
+    const [p, q] = [0, 1, 2].filter(i => i !== t);
+    const nearer = dot(t, q) - dot(t, p); // > 0: p is nearer the continuation
+    const n = Math.abs(nearer) > 1e-9 ? (nearer > 0 ? p : q) : (far(es[p], nd.id).x < far(es[q], nd.id).x ? p : q);
+    switches.push({ node: nd.id, trunk: es[t].id, normal: es[n].id, reverse: es[n === p ? q : p].id });
   }
   // Sections: main edges were made row by row, west to east; a new section starts on a new row and at
   // every crossover end, so a section is the stretch of one main between crossover pairs (ladder points
@@ -187,7 +202,7 @@ export function generate(seed) {
   for (const e of edges) if (e.cls === 'main') { if (e.a !== prev || xo.has(e.a)) sec++; e.section = sec; prev = e.b; }
 
   return {
-    seed, cols, rows, nodes, edges, switches, signals, tracks, portals, mainRow: { 1: R2, '-1': T },
+    seed, cols, rows, nodes, edges, switches, signals, tracks, portals, wye: null, mainRow: { 1: R2, '-1': T },
     places: mods.map(m => ({ name: m.name, x: (m.x0 + m.x1) / 2, y: -1 })), // label row above the top tracks
     modules: mods.map(m => ({ kind: m.kind, x0: m.x0, x1: m.x1, name: m.name })),
   };

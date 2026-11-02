@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { generate, CAPACITY_MIN } from '../src/gen.js';
 const seeds = ['', ' ', 'a', 'lebanon', '🚂', 'x'.repeat(500), ...Array.from({length:200},(_,i)=>`s${i}`)];
 const byNum = (a, b) => a - b;
@@ -60,6 +61,22 @@ for (const seed of seeds) {
   const nodeAt = (x, y) => L.nodes.find(n => n.x === x && n.y === y).id;
   assert.deepEqual(L.portals.map(p => [L.nodes[p.node].x, L.nodes[p.node].y, p.dir]), [[0, L.mainRow[1], 1], [L.cols - 1, L.mainRow[-1], -1]], `${seed}: portals`);
   for (const p of L.portals) assert.ok(L.signals.some(s => s.node === p.node && s.dir === p.dir), `${seed}: no signal at portal ${p.name}`);
+  assert.deepEqual(L.portals.map(p => [p.id, p.side]), [[0, 'west'], [1, 'east']], `${seed}: portal ids and sides`);
+  assert.equal(L.wye, null, `${seed}: wye`);
+  // oneWay: null (both ways) or one of the edge's own nodes; dirs (read by the sim until it moves to oneWay) derived from it
+  for (const e of L.edges) {
+    assert.ok(e.oneWay === null || e.oneWay === e.a || e.oneWay === e.b, `${seed}: edge ${e.id} oneWay ${e.oneWay}`);
+    assert.deepEqual(e.dirs, e.oneWay === null ? [1, -1] : [Math.sign(far(e, e.oneWay).x - L.nodes[e.oneWay].x)], `${seed}: edge ${e.id} dirs`);
+  }
+  // a signal faces the unique edge a train of its dir arrives on (from the side opposite its dir); portal signals face none
+  const portalNodes = new Set(L.portals.map(p => p.node));
+  for (const s of L.signals) {
+    const n = L.nodes[s.node], arriving = adj[s.node].filter(e => Math.sign(far(e, s.node).x - n.x) === -s.dir);
+    if (portalNodes.has(s.node)) { assert.equal(s.from, null, `${seed}: portal signal ${s.id} from`); continue; }
+    assert.equal(arriving.length, 1, `${seed}: signal ${s.id} has ${arriving.length} arriving edges`);
+    assert.equal(s.from, arriving[0].id, `${seed}: signal ${s.id} from`);
+    assert.notEqual(L.edges[s.from].oneWay, s.node, `${seed}: signal ${s.id} faces an edge that only leaves its node`);
+  }
   const sigKeys = L.signals.map(s => `${s.node}:${s.dir}`);
   assert.equal(new Set(sigKeys).size, sigKeys.length, `${seed}: two signals share a node:dir`);
   // BFS following dirs, leaving each node only through edges on the far side (x increasing for +1)
@@ -95,4 +112,21 @@ for (const seed of seeds) {
   // deterministic
   assert.equal(JSON.stringify(generate(seed)), JSON.stringify(L), `${seed}: not deterministic`);
 }
-console.log('gen ok', seeds.length);
+// Frozen layouts (tools/freeze-layouts.mjs, from the generator before oneWay/from): same lists, with the
+// old dirs string standing in for oneWay ('1-1' both ways; '1' entered from the west node, '-1' from the east).
+const fixtures = JSON.parse(readFileSync(new URL('./fixtures/layouts.json', import.meta.url), 'utf8'));
+for (const [seed, fx] of Object.entries(fixtures)) {
+  const L = generate(seed);
+  assert.deepEqual(L.nodes.map(n => [n.x, n.y]), fx.nodes, `${seed}: fixture nodes`);
+  assert.deepEqual(L.edges.map(e => [e.a, e.b, e.cls, e.track, e.main, e.section]),
+    fx.edges.map(([a, b, cls, , track, main, section]) => [a, b, cls, track, main, section]), `${seed}: fixture edges`);
+  fx.edges.forEach(([a, b, , dirs], i) => {
+    const [w, e] = L.nodes[a].x < L.nodes[b].x ? [a, b] : [b, a];
+    assert.equal(L.edges[i].oneWay, { '1-1': null, 1: w, '-1': e }[dirs], `${seed}: edge ${i} oneWay (old dirs ${dirs})`);
+  });
+  assert.deepEqual(L.switches.map(s => [s.node, s.trunk, s.normal, s.reverse]), fx.switches, `${seed}: fixture switches`);
+  assert.deepEqual(L.tracks.map(t => [t.id, t.cls, t.name, t.dir, t.edges, t.capacity]), fx.tracks, `${seed}: fixture tracks`);
+  assert.deepEqual(L.signals.map(s => [s.node, s.dir, s.kind]), fx.signals, `${seed}: fixture signals`);
+  assert.deepEqual(L.portals.map(p => [p.node, p.name, p.dir]), fx.portals, `${seed}: fixture portals`);
+}
+console.log('gen ok', seeds.length, 'fixtures', Object.keys(fixtures).length);
