@@ -6,7 +6,7 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   wrongMainTrains, PASS_WAIT,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
-  trainBlocks, headNode,
+  trainBlocks, headNode, reverse, PUSH_MPH,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
   WRONG_MAIN_COST, MOVING_COST, STANDING_COST, nightLevel, SLOW_ORDER, edgeSpeed, slowOrderLabel, OPERATORS } from '../src/sim.js';
 import { trainStatus, boardHTML, exitLabel } from '../src/panels.js';
@@ -41,6 +41,23 @@ function wyeSeed(side) {
   assert.fail(`no ${side} junction seed in s0..s99`);
 }
 const sN = wyeSeed('north'), sS = wyeSeed('south');
+// Terminus seeds (spec "Phase 2"): the first of s0..s99 with a terminus on that side (s8 north, s14 south).
+function termSeed(side) {
+  for (let i = 0; i < 100; i++) { const w = generate(`s${i}`).wye; if (w?.kind === 'terminus' && w.side === side) return `s${i}`; }
+  assert.fail(`no ${side} terminus seed in s0..s99`);
+}
+const tN = termSeed('north'), tS = termSeed('south');
+// A terminus sim's wye: the run from each foot to its pull-ahead column (one main edge, keyed by the arrival dir that
+// stops at its P: east of F2 eastbound, west of F1 westbound), the main between the feet, the legs, the stub's edges and
+// its buffer, the pull-ahead signal of each arrival dir (at P, facing the run), the feet main's junction edges.
+function termOf(S) {
+  const G = S.layout, w = G.wye, between = (a, b) => G.edges.find(e => (e.a === a && e.b === b) || (e.a === b && e.b === a)).id;
+  const leg = f => G.edges.find(e => e.cls === 'wye' && (e.a === f || e.b === f)).id, stub = G.tracks[w.stub].edges;
+  const run = { 1: between(w.F2, w.P[1]), '-1': between(w.P[-1], w.F1) };
+  return { w, run, mid: between(w.F1, w.F2), leg: { F1: leg(w.F1), F2: leg(w.F2) }, stub,
+    buffer: farOf(G, stub[1], G.signals[w.stubSignal].node), pSig: d => signalAhead(S, w.P[d], run[d]),
+    feet: G.edges.filter(e => e.main === w.feetMain && e.junction).map(e => e.id) };
+}
 // A junction sim's wye: legs off F1 and F2, stem edges from the apex out, the stem signal and its node, the branch portal
 // and its signal, the row of the main the feet are on, b and b' (the gap's boundary columns), the branch section.
 function wyeOf(S) {
@@ -191,12 +208,14 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
       assert.equal(c.nodes.length, c.edges.length + 1);
       const exitSig = facing(c.exitNode, c.edges.at(-1)) ?? null;
       assert.equal(c.exitSignal, exitSig);
-      // ... or at a buffer stop (a terminus's stub: a dead end that is no portal)
+      // ... or at a buffer stop (a terminus's stub: a dead end that is no portal), from a shunt signal only (backing in)
       if (exitSig === null) assert.ok(c.dir !== 0 && (G.portals.some(p => exitNodesOf(S, p.id, c.dir).includes(c.exitNode))
-        || (S.adj.get(c.exitNode).length === 1 && G.tracks[G.wye?.stub]?.edges.includes(c.edges.at(-1)))), `${seed}: candidate ends at neither a signal nor an exit`);
-      assert.ok(c.edges.slice(0, -1).every((e, i) => facing(ns[i + 1], e) === undefined), `${seed}: candidate runs past a signal`);
+        || (sig.kind === 'shunt' && S.adj.get(c.exitNode).length === 1 && G.tracks[G.wye?.stub]?.edges.includes(c.edges.at(-1)))),
+        `${seed}: candidate ends at neither a signal nor an exit`);
+      // a terminus's shunt signals end no route: walks run through the feet (spec "Shunt signals")
+      assert.ok(c.edges.slice(0, -1).every((e, i) => [undefined, 'shunt'].includes(G.signals[facing(ns[i + 1], e)]?.kind)), `${seed}: candidate runs past a signal`);
       assert.ok(Math.abs(c.len - c.edges.reduce((s, e) => s + G.edges[e].len, 0)) < 1e-9);
-      assert.equal(c.slow, SLOW.includes(last.cls));
+      assert.equal(c.slow, SLOW.includes(last.cls) || !!G.tracks[last.track]?.stub, `${seed}: slow`); // into the stub: backing in
       assert.equal(c.diverging, c.switches.some(s => s.lie === 'reverse'));
       // every switch the candidate passes through is listed, with reverse iff it uses the reverse leg (and the one its
       // signal stands on: a terminus's shunt signals stand on the feet)
@@ -459,7 +478,8 @@ for (let i = 0; i < 50; i++) {
 
 // A terminus (spec "The wye (geometry)"; the terminus mission is Task 7's): the sim loads every one in s0..s99. Its shunt
 // signals light as dwarfs (one head) and read E/W column row s; the stub is reached from both main portals for their dir
-// and leads on to the far end of either dir, but no train is drawn for it yet (a dir 0 track is on neither menu).
+// and leads on to the far end of either dir. Both main portals draw passenger trains for it (spec "The terminus mission"):
+// a P at 6 x pax and an X at 3 x pax, like a platform, marked terminus.
 for (const [a, top] of [[ASPECT.STOP, 'R'], [ASPECT.RESTRICTING, 'FR'], [ASPECT.SLOW_CLEAR, 'G']])
   assert.deepEqual(lamps(a, 'shunt', 1), { top }, `shunt lamps for ${a}`);
 let termini = 0;
@@ -475,7 +495,8 @@ for (let i = 0; i < 100; i++) {
   for (const d of [E, W]) {
     assert.ok(S.reach.tracks[`${portalOf(S, d).id}:${d}`].has(w.stub), `s${i} ${d}: the stub from the portal`);
     assert.deepEqual(ids(S.reach.exits[`t${w.stub}:${d}`]), [portalOf(S, -d).id], `s${i} ${d}: the far end from the stub`);
-    assert.ok(trafficMenu(S, d).every(m => m.dest !== w.stub), `s${i} ${d}: the stub on the menu`);
+    assert.deepEqual(trafficMenu(S, d).filter(m => m.dest === w.stub), [{ type: 'P', dest: w.stub, weight: 6, terminus: true },
+      { type: 'X', dest: w.stub, weight: 3, terminus: true }], `s${i} ${d}: the stub on the menu`);
   }
 }
 assert.ok(termini >= 15, `${termini} terminus seeds in s0..s99`);
@@ -602,7 +623,7 @@ assert.equal(S.trains.get(X.id), X);
 assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, entry: 1, exit: 0, prio: 5, len: trainLength('X'),
   maxSpeed: 60 * MPH, path: [], pathStart: pnode(S, W), routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null,
   goal: { exit: 0 }, dwellUntil: 0, holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false,
-  events: [] });
+  events: [], run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: W, reversed1: false });
 assert.equal(headNode(S, X), pnode(S, W));
 assert.equal(signalAheadOf(S, X), entrySig(S, W), 'before its first route it reads the portal signal');
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
@@ -784,7 +805,7 @@ const xOf = (S, n) => S.layout.nodes[n].x;
 
 // constants
 assert.deepEqual(DENSITY, { light: 12 * 60, normal: 7 * 60, busy: 4 * 60 });
-assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60 });
+assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60, terminus: 10 * 60 });
 
 // fits: nothing is 99 cells long; a P fits every platform (generator floors)
 {
@@ -1114,18 +1135,49 @@ for (const seed of ['s1', 's3']) {
 // operator served long-standing trains first) and two junctions (sN north, sS south); never two trains on one edge,
 // never a stall, and the spawn gate (a queued train with a destination enters only while that track is free, and
 // reserves it). At a junction also: one sense at a time on the branch, wrong-main running inside the gap exempt and
-// never standing there, trains to and from the branch.
+// never standing there, trains to and from the branch. Two termini (tN north, tS south) with the same, plus: every
+// train's path chains from its pathStart; at every reversal no other train, and no route not its own, on any section the
+// reversing train stands in, nor (pulled ahead at P) on the feet main's junction edges; terminus trains in and out
+// within the hour, by the portal they came in by.
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
 let sawWrongMain = false;
-for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS]) {
+for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS, tN, tS]) {
   const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0);
-  const branchSec = w ? G.edges.find(e => e.cls === 'branch').section : null, rows = [G.mainRow[E], G.mainRow[W]];
-  let entered = 0, wrongTicks = 0, exemptTicks = 0;
+  const branchSec = w ? G.edges.find(e => e.cls === 'wye').section : null, rows = [G.mainRow[E], G.mainRow[W]];
+  const feet = w?.kind === 'terminus' ? termOf(S).feet : [], loco = new Map(); // train id -> locoAtTail after the last step
+  let entered = 0, wrongTicks = 0, exemptTicks = 0, reversals = 0, visiting = false, wmWas = new Set();
   for (let i = 0; i < 8 * 3600; i++) {
     // every train new after the step (queued earlier or drawn this very tick) is checked against the tracks before it
     const free = G.tracks.map(t => trackFree(S, t.id)), before = new Set(S.trains.keys());
     step(S);
+    assert.ok(S.queue.flat().filter(k => k.terminus).length <= 1, `${seed}: two terminus trains queued`);
+    // a terminus train on its visit to the gap is the one wrong-main move: no train goes wrong main meanwhile
+    if (w?.kind === 'terminus') {
+      const wmNow = new Set(wrongMainTrains(S).map(T => T.id));
+      if (visiting) assert.ok([...wmNow].every(id => wmWas.has(id)), `${seed}: sent wrong main during a terminus train's visit`);
+      visiting = [...S.trains.values()].some(T => T.terminus && T.path.some(e => G.edges[e].junction || G.edges[e].section === branchSec));
+      wmWas = wmNow;
+    }
+    for (const T of S.trains.values()) {
+      let n = T.pathStart;
+      for (const e of T.path) { assert.ok(G.edges[e].a === n || G.edges[e].b === n, `${seed}: ${T.name}'s path is not chained from pathStart`); n = farOf(G, e, n); }
+      // its tail is on its path (behind it only while it is still coming in at its portal): a reversal never jumps it
+      const coming = T.run === 0 && T.pathOff === 0 && T.pathStart === G.portals[T.entry].node;
+      assert.ok(coming || T.headDist - T.len >= T.pathOff - 1e-9, `${seed}: ${T.name}'s tail is off its path`);
+      if (!T.terminus) continue;
+      const since = S.time - T.events.find(e => e.kind === 'entered').t;
+      assert.ok(since <= 3600, `${seed}: terminus ${T.name} in for ${since} s`);
+      if (loco.has(T.id) && loco.get(T.id) !== T.locoAtTail) { // it reversed this step (missions runs last)
+        reversals++;
+        const mine = new Set(T.path.filter(e => S.edgeState[e].occ.has(T.id)).map(e => G.edges[e].section));
+        const other = e => [...S.edgeState[e].occ].some(id => id !== T.id)
+          || (S.edgeState[e].route !== null && S.routes.get(S.edgeState[e].route).trainId !== T.id);
+        for (const [sec, es] of S.sectionEdges) if (mine.has(sec)) assert.ok(!es.some(other), `${seed}: ${T.name} reversed with another train in section ${sec}`);
+        if (T.locoAtTail) assert.ok(!feet.some(other), `${seed}: ${T.name} reversed at P with another train on the feet main's junction edges`);
+      }
+      loco.set(T.id, T.locoAtTail);
+    }
     for (const T of S.trains.values()) {
       if (before.has(T.id)) continue;
       entered++;
@@ -1167,7 +1219,8 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS]) {
         if (!on.length) continue;
         if (!isWrongMain(S, T)) { assert.ok(on.every(e => G.edges[e].junction), `${seed}: ${T.name} exempt off the junction`); exemptTicks++; }
         const h = G.nodes[headNode(S, T)];
-        if (on.some(e => G.edges[e].junction)) assert.ok(!(h.x > w.x0 && h.x < w.x1 && rows.includes(h.y)), `${seed}: ${T.name} routed to a stand inside the gap`);
+        // (at a junction; a terminus's gap has stands inside it, its P columns, where the one wrong-main train may stand)
+        if (on.some(e => G.edges[e].junction) && w.kind === 'junction') assert.ok(!(h.x > w.x0 && h.x < w.x1 && rows.includes(h.y)), `${seed}: ${T.name} routed to a stand inside the gap`);
       }
     }
     for (const T of S.trains.values()) {
@@ -1187,9 +1240,11 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS]) {
   if (G.tracks.some(t => t.cls === 'yard')) assert.ok(S.completed.some(c => ['yard', 'spur'].includes(dwelt.get(c.name))), `${seed}: no freight served the yard`);
   for (const c of S.completed) {
     assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'from', 'name', 'spawnTime', 'stops', 'to', 'type']);
-    // in at its dir's portal or the branch, out at the far end or the branch, never in and out by the branch
-    const d = Number(c.name.split(' ')[1]) % 2 ? W : E;
-    assert.ok([portalOf(S, d).name, br?.name].includes(c.from) && [portalOf(S, -d).name, br?.name].includes(c.to) && c.from !== c.to,
+    // in at its dir's portal or the branch, out at the far end or the branch, never in and out by the branch; a terminus
+    // train (it reversed) in and out by its dir's portal, within the hour
+    const d = Number(c.name.split(' ')[1]) % 2 ? W : E, term = c.events.some(e => e.kind === 'reversing');
+    if (term) assert.ok(c.from === portalOf(S, d).name && c.to === c.from && c.exitTime - c.events[1].t <= 3600, `${seed}: terminus ${c.name} from ${c.from} to ${c.to}`);
+    else assert.ok([portalOf(S, d).name, br?.name].includes(c.from) && [portalOf(S, -d).name, br?.name].includes(c.to) && c.from !== c.to,
       `${seed}: ${c.name} from ${c.from} to ${c.to}`);
     assert.ok(c.exitTime > c.spawnTime && c.distance > 0);
     // the per-train log (spec "Delay"): queued at spawnTime, entered, ..., out at exitTime, in time order
@@ -1203,9 +1258,13 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS]) {
     assert.ok(at('entered') < at('route') && at('route') < at('arrived') && at('arrived') < at('departed')
       && at('departed') < kinds.lastIndexOf('route'), `${seed}: ${P.name} events ${kinds}`);
     assert.ok(G.tracks.some(t => t.cls === 'platform' && t.name === arrived.track), `${seed}: arrived at ${arrived.track}`);
-    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EWNS]\d+[A-Z]d?$/.test(e.signal)));
+    assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EWNS]\d+[A-Z][ds]?$/.test(e.signal)));
   }
-  if (w) {
+  if (w?.kind === 'terminus') {
+    const done = S.completed.filter(c => c.events.some(e => e.kind === 'reversing'));
+    assert.ok(done.length >= 5 && reversals >= 2 * done.length, `${seed}: ${done.length} terminus trains, ${reversals} reversals`);
+  }
+  if (br) {
     const arrivals = S.completed.filter(c => c.from === br.name).length, departures = S.completed.filter(c => c.to === br.name).length;
     assert.ok(arrivals >= 5 && departures >= 5, `${seed}: ${arrivals} trains in from the branch, ${departures} out by it`);
     assert.ok(exemptTicks > 0, `${seed}: no exempt wrong-main running at the junction`);
@@ -1707,7 +1766,8 @@ for (const exit of [1, 2]) {
   const S = createSim(fx.layout, fx.seed, { density: 'busy', slowOrders: false }), G = S.layout, br = G.portals[2];
   Object.assign(S, { time: fx.time, nextTrainId: fx.nextTrainId, nextRouteId: fx.nextRouteId, auto: true });
   S.nextSpawn = S.nextSpawn.map(() => Infinity); // the frozen trains only
-  for (const t of fx.trains) S.trains.set(t.id, { ...t, events: [] });
+  // frozen before reversing existed: those trains' fields at their defaults
+  for (const t of fx.trains) S.trains.set(t.id, { run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: t.dir, reversed1: false, ...t, events: [] });
   for (const { exitNode, sense, ...r } of fx.routes) {
     const cand = S.routesFrom.get(r.signal).find(c => c.exitNode === exitNode);
     S.routes.set(r.id, { ...r, cand, dir: cand.dir, sense: new Map(sense) });
@@ -1849,3 +1909,333 @@ for (const [seed, k] of [[sN, 1.5], ['lebanon', 1]]) {
 }
 }
 console.log('junction ok');
+
+// ---- Phase 2: reversing and the terminus (spec "Phase 2: reversing and the terminus"). tN: a north terminus (feet on
+// Main 1), tS: a south one (feet on Main 2).
+{
+const quiet = seed => { const S = createSim(generate(seed), seed); S.nextSpawn = S.nextSpawn.map(() => Infinity); return S; };
+// T stands on path from start, its head FOUL short of the path's end (or at headDist), occupying every path edge
+const stand = (S, T, path, start, headDist = null) => {
+  Object.assign(T, { path: [...path], pathStart: start, state: 'stopped' });
+  T.headDist = headDist ?? pathLength(S, T) - FOUL;
+  path.forEach(e => S.edgeState[e].occ.add(T.id));
+  return T;
+};
+const near = (p, q, msg) => assert.ok(p && q && Math.abs(p.x - q.x) <= 1e-9 && Math.abs(p.y - q.y) <= 1e-9, `${msg}: ${JSON.stringify(p)} vs ${JSON.stringify(q)}`);
+// the edges the occupancy rule gives T's path ([s, s + len) with s <= head and s + len > tail), and the edges T holds
+const occRule = (S, T) => {
+  const out = [];
+  let s = T.pathOff;
+  for (const e of T.path) { const l = S.layout.edges[e].len; if (s <= T.headDist && s + l > T.headDist - T.len) out.push(e); s += l; }
+  return out.sort((a, b) => a - b);
+};
+const holds = (S, T) => S.edgeState.flatMap((st, e) => (st.occ.has(T.id) ? [e] : []));
+const straightOf = (S, sig) => S.routesFrom.get(sig).find(c => !c.diverging && !c.slow);
+
+assert.equal(PUSH_MPH, 15);
+assert.equal(DWELL.terminus, 10 * 60);
+
+// reverse, by hand: an express stopped at the pull-ahead signal (head FOUL short of P, 40 cells into its run) turns round
+// where it stands. Its path is its occupied edges reversed from P, its tail exactly where its head was and its head where
+// its tail was (every point of it: no pixel moves), loco at the tail, pushing, its run banked. Its head node is the foot,
+// whose shunt signal it reads. Reversed again it is as it was, loco leading. At speed it refuses.
+for (const seed of [tN, tS]) for (const d of [E, W]) {
+  const S = quiet(seed), k = termOf(S), w = k.w, foot = d === E ? w.F2 : w.F1;
+  const X = spawnTrain(S, { type: 'X', dir: d, name: 'X 2' });
+  X.pathOff = 40;
+  stand(S, X, [k.run[d]], foot);
+  const len = X.len, us = [0, 0.4, 1.3, len / 2, len - 0.2, len], at = u => pointAt(S, X, X.headDist - u), was = us.map(at), occ = holds(S, X);
+  assert.deepEqual(occRule(S, X), occ);
+  X.speed = 0.01;
+  assert.throws(() => reverse(S, X, -d), /speed/, 'reversed at speed');
+  X.speed = 0;
+  reverse(S, X, -d);
+  assert.deepEqual([X.dir, X.path, X.pathStart, X.pathOff, X.run, X.locoAtTail, X.pushing], [-d, [k.run[d]], w.P[d], 0, 40, true, true]);
+  assert.ok(close(X.headDist, FOUL + len), `${seed}: headDist ${X.headDist}`);
+  assert.equal(headNode(S, X), foot, `${seed} ${d}: the head node is not the foot`);
+  assert.equal(signalAheadOf(S, X), d === E ? w.shunt.F2 : w.shunt.F1, `${seed} ${d}: not at the shunt signal`);
+  us.forEach((u, i) => near(pointAt(S, X, X.headDist - len + u), was[i], `${seed} ${d}: the point ${u} behind the old head moved`));
+  assert.deepEqual([holds(S, X), occRule(S, X)], [occ, occ], `${seed} ${d}: occupancy changed`);
+  sectionalRelease(S, X);
+  assert.deepEqual(X.path, [k.run[d]], 'sectionalRelease dropped an edge after the reversal');
+  // pushing: the cars lead and the loco is the last block, its back at the train's tail
+  const bl = trainBlocks(S, X);
+  assert.deepEqual([bl[0].kind, bl.at(-1).kind, bl.filter(b => b.kind === 'loco').length], ['car', 'loco', 1]);
+  near({ x: bl[0].x1, y: bl[0].y1 }, was.at(-1), 'the leading car is not at the old tail');
+  near({ x: bl.at(-1).x2, y: bl.at(-1).y2 }, was[0], 'the loco\'s back is not at the old head');
+  reverse(S, X, d);
+  assert.deepEqual([X.dir, X.locoAtTail, X.pushing, X.run, trainBlocks(S, X)[0].kind], [d, false, false, 40, 'loco']);
+  us.forEach((u, i) => near(at(u), was[i], `${seed} ${d}: reversed twice, the point ${u} moved`));
+}
+// ... and a long freight stopped mid-edge across five edges with its routes set (entered) and one more set for it ahead
+// (not yet adopted): every route set for it is gone (the un-entered one cancelled), the edges ahead of its head drop
+// off its path unlocked, its occupancy and every point of it stay put
+{
+  const S = createSim(L, 'rev'), G = S.layout, s1 = entrySig(S, E), c1 = straightOf(S, s1), c2 = straightOf(S, c1.exitSignal);
+  const c3 = straightOf(S, c2.exitSignal), M = spawnTrain(S, { type: 'M', dir: E, name: 'M 4' });
+  const rs = [[s1, c1], [c1.exitSignal, c2], [c2.exitSignal, c3]].map(([g, c]) => setRoute(S, g, c.exitNode, { trainId: M.id }).route);
+  Object.assign(M, { path: [...c1.edges, ...c2.edges], routes: [rs[0].id, rs[1].id], headDist: c1.len + G.edges[c2.edges[0]].len + 4.37 });
+  for (const e of occRule(S, M)) { S.edgeState[e].occ.add(M.id); S.routes.get(S.edgeState[e].route).entered = true; }
+  sectionalRelease(S, M);
+  const occ = holds(S, M), us = [0, 0.37, 2, 4.37, 4.4, 5, M.len - 0.1, M.len], was = us.map(u => pointAt(S, M, M.headDist - u));
+  assert.ok(occ.length >= 4 && M.path.length > occ.length, `the freight spans ${occ.length} edges of ${M.path.length}`);
+  reverse(S, M, W);
+  assert.deepEqual(M.path, [...occ].sort((a, b) => M.path.indexOf(a) - M.path.indexOf(b)), 'the path is not the occupied edges');
+  assert.deepEqual([...M.path].reverse(), c1.edges.concat(c2.edges).filter(e => occ.includes(e)), 'not reversed');
+  assert.deepEqual(holds(S, M), occ);
+  assert.deepEqual(occRule(S, M), occ);
+  assert.ok([...S.routes.values()].every(r => r.trainId !== M.id) && S.edgeState.every(st => st.route === null), 'a route of its own still set');
+  us.forEach((u, i) => near(pointAt(S, M, M.headDist - M.len + u), was[i], `the point ${u} behind the old head moved`));
+}
+
+// shunt signals end no route: from the pull-ahead signal either way the through route crosses both feet to the far P
+// (none ends at a foot, and none runs head first into the stub); the shunt signal's own routes are the main onward and
+// the stub, backing in down the near leg to the buffer: slow, so its dwarf shows Restricting
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w;
+  for (const d of [E, W]) {
+    // the signal at the near P for d, facing in from outside the runs
+    const from = signalAhead(S, w.P[-d], G.edges.find(e => e.id !== k.run[-d] && e.main === w.feetMain && (e.a === w.P[-d] || e.b === w.P[-d])).id);
+    const cs = S.routesFrom.get(from), through = cs.find(c => c.exitNode === w.P[d]);
+    assert.ok(cs.every(c => ![w.F1, w.F2, k.buffer].includes(c.exitNode)), `${seed} ${d}: ${signalLabel(S, from)} ends at a foot or the buffer`);
+    assert.deepEqual(through?.edges, d === E ? [k.run[W], k.mid, k.run[E]] : [k.run[E], k.mid, k.run[W]], `${seed} ${d}: the through route`);
+    assert.equal(through.exitSignal, k.pSig(d));
+    const shunt = d === E ? w.shunt.F2 : w.shunt.F1, back = S.routesFrom.get(shunt).find(c => c.exitNode === k.buffer);
+    assert.deepEqual([back?.edges, back?.dir, back?.slow, back?.exitSignal], [[d === E ? k.leg.F2 : k.leg.F1, ...k.stub], -d, true, null], `${seed}: the stub route`);
+    assert.ok(S.routesFrom.get(shunt).some(c => c.exitNode !== k.buffer && !c.slow), `${seed}: the shunt signal's main route`);
+    assert.equal(setRoute(S, shunt, k.buffer).ok, true);
+    clearAspects(S);
+    assert.equal(aspectOf(S, shunt), ASPECT.RESTRICTING);
+    assert.deepEqual(lamps(aspectOf(S, shunt), 'shunt', signalHeads(S, shunt)), { top: 'FR' });
+    cancelRoute(S, routeFrom(S, shunt).id);
+  }
+}
+
+// the points at the foot may move for the reversed train standing at its shunt signal (its head 1.1 cells clear of
+// them), though its own body occupies the foot's trunk: for the operator (trainId) or a human NX (the train at the
+// signal), never for another train
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), k = termOf(S), w = k.w;
+  const X = stand(S, spawnTrain(S, { type: 'X', dir: E, name: 'X 2' }), [k.run[E]], w.F2);
+  reverse(S, X, W);
+  assert.deepEqual([switchLocked(S, w.F2), switchLocked(S, w.F2, X)], [true, false], `${seed}: switchLocked at the foot`);
+  assert.equal(S.switchState.get(w.F2).lie, 'normal');
+  assert.equal(setRoute(S, w.shunt.F2, k.buffer, { trainId: 99 }).reason, 'switch busy', `${seed}: the points moved for another train`);
+  const r = setRoute(S, w.shunt.F2, k.buffer, { trainId: X.id });
+  assert.equal(r.ok, true, `${seed}: ${r.reason}`);
+  assert.equal(S.switchState.get(w.F2).lie, 'reverse');
+  cancelRoute(S, r.route.id);
+  S.switchState.get(w.F2).lie = 'normal';
+  assert.equal(setRoute(S, w.shunt.F2, k.buffer, { human: true }).ok, true, `${seed}: a human NX for the standing train`);
+}
+
+// a train for the stub (from either main portal): terminus, its arrival dir kept, bound first for the pull-ahead signal
+// past the wye for that dir; its exit the far end until it departs. Every other train is no terminus train.
+{
+  const S = quiet(tN), w = S.layout.wye;
+  for (const d of [E, W]) {
+    const T = spawnTrain(S, { type: 'P', dir: d, dest: w.stub });
+    assert.deepEqual([T.terminus, T.arrival, T.goal, T.exit, T.dest, T.run, T.locoAtTail, T.pushing, T.reversed1],
+      [true, d, { node: w.P[d] }, portalOf(S, -d).id, w.stub, 0, false, false, false]);
+  }
+  const M = spawnTrain(S, { type: 'M', dir: E });
+  assert.deepEqual([M.terminus, M.arrival, M.goal], [false, E, { exit: portalOf(S, W).id }]);
+}
+
+// One terminus train in the offing at a time: the stub is on the menus only while it is free (nothing in it, routed into
+// it or bound for it) and no terminus train is queued. A mission takes ~25 min and serves both portals, so otherwise
+// terminus entries fill every portal queue (QUEUE_MAX) and the draws for all other traffic are dropped.
+{
+  const S = quiet(tN), w = S.layout.wye, onMenu = () => [E, W].map(d => trafficMenu(S, d).some(m => m.dest === w.stub));
+  assert.deepEqual(onMenu(), [true, true]);
+  S.queue[1].push({ id: 90, name: 'X 91', type: 'X', dir: W, entry: 1, exit: 0, dest: w.stub, terminus: true, len: trainLength('X'), spawnTime: S.time, sched: S.time });
+  assert.deepEqual(onMenu(), [false, false], 'drawn while a terminus train is queued');
+  S.queue[1].length = 0;
+  S.reserved.set(w.stub, 7);
+  assert.deepEqual(onMenu(), [false, false], 'drawn while one is bound for the stub');
+  S.reserved.clear();
+  assert.deepEqual(onMenu(), [true, true]);
+}
+
+// The mission (spec "The terminus mission"), in AUTO on a quiet sim: a P for the stub, entering from either end, runs to
+// the pull-ahead signal past the wye, reverses there, backs down the near leg into the stub at no more than 15 mph with
+// its loco trailing, dwells 10 min, departs forward (loco leading), climbs the other leg and leaves by the portal it came
+// in by. No point of it ever jumps (at a reversal its tail is where its head was), its path always chains from
+// pathStart, and the board reads reversing, then backing in.
+for (const [seed, d] of [[tN, E], [tS, E], [tN, W], [tS, W]]) {
+  const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w, entry = portalOf(S, d), stub = G.tracks[w.stub].name;
+  S.auto = true;
+  S.queue[entry.id].push({ id: S.nextTrainId++, name: 'P 2', type: 'P', dir: d, entry: entry.id, exit: portalOf(S, -d).id, dest: w.stub,
+    terminus: true, len: trainLength('P'), spawnTime: S.time, sched: S.time });
+  let T = null, phase = 'in';
+  const words = new Set(), legs = { back: new Set(), out: new Set() }, said = s => S.log.some(e => e.text.startsWith(`P 2 ${s}`));
+  for (let i = 0; i < 3600 && !S.completed.some(c => c.name === 'P 2'); i++) {
+    const was = T && { dir: T.dir, head: pointAt(S, T, T.headDist), tail: pointAt(S, T, T.headDist - T.len) };
+    step(S);
+    T ??= [...S.trains.values()].find(t => t.name === 'P 2') ?? null;
+    if (!T || !S.trains.has(T.id)) continue;
+    let n = T.pathStart;
+    for (const e of T.path) { assert.ok(G.edges[e].a === n || G.edges[e].b === n, `${seed} ${d}: the path is not chained`); n = farOf(G, e, n); }
+    assert.ok(phase === 'in' || T.headDist - T.len >= T.pathOff - 1e-9, `${seed} ${d}: the tail is off the path`); // (in: entering)
+    if (was && was.dir !== T.dir) {
+      near(pointAt(S, T, T.headDist - T.len), was.head, `${seed} ${d}: the reversal moved the tail`);
+      near(pointAt(S, T, T.headDist), was.tail, `${seed} ${d}: the reversal moved the head`);
+    }
+    if (phase === 'in' && said('reversing at')) phase = 'back';
+    if (phase === 'back' && said('arrived at')) phase = 'dwell';
+    if (phase === 'dwell' && said('departed')) phase = 'out';
+    if (phase === 'in') assert.ok(!T.locoAtTail && T.dir === d);
+    if (phase === 'back') assert.ok(T.speed <= PUSH_MPH * MPH + 1e-9 && T.locoAtTail && T.pushing && T.dir === -d, `${seed} ${d}: pushing at ${T.speed / MPH} mph`);
+    if (phase === 'out') assert.ok(!T.locoAtTail && !T.pushing && T.dir === -d);
+    if (legs[phase]) T.path.filter(e => G.edges[e].cls === 'wye').forEach(e => legs[phase].add(e));
+    words.add(trainStatus(T, S));
+  }
+  const at = [`entered from ${entry.name}`, `reversing at ${signalLabel(S, k.pSig(d))}`, `backing into ${stub}`, `arrived at ${stub}`,
+    `departed ${stub}`, `out via ${entry.name} (`].map(s => S.log.findIndex(e => e.text.startsWith(`P 2 ${s}`)));
+  assert.ok(at.every((v, i) => v >= 0 && (!i || v > at[i - 1])), `${seed} ${d}: the log ${at}\n${S.log.map(e => e.text).join('\n')}`);
+  const c = S.completed.find(x => x.name === 'P 2'), ev = kind => c.events.find(e => e.kind === kind).t;
+  assert.deepEqual([c.from, c.to], [entry.name, entry.name]);
+  assert.equal(ev('departed') - ev('arrived'), DWELL.terminus);
+  assert.ok(c.distance > 2 * Math.abs(G.nodes[w.P[d]].x - G.nodes[entry.node].x), `${seed} ${d}: distance ${c.distance}`);
+  // backed in by the leg at the far foot, out by the other
+  assert.deepEqual([[...legs.back], [...legs.out]], d === E ? [[k.leg.F2], [k.leg.F1]] : [[k.leg.F1], [k.leg.F2]], `${seed} ${d}: legs`);
+  assert.ok(words.has('reversing') && words.has('backing in'), `${seed} ${d}: status words ${[...words]}`);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')) && S.routes.size === 0 && S.reserved.size === 0);
+}
+
+// Nothing follows a terminus train into the gap on the feet main until it has reversed: while it stands at its
+// pull-ahead signal unreversed, a route from the gap's boundary onto the feet main is refused for another train
+// ('terminus') though it runs the same way, and the other way is opposed. Once it has reversed, the old direction is
+// opposed and the new one sets (on its home main).
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w, yF = G.mainRow[w.feetMain];
+  const T = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.run[E]], w.F2);
+  const node = x => G.nodes.find(n => n.x === x && n.y === yF).id, bE = sigAt(S, node(w.x0), E), bW = sigAt(S, node(w.x1), W);
+  const inE = S.routesFrom.get(bE).find(c => c.exitNode === w.P[-1]).exitNode, inW = S.routesFrom.get(bW).find(c => c.exitNode === w.P[1]).exitNode;
+  assert.equal(setRoute(S, bE, inE, { trainId: 50 }).reason, 'terminus', `${seed}: followed the terminus train in`);
+  assert.equal(setRoute(S, bE, inE, { human: true }).reason, 'terminus', `${seed}: a human sent a train in behind it`);
+  assert.equal(setRoute(S, bW, inW, { trainId: 51 }).reason, 'opposing');
+  reverse(S, T, W);
+  T.reversed1 = true;
+  assert.equal(setRoute(S, bE, inE, { trainId: 50 }).reason, 'opposing');
+  // (onto the feet main westbound: its home on a north terminus; on a south one wrong main, and the terminus train is
+  // on its visit, the one wrong-main move)
+  const r = setRoute(S, bW, inW, { trainId: 51 });
+  assert.deepEqual([r.ok, r.reason], w.feetMain === W ? [true, undefined] : [false, 'wrong main'], `${seed}: the new direction`);
+}
+// ... and it reverses only once no other train is on the feet main's junction edges (one still clearing a pair, here)
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w;
+  const T = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.run[E]], w.F2);
+  const pair = k.feet.find(e => G.edges[e].section !== G.edges[k.run[E]].section && G.nodes[G.edges[e].a].x > G.nodes[w.P[1]].x);
+  const O = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 3' }), [pair], G.nodes[G.edges[pair].a].x < G.nodes[G.edges[pair].b].x ? G.edges[pair].a : G.edges[pair].b);
+  S.auto = true;
+  for (let i = 0; i < 5; i++) step(S);
+  assert.deepEqual([T.reversed1, T.dir, T.state], [false, E, 'stopped'], `${seed}: reversed with a train on the feet main`);
+  S.edgeState[pair].occ.delete(O.id);
+  S.trains.delete(O.id);
+  step(S);
+  assert.deepEqual([T.reversed1, T.dir, T.locoAtTail], [true, W, true], `${seed}: did not reverse`);
+  assert.ok(S.log.some(e => e.text === `P 2 reversing at ${signalLabel(S, k.pSig(E))}`));
+}
+
+// The feet main turns round for a terminus train (like the branch for a departure): one that has stood STARVE (10 min)
+// at the stub signal waiting for its way out against the traffic in the gap holds every other train's route into the
+// gap of the other direction, so the gap drains and it gets out; under busy traffic the trains of the other direction
+// follow each other in and it waited 25 min on s14. One that has not stood STARVE holds nothing.
+for (const starved of [true, false]) {
+  const S = quiet(tS), G = S.layout, k = termOf(S), w = k.w, yF = G.mainRow[w.feetMain];
+  const node = x => G.nodes.find(n => n.x === x && n.y === yF).id;
+  // D: in from the west, dwelt, departed: in the stub at its signal, bound back west
+  const D = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.stub[1]], k.buffer);
+  Object.assign(D, { dir: W, reversed1: true, dest: null, exit: D.entry, goal: { exit: D.entry }, lastMoveTime: S.time - (starved ? 600 : 0) });
+  // I: eastbound at the far P, in the gap's section (it gets its way on out, but is in there all the step)
+  const I = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 3' }), [k.run[E]], w.F2);
+  // A: eastbound at b, its way on into the gap behind I
+  const bE = sigAt(S, node(w.x0), E), A = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 5' }), [G.signals[bE].from], farOf(G, G.signals[bE].from, node(w.x0)));
+  S.auto = true;
+  step(S);
+  assert.equal(D.routes.length, 0, 'D routed against I');
+  assert.equal(A.routes.length > 0, !starved, starved ? 'routed into the gap against the starved departure' : 'held without a starved departure');
+}
+
+// A terminus train's visit to the gap (from its first route in until it is out again) is the one wrong-main move: it runs
+// against one main's home direction in there, approaching or leaving, and holds a main against the others while it is
+// in. Its own running there is exempt from the count, but no other train is sent wrong main meanwhile, and it leaves the
+// stub against the feet main only while no train is wrong main (it may begin its visit with one out: waiting at b it
+// would hold its own home main). Other trains have no exemption in a terminus's gap (its P columns are stands inside it). On s83 a train sent wrong main behind a departure met one of the other direction head on, both waiting on
+// the main the departure held, for good; on s200 a through train wrong main in the gap stood at P.
+{
+  const S = quiet(tS), G = S.layout, k = termOf(S), w = k.w;
+  const sig = G.signals.find(g => g.dir !== 0 && G.nodes[g.node].x < w.x0 - 8 && S.routesFrom.get(g.id).some(c => c.wrongMain)).id;
+  const wm = S.routesFrom.get(sig).find(c => c.wrongMain).exitNode;
+  // D: in from the west, departed and out of the stub, running west on the feet main (Main 2) toward P
+  const D = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.run[W]], w.F1);
+  Object.assign(D, { dir: W, reversed1: true, dest: null, exit: D.entry, goal: { exit: D.entry } });
+  assert.equal(isWrongMain(S, D), false, 'its running inside the gap is exempt');
+  assert.equal(setRoute(S, sig, wm, { trainId: 50 }).reason, 'wrong main', 'sent wrong main during a terminus train\'s visit');
+  D.terminus = false; // a through train there is wrong main like anywhere
+  assert.equal(isWrongMain(S, D), true, 'a through train exempt in a terminus\'s gap');
+  assert.equal(setRoute(S, sig, wm, { trainId: 50 }).reason, 'wrong main');
+  S.edgeState[k.run[W]].occ.delete(D.id);
+  D.path = [];
+  const r = setRoute(S, sig, wm, { trainId: 50 });
+  assert.equal(r.ok, true, r.reason);
+  cancelRoute(S, r.route.id);
+  // a train wrong main away from the gap: D may not leave the stub against the feet main; a terminus train at b may begin
+  // its visit (and then D may not leave either)
+  stand(S, D, [k.stub[1]], k.buffer);
+  D.terminus = true;
+  const out = S.routesFrom.get(w.stubSignal).find(c => c.dir === W).exitNode, y1 = G.mainRow[W], yF = G.mainRow[w.feetMain];
+  const far = G.edges.find(e => e.main === W && !e.junction && G.nodes[e.a].y === y1 && Math.max(G.nodes[e.a].x, G.nodes[e.b].x) < w.x0 - 8).id;
+  const O = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 3' }), [far], G.nodes[G.edges[far].a].x < G.nodes[G.edges[far].b].x ? G.edges[far].a : G.edges[far].b);
+  assert.equal(isWrongMain(S, O), true);
+  assert.equal(setRoute(S, w.stubSignal, out, { trainId: D.id }).reason, 'wrong main', 'left the stub against the feet main with a train wrong main');
+  const bE = sigAt(S, G.nodes.find(n => n.x === w.x0 && n.y === yF).id, E), inE = S.routesFrom.get(bE).find(c => c.exitNode === w.P[-1]);
+  const T = stand(S, spawnTrain(S, { type: 'X', dir: E, dest: w.stub, name: 'X 4' }), [G.signals[bE].from], farOf(G, G.signals[bE].from, G.signals[bE].node));
+  assert.equal(inE.wrongMain, false);
+  const rT = setRoute(S, bE, inE.exitNode, { trainId: T.id }); // (waiting at b it would hold its own home main)
+  assert.equal(rT.ok, true, `a terminus train kept from its visit by a train wrong main: ${rT.reason}`);
+  assert.equal(setRoute(S, w.stubSignal, out, { trainId: D.id }).ok, false);
+  cancelRoute(S, rT.route.id);
+  S.edgeState[far].occ.delete(O.id);
+  S.trains.delete(O.id);
+  assert.equal(setRoute(S, w.stubSignal, out, { trainId: D.id }).ok, true);
+}
+
+// The liveness valve (like a branch-bound train's): a terminus train that has stood 20 min (2 x STARVE) at the gap's
+// boundary with its way in refused gives the stub up and runs through for the far end. On s263 one stood at b on its
+// home main waiting to cross to the feet main behind a train whose way on was held, head on, by a wrong-main train that
+// had to get home on the main the terminus train stood on: for good.
+for (const stood of [20, 19]) {
+  const S = quiet(tN), G = S.layout, k = termOf(S), w = k.w, y2 = G.mainRow[-w.feetMain];
+  const node = (x, y) => G.nodes.find(n => n.x === x && n.y === y).id, bE = sigAt(S, node(w.x0, y2), E);
+  const T = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [G.signals[bE].from], farOf(G, G.signals[bE].from, node(w.x0, y2)));
+  S.reserved.set(w.stub, T.id);
+  T.lastMoveTime = S.time - stood * 60;
+  const across = S.routesFrom.get(bE).find(c => c.exitNode === w.P[-1]);
+  S.edgeState[across.edges.at(-1)].occ.add(999); // its way across to the feet main, held
+  S.auto = true;
+  step(S);
+  const missed = S.log.some(e => e.text === `P 2 missed ${G.tracks[w.stub].name}`);
+  assert.equal(missed, stood >= 20, `${stood} min: missed ${missed}`);
+  if (missed) {
+    assert.deepEqual([T.terminus, T.dest, T.goal, S.reserved.size], [false, null, { exit: portalOf(S, W).id }, 0]);
+    assert.ok(T.routes.length > 0, 'not routed on through the gap');
+  } else assert.deepEqual([T.terminus, T.routes.length], [true, 0]);
+}
+
+// a human who routes a terminus train on from its pull-ahead signal before it reverses sends it past the wye: it gives
+// up the stub and runs for the far end as a through train
+{
+  const S = quiet(tN), G = S.layout, k = termOf(S), w = k.w;
+  const T = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.run[E]], w.F2);
+  S.reserved.set(w.stub, T.id);
+  assert.equal(setRoute(S, k.pSig(E), straightOf(S, k.pSig(E)).exitNode, { human: true }).ok, true);
+  S.auto = true;
+  for (let i = 0; i < 3600 && S.trains.has(T.id); i++) step(S);
+  assert.ok(S.log.some(e => e.text === `P 2 missed ${G.tracks[w.stub].name}`));
+  assert.deepEqual([S.completed.find(c => c.name === 'P 2')?.to, T.terminus, T.reversed1, S.reserved.size], [portalOf(S, W).name, false, false, 0]);
+}
+}
+console.log('terminus ok');
