@@ -120,8 +120,8 @@ at the stem's top (`y = 0`) or bottom (`y = rows − 1`).
 - **Reachability.** `createSim` computes, on the empty layout with `findPath`, which tracks each
   `(portal, dir)` can reach and which exits each `(track, dir)` and `(portal, dir)` can reach.
   `trafficMenu(sim, dir, portal)` drops destinations the entry cannot reach (a branch arrival bound east
-  never draws a platform west of the wye). The exit coin (`sim.rng`, one draw per entry, always drawn so
-  the stream is stable) sends the train to the branch only when the branch is reachable from its
+  never draws a platform west of the wye). The exit coin and the branch arrival's direction coin come from `sim.branchRng = makeRng(seed +
+  ':branch')` (one draw per entry, always drawn, so traffic on layouts without a wye is unchanged) sends the train to the branch only when the branch is reachable from its
   destination for its dir (or from its entry when it has none); otherwise it keeps the far end. So no
   train is ever born unable to finish. Scheduled time (`newEntry`) keeps the home-main formula.
 
