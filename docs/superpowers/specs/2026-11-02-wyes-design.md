@@ -159,6 +159,11 @@ gap, so a seed's presence, side and gap are the same as before termini existed.)
   signal, the stub signal): a train is either outside the junction or committed through it with its whole
   route set. That is what keeps the junction deadlock-free (a train can never stand inside it waiting for
   the branch while a branch train waits for the main). Signals never sit on a switch node.
+  (Amended 2026-11-02, Task 8 review: in a terminus the `P` columns stand between the pairs, so for a terminus
+  "inside the junction" means between the two `P` columns. A through train runs `b → P`, then `P → P′`, then
+  `P′ → b′`. The one-route crossing that keeps the terminus safe is `P → P′`, across both feet and past the two
+  shunt signals, which end no route. The shunt signals stand on the feet, switch nodes, as the one exception. Their
+  own routes are the near leg into the stub and the main onward.)
 - `P` marks the **pull-ahead columns** of a terminus: signals in both main directions on both mains, as
   at module boundaries. The 7-cell **run** between a foot and its `P` is a single edge, so a terminus
   train stopped at `P` (`FOUL` short) has its tail `7 − 0.3 − 5.6 = 1.1` cells clear of the foot and its

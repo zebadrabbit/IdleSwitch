@@ -288,24 +288,25 @@ export function createRenderer(canvas) {
       ctx.globalAlpha = 1;
     }
 
-    // Headlights: a glow 2.5 cells long ahead of each moving train's leading end (the path head: the loco's front, or the
-    // leading car's while it pushes), along travel; fades with its motion, and in from nothing when a train enters (as
-    // does its tail marker).
-    // A train's headlight, tail marker and tag are keyed by which end its loco is at: a reversal (standing) swaps the
-    // ends, so the old ones fade out where they were (was) as the new ones fade in, rather than jump. ends(t, kind, at,
-    // draw, to, tau): the current one eased to `to` (in from nothing) and drawn at `at`, then the old one while it fades.
     const lagOf = t => (1 - (ui.alpha ?? 1)) * (t.adv ?? 0); // interpolate between sim steps
     const drawn = [...sim.trains.values()].map(t => [t, trainBlocks(sim, t, lagOf(t))]).filter(([, bl]) => bl.length);
+    // A train's headlight, tail marker and tag are keyed by which end its loco is at: a reversal (standing) swaps the
+    // ends, so the old ones fade out where they were (was, in grid cells: they stay with the train however the camera
+    // moves) as the new ones fade in, rather than jump. ends(t, kind, at, draw, to, tau): the current one eased to `to`
+    // (in from nothing) and drawn from `at`, then the old one while it fades.
     const ends = (t, kind, at, draw, to, tau) => {
       const k = `${kind}:${t.id}:${t.locoAtTail ? 1 : 0}`, o = `${kind}:${t.id}:${t.locoAtTail ? 0 : 1}`;
       was.set(k, at);
       draw(at, eased(k, [to], tau, [0])[0]);
       if (fade.get(o)?.[0] > 0.005) draw(was.get(o), eased(o, [0], tau)[0]);
     };
+    // Headlights: a glow 2.5 cells long ahead of each moving train's leading end (the path head: the loco's front, or the
+    // leading car's while it pushes), along travel; fades with its motion, and in from nothing when a train enters (as
+    // does its tail marker).
     for (const [t, [h]] of drawn) {
-      const fx = X(h.x1), fy = Y(h.y1), ang = Math.atan2(fy - Y(h.y2), fx - X(h.x2)), d = 1.25 * cellPx;
-      ends(t, 'hl', [fx + d * Math.cos(ang), fy + d * Math.sin(ang), ang], ([x, y, an], a) => {
-        if (a > 0.005 && d > 0) glow(x, y, d, 0.6 * cellPx, an, rgb('#fff1c4'), a);
+      ends(t, 'hl', h, (b, a) => {
+        const fx = X(b.x1), fy = Y(b.y1), ang = Math.atan2(fy - Y(b.y2), fx - X(b.x2)), d = 1.25 * cellPx;
+        if (a > 0.005 && d > 0) glow(fx + d * Math.cos(ang), fy + d * Math.sin(ang), d, 0.6 * cellPx, ang, rgb('#fff1c4'), a);
       }, t.speed > 0 ? lerp(0.22, 0.55, night) : 0, 200);
     }
 
@@ -393,16 +394,16 @@ export function createRenderer(canvas) {
         line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
         ctx.globalAlpha = 1;
       }
-      ends(t, 'eot', [X(bl.at(-1).x2), Y(bl.at(-1).y2)], ([x, y], a) => {
+      ends(t, 'eot', bl.at(-1), (b, a) => {
         ctx.globalAlpha = a;
-        disc(x, y, Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
+        disc(X(b.x2), Y(b.y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
       }, ui.blink ? 1 : 0, 60);
       ctx.globalAlpha = 1;
       // The tag rides the loco (the head block, but the last while it pushes), on the right of that block's travel; it
       // fades in when the train enters.
       const h = bl.find(b => b.kind === 'loco') ?? bl[0], dx = h.x1 - h.x2, dy = h.y1 - h.y2, l = Math.hypot(dx, dy);
-      ends(t, 'tag', { t, col, sel, x: Math.round((X(h.x1) + X(h.x2)) / 2), y: Math.round((Y(h.y1) + Y(h.y2)) / 2), // whole px: crisp text, no shimmer
-        u: l ? { x: dx / l, y: dy / l } : { x: t.dir, y: 0 } }, (g, a) => tags.push({ ...g, a }), 1, 120);
+      ends(t, 'tag', { t, col, sel, h, u: l ? { x: dx / l, y: dy / l } : { x: t.dir, y: 0 } }, ({ h: b, ...g }, a) =>
+        tags.push({ ...g, a, x: Math.round((X(b.x1) + X(b.x2)) / 2), y: Math.round((Y(b.y1) + Y(b.y2)) / 2) }), 1, 120); // whole px: crisp text
     }
     ctx.font = `11px ${MONO}`;
     const gap = Math.max(10, tw / 2 + 5);

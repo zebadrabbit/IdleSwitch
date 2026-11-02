@@ -268,6 +268,14 @@ for (const seed of ['s8', 's14']) {
     assert.ok(both.length === 2 && nw && old && old.x === t0.x && old.alpha < 1 && old.alpha > 0.8 && nw.alpha > 0 && nw.alpha < 0.2,
       `${seed}: the tags crossfade at the reversal ${JSON.stringify(both)}`);
     assert.ok(Math.abs(nw.x - mid(trainBlocks(S, T)[0])) <= 0.5, `${seed}: the new tag on the loco, now leading`);
+    // While they fade both tags stay with the train, not the screen: the camera moves (a follow's target swings at a
+    // reversal) and both move with the world.
+    const cam0 = { ...R3.camera }, z = cam0.zoom;
+    Object.assign(R3.camera, { x: cam0.x + 30, y: cam0.y - 20 });
+    const [o2, n2] = tagsOf(draw()).sort((p, q) => q.alpha - p.alpha); // the old one is still the brighter
+    assert.ok([[o2, old], [n2, nw]].every(([m, r]) => Math.abs(m.x - (r.x - 30 * z)) <= 1 && Math.abs(m.y - (r.y + 20 * z)) <= 1)
+      && o2.alpha < old.alpha && n2.alpha > nw.alpha, `${seed}: the fading tags move with the world ${JSON.stringify([o2, old, n2, nw])}`);
+    Object.assign(R3.camera, cam0);
     for (let i = 0; i < 40; i++) draw();
     const after = tagsOf(draw());
     assert.ok(after.length === 1 && after[0].y < y0 && after[0].alpha > 0.98, `${seed}: one tag, above westbound travel`);
