@@ -28,7 +28,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     switchState: new Map(layout.switches.map(s => [s.node, { lie: 'normal' }])),
     signalAt: new Map(layout.signals.map(s => [`${s.node}:${s.from}`, s.id])), // the signal at node facing edge from
     switchAt: new Map(layout.switches.map(s => [s.node, s])), // node -> {node, trunk, normal, reverse}
-    routesFrom: new Map(), sectionEdges: new Map(), // section -> its main edge ids
+    routesFrom: new Map(), sectionEdges: new Map(), // section -> its edge ids (the mains', and a junction's branch section)
     exits: portals.map(p => ({ 1: ends(p, 1), '-1': ends(p, -1) })), // portal id -> dir -> exitNodesOf
     routes: new Map(), nextRouteId: 1,
     trains: new Map(), nextTrainId: 1, reserved: new Map(),
@@ -134,8 +134,8 @@ export function routeFrom(sim, signalId) {
 }
 
 // Wrong main: its path, or a route set for it that it has yet to take (the operator sets several before any train
-// moves), runs on a main edge of the other direction's home. Edges of a junction gap don't count (spec "Junction
-// exemption"; no layout has one yet).
+// moves), runs on a main edge of the other direction's home. Edges of a junction gap (tagged junction) don't count
+// (spec "Junction exemption").
 export const isWrongMain = (sim, train) => [train.path, ...[...sim.routes.values()]
   .filter(r => r.trainId === train.id && !train.routes.includes(r.id)).map(r => r.cand.edges)]
   .some(es => es.some(e => sim.layout.edges[e].main === -train.dir && !sim.layout.edges[e].junction));
@@ -800,9 +800,9 @@ export const edgeSpeed = (sim, e) => (sim.slowOrder && e.section === sim.slowOrd
 export function slowOrderLabel({ slowOrder: o }) { return `Main ${o.main} ${o.x0}–${o.x1}`; }
 const clock = t => [Math.floor(t / 3600) % 24, Math.floor(t / 60) % 60].map(v => String(v).padStart(2, '0')).join(':'); // HH:MM
 
-// One at a time, on a main section at least minLen cells long; exponential gaps like spawns. Off (or no section long
-// enough): none starts and the next is kept ahead without a draw, so turning them back on doesn't fire one at once; an
-// active one runs out.
+// One at a time, on a main section at least minLen cells long (never a junction's branch section); exponential gaps
+// like spawns. Off (or no section long enough): none starts and the next is kept ahead without a draw, so turning them
+// back on doesn't fire one at once; an active one runs out.
 function slowOrders(sim) {
   const next = () => sim.time - SLOW_ORDER.gap * Math.log(1 - sim.extras());
   if (sim.slowOrder && sim.time >= sim.slowOrder.until) {
@@ -812,7 +812,8 @@ function slowOrders(sim) {
   }
   if (sim.slowOrder || sim.time < sim.nextSlowOrder) return;
   const { edges, nodes } = sim.layout;
-  const long = [...sim.sectionEdges].filter(([, ids]) => ids.reduce((s, e) => s + edges[e].len, 0) >= SLOW_ORDER.minLen);
+  const long = [...sim.sectionEdges].filter(([, ids]) => ids.every(e => edges[e].main != null)
+    && ids.reduce((s, e) => s + edges[e].len, 0) >= SLOW_ORDER.minLen);
   if (!sim.slowOrders || !long.length) { sim.nextSlowOrder += SLOW_ORDER.gap; return; }
   const [section, ids] = pick(sim.extras, long), es = ids.map(e => edges[e]), xs = es.flatMap(e => [nodes[e.a].x, nodes[e.b].x]);
   sim.slowOrder = { section, until: sim.time + randInt(sim.extras, SLOW_ORDER.min, SLOW_ORDER.max),

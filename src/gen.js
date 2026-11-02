@@ -209,7 +209,7 @@ export function generate(seed) {
     wyeOut = { kind: 'junction', side: wye.side, gap: wye.gap, F1, F2, A: stem[0], stemSignal, portal: 2,
       feetMain: north ? -1 : 1, x0: wb, x1: wb + 20 };
     // The junction gap: every main edge strictly between b and b', both mains.
-    const inside = n => nodes[n].x > wb && nodes[n].x < wb + 20;
+    const inside = id => nodes[id].x > wb && nodes[id].x < wb + 20;
     for (const e of edges) if (e.cls === 'main' && inside(e.a) && inside(e.b)) e.junction = true;
   }
 

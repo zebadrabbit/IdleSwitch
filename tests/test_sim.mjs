@@ -127,13 +127,13 @@ for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]
 // every signal has >= 1 candidate; candidates end at a node that has a signal of that dir or is an exit node
 for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]) {
   const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
-  // A junction wye's layout loads (above), but its routes are Task 4's: dir 0 signals, routes into the stem, and two
-  // through routes to one exit (crossing at either pair of the junction gap).
-  if (G.wye) continue;
   const swAt = new Map(G.switches.map(s => [s.node, s]));
   for (const sig of G.signals) {
-    const cs = S.routesFrom.get(sig.id);
-    assert.ok(cs.length >= 1, `${seed}: signal ${sig.id} has no candidates`);
+    assert.ok(S.routesFrom.get(sig.id).length >= 1, `${seed}: signal ${sig.id} has no candidates`);
+    // A junction wye's routes are Task 4's: its dir 0 signals (the stem's and the branch portal's), and every route
+    // into or through its gap (into the stem, or two through routes to one exit, crossing at either pair).
+    if (sig.dir === 0) continue;
+    const cs = S.routesFrom.get(sig.id).filter(c => !c.edges.some(e => G.edges[e].junction || ['wye', 'branch'].includes(G.edges[e].cls)));
     // over and back inside one crossover pair is dropped: it ends where the straight route does
     assert.equal(new Set(cs.map(c => c.exitNode)).size, cs.length, `${seed}: signal ${sig.id} has two candidates to one exit`);
     assert.ok(cs.every(c => c.edges.filter(e => G.edges[e].cls === 'crossover').length < 2), `${seed}: over and back in one pair`);
@@ -988,6 +988,19 @@ assert.ok(nightLevel(T0 + 0.42 * P, P) > 0 && nightLevel(T0 + 0.42 * P, P) < 0.5
   assert.ok(names(S1).length >= 20);
   assert.deepEqual(names(S1), names(S2), 'traffic unchanged by slow orders');
 }
+// ... and never on a junction's branch section (legs and stem: a section but no main), though it is minLen long; the
+// label names the main the order is on. s1: south wye, s3: north.
+for (const seed of ['s1', 's3']) {
+  const G = generate(seed), S = createSim(G, seed), branch = G.edges.find(e => e.cls === 'branch').section, seen = [];
+  assert.ok(S.sectionEdges.get(branch).reduce((s, e) => s + G.edges[e].len, 0) >= SLOW_ORDER.minLen, `${seed}: branch section minLen long`);
+  for (let i = 0; i < 4 * SLOW_ORDER.gap; i++) { step(S); if (S.slowOrder && S.slowOrder !== seen.at(-1)) seen.push(S.slowOrder); }
+  assert.ok(seen.length, `${seed}: a slow order within 4 mean gaps`);
+  for (const o of seen) {
+    const es = S.sectionEdges.get(o.section).map(e => G.edges[e]);
+    assert.ok(es.every(e => e.main != null), `${seed}: slow order on section ${o.section}, not a main section`);
+    assert.equal(o.main, es[0].main === -1 ? 1 : 2, `${seed}: slow order labelled Main ${o.main}`);
+  }
+}
 
 // A slow order set under a train at speed brakes it at its own rate, never in one step, down to 20 mph on the section
 {
@@ -1058,7 +1071,7 @@ for (const seed of ['lebanon', 's7', 's42', 's47']) {
       dirs.delete(undefined);
       assert.ok(dirs.size <= 1, `${seed}: opposing trains in section ${sec}`);
     }
-    assert.ok(S.slowOrder === null || S.sectionEdges.has(S.slowOrder.section), `${seed}: slow order off the mains`);
+    assert.ok(S.slowOrder === null || S.sectionEdges.get(S.slowOrder.section).every(e => G.edges[e].main != null), `${seed}: slow order off the mains`);
     const wrong = wrongMainTrains(S).length;
     assert.ok(wrong <= 1, `${seed}: two wrong-main trains`);
     if (wrong) { wrongTicks++; sawWrongMain = true; }
