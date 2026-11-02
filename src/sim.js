@@ -136,6 +136,13 @@ function candidate(sim, sig, es, nodes, dir) {
     // stands inside the gap, and on s200 a through train exempt there stood at P for good (see isWrongMain).
     wrongMain: lastMain?.main === -dir && !(lastMain.junction && wye?.kind === 'junction'),
     wrongMainOut: lastMain?.main === -dir && !lastMain.junction, // past the gap (a terminus train's own count)
+    // it runs wrong main inside a junction gap without running out by the branch: it puts its train wrong main there,
+    // the one wrong-main move (setRoute; isWrongMain counts it). Rule: only a move out by the branch is exempt. A branch
+    // arrival crossing to its home main is routed to b or b', where it can stand waiting for the main with its tail
+    // still on the other main's junction edges (the pair is 1-4 cells behind the signal), against that main's through
+    // traffic: on s687 and s364 that tail closed a cycle with the train already wrong main elsewhere, for good.
+    gapWrong: wye?.kind === 'junction' && exitNode !== sim.layout.portals[wye.portal].node
+      && es.some(e => edges[e].junction && edges[e].main === -dir),
     slow: SLOW_CLS.has(edges[es.at(-1)].cls) || (into !== null && !!tracks[into].stub), // into the stub: backing in
     len: es.reduce((sum, e) => sum + edges[e].len, 0),
     // it runs from outside a terminus's gap (b or b') onto the feet main inside it (setRoute's 'terminus' rule)
@@ -177,16 +184,24 @@ export function routeFrom(sim, signalId) {
 }
 
 // Wrong main: its path, or a route set for it that it has yet to take (the operator sets several before any train
-// moves), runs on a main edge of the other direction's home. Edges of a junction gap (tagged junction) don't count
-// (spec "Junction exemption"); in a terminus's gap only for a terminus train, whose visit there counts as the one
-// wrong-main move instead (setRoute's onVisit rule). Rule: other trains have no exemption in a terminus's gap. Its P
-// columns are stands inside the gap, so a route there need not run through and out as at a junction; on s200 a through
-// train exempt in the gap stood at P, wrong main, holding the main a wrong-main train elsewhere had to get home on, for
-// good.
+// moves), runs on a main edge of the other direction's home. Edges of a junction gap (tagged junction) don't count for
+// a train running out by the branch: its path, or a route set for it, ends at the branch portal (spec "Junction
+// exemption"). Its route runs from outside the gap to the portal, so it never stands in the gap. Rule: any other
+// running there counts (candidate's gapWrong): a train routed across the gap to b or b' can stand at the signal with
+// its tail on the other main's junction edges. Keyed on the route, not train.exit, so a human route up the stem is
+// exempt whatever the train's exit, and one past the wye counts for a train bound for the branch. In a terminus's gap
+// only a terminus train is exempt, whose visit there counts as the one wrong-main move instead (setRoute's onVisit
+// rule). Rule: other trains have no exemption in a terminus's gap. Its P columns are stands inside the gap, so a route
+// there need not run through and out as at a junction; on s200 a through train exempt in the gap stood at P, wrong
+// main, holding the main a wrong-main train elsewhere had to get home on, for good.
 export const isWrongMain = (sim, train) => {
-  const exempt = sim.layout.wye?.kind === 'junction' || train.terminus;
-  return [train.path, ...[...sim.routes.values()].filter(r => r.trainId === train.id && !train.routes.includes(r.id)).map(r => r.cand.edges)]
-    .some(es => es.some(e => sim.layout.edges[e].main === -train.dir && !(exempt && sim.layout.edges[e].junction)));
+  const { wye, edges, portals } = sim.layout;
+  const pending = [...sim.routes.values()].filter(r => r.trainId === train.id && !train.routes.includes(r.id)).map(r => r.cand);
+  const out = wye?.kind === 'junction' && [train.path.length ? headNode(sim, train) : null, ...pending.map(c => c.exitNode)]
+    .includes(portals[wye.portal].node);
+  const exempt = out || train.terminus;
+  return [train.path, ...pending.map(c => c.edges)]
+    .some(es => es.some(e => edges[e].main === -train.dir && !(exempt && edges[e].junction)));
 };
 export const wrongMainTrains = sim => [...sim.trains.values()].filter(t => isWrongMain(sim, t));
 
@@ -259,8 +274,9 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
   if (cand.intoGap && [...sim.trains.values()].some(t => t !== forTrain && t.terminus && !t.reversed1 && holdsAny(sim, t, sim.feet)))
     return fail('terminus');
   // One wrong-main train at a time; the one at this signal (or the one the route is for) may go on or home. An untaken
-  // human wrong-main route at another signal counts as one: some train will take it.
-  const untaken = r => r.trainId === null && !r.entered && r.cand.wrongMain; // one at this signal returned 'already set'
+  // human wrong-main route at another signal (or one wrong main inside a junction gap: gapWrong) counts as one: some
+  // train will take it.
+  const untaken = r => r.trainId === null && !r.entered && (r.cand.wrongMain || r.cand.gapWrong); // one at this signal returned 'already set'
   // Rule: a terminus train on its visit to the gap (onVisit) is the one wrong-main move: it runs against one main's home
   // direction there, approaching or leaving, and holds a main against the other trains while it is in (entry rule,
   // traffic locking, its tail across a pair on the way out). Its own running in the gap is exempt (its routes count as
@@ -272,7 +288,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
     || [...sim.trains.values()].some(t => t !== forTrain && t.id !== trainId && onVisit(sim, t));
   const terminus = !!forTrain?.terminus, leavesAgainst = terminus && signalId === sim.layout.wye.stubSignal
     && cand.edges.some(e => sim.layout.edges[e].main === -cand.dir);
-  if ((wrongMainFor(forTrain, cand) || leavesAgainst) && wmOut()) return fail('wrong main');
+  if ((wrongMainFor(forTrain, cand) || leavesAgainst || cand.gapWrong) && wmOut()) return fail('wrong main');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
   const route = { id: sim.nextRouteId++, signal: signalId, cand, dir: cand.dir, sense, trainId, human, entered: false,
     setAt: sim.time };
@@ -550,7 +566,7 @@ function adopt(sim, train) {
     train.routes.push(route.id);
     route.trainId = train.id;
     train.events.push({ t: sim.time, kind: 'route', signal: signalLabel(sim, route.signal), ...(route.human ? { human: true } : {}),
-      ...(wrongMainFor(train, route.cand) ? { wrongMain: true } : {}) });
+      ...(wrongMainFor(train, route.cand) || route.cand.gapWrong ? { wrongMain: true } : {}) });
   }
 }
 
@@ -910,9 +926,10 @@ function hold(sim, t, sig, cands) {
 //   probes; or
 // - into a track the train at its signal doesn't fit, or of the other dir than that train (at the branch's dir 0 stem
 //   signal): adopt refuses it, and nothing can pass that train; or
-// - wrong main (onto the other main, or from a signal on it) with no train of its direction at its signal. It counts
-//   as the one wrong-main train and locks the other direction's home main against it. A dir 0 signal is on no main;
-//   a train is at it when its path ends there (signalAheadOf), whichever its dir; or
+// - wrong main (onto the other main, across a junction gap's other main without running out by the branch, or from a
+//   signal on the other main) with no train of its direction at its signal. It counts as the one wrong-main train and
+//   locks the other direction's home main against it. A dir 0 signal is on no main; a train is at it when its path
+//   ends there (signalAheadOf), whichever its dir; or
 // - from a terminus's shunt signal with no train at it: only a reversed terminus train ever comes there, and none can
 //   while the stub is busy. Left, one onto the main held a departure and the trains behind it at b for good, and a
 //   back-in route at the other foot kept the arrival reversing for hours.
@@ -925,7 +942,7 @@ function deadRoute(sim, r) {
   if (at.length && at.every(t => r.dir !== 0 && t.dir !== r.dir)) return true;
   if (sig.kind === 'shunt' && !at.length) return true;
   const onOther = sig.dir !== 0 && nodes[sig.node].y === mainRow[-sig.dir];
-  if ((r.cand.wrongMain || onOther) && !at.length) return true;
+  if ((r.cand.wrongMain || r.cand.gapWrong || onOther) && !at.length) return true;
   if (from === null) return into !== null && at.some(t => !fits(sim, t, into));
   return tracks[from].edges.every(e => sim.edgeState[e].occ.size === 0)
     && [...sim.routes.values()].every(o => edges[o.cand.edges.at(-1)].track !== from)
@@ -1061,7 +1078,7 @@ function operator(sim) {
     // wrong main gave the branch up above (the valve), so this only keeps the rest off the other main.
     if (wm && t.dest === null && t.exit === br?.id) continue;
     if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok)
-      logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${wm ? ' (wrong main)' : ''}`);
+      logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${wm || cand.gapWrong ? ' (wrong main)' : ''}`);
   }
 }
 

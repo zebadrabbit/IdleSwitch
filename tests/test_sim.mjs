@@ -1656,32 +1656,35 @@ for (const seed of [sN, sS]) {
 
 // branch traffic, run by the operator. On each side one dir must cross between the branch and its home main (dX:
 // eastbound off a north wye, westbound off a south one). Its arrival goes stem -> leg -> feet main -> the pair beyond the
-// wye -> home main -> out at b' (b), and while it runs wrong main inside the gap it is exempt; its departure from its
-// portal with exit 2 crosses at the pair before the wye, climbs the near leg and the stem and runs out by the branch.
+// wye -> home main -> out at b' (b); while it runs wrong main inside the gap it is the one wrong-main train (its route
+// ends at b' or b, where it may stand with its tail on those edges; spec "Junction exemption"); its departure from its
+// portal with exit 2 crosses at the pair before the wye, climbs the near leg and the stem and runs out by the branch,
+// exempt.
 for (const seed of [sN, sS]) {
   const S = quiet(seed), G = S.layout, k = wyeOf(S), dX = -k.w.feetMain, branch = k.portal.name;
   const near = portalOf(S, dX).id, far = portalOf(S, -dX).id, legIn = dX === E ? k.legF1 : k.legF2, legOut = dX === E ? k.legF2 : k.legF1;
   const inGap = n => G.nodes[n].x > k.b && G.nodes[n].x < k.b2, side = e => Math.sign((G.nodes[G.edges[e].a].x - G.nodes[k.w.A].x) * dX);
   S.auto = true;
-  const run = q => {
+  const run = (q, counted) => {
     S.queue[q.entry].push(q);
     const seen = new Set();
-    let exempt = 0;
+    let gap = 0;
     for (let i = 0; i < 3600 && !S.completed.some(c => c.name === q.name); i++) {
       step(S);
       const T = S.trains.get(q.id);
       if (!T) continue;
       T.path.forEach(e => seen.add(e));
       if (T.path.some(e => S.edgeState[e].occ.has(T.id) && G.edges[e].junction && G.edges[e].main === -T.dir)) {
-        exempt++;
-        assert.ok(!isWrongMain(S, T) && !wrongMainTrains(S).includes(T), `${seed}: ${T.name} counted wrong main inside the gap`);
+        gap++;
+        assert.ok(isWrongMain(S, T) === counted && wrongMainTrains(S).includes(T) === counted,
+          `${seed}: ${T.name} ${counted ? 'exempt' : 'counted wrong main'} inside the gap`);
       }
     }
     const done = S.completed.find(c => c.name === q.name);
     assert.ok(done, `${seed}: ${q.name} never left`);
-    return { seen: [...seen], exempt, done };
+    return { seen: [...seen], gap, done };
   };
-  const a = run(entryOf(S, 'X', dX, 2, far, 'X 8'));
+  const a = run(entryOf(S, 'X', dX, 2, far, 'X 8'), true);
   assert.ok(S.log.some(e => e.text === `X 8 entered from ${branch}`), `${seed}: no "X 8 entered from ${branch}"`);
   assert.deepEqual([a.done.from, a.done.to], [branch, G.portals[far].name]);
   assert.ok([...k.stem, legOut].every(e => a.seen.includes(e)) && !a.seen.includes(legIn), `${seed}: X 8 not down the far leg`);
@@ -1689,14 +1692,47 @@ for (const seed of [sN, sS]) {
   const bEnd = k.N(dX === E ? k.b2 : k.b, G.mainRow[dX]);
   assert.ok(a.seen.some(e => G.edges[e].main === dX && [G.edges[e].a, G.edges[e].b].includes(bEnd) && inGap(farOf(G, e, bEnd))),
     `${seed}: X 8 never ran out of the gap on its home main`);
-  assert.ok(a.exempt > 0, `${seed}: X 8 never ran wrong main inside the gap`);
-  const d = run(entryOf(S, 'M', dX, near, 2, 'M 10'));
+  assert.ok(a.gap > 0, `${seed}: X 8 never ran wrong main inside the gap`);
+  assert.ok(S.log.some(e => e.text === `AUTO: ${signalLabel(S, k.stemSig)} → X 8 (wrong main)`), `${seed}: X 8's route across the gap not logged wrong main`);
+  const d = run(entryOf(S, 'M', dX, near, 2, 'M 10'), false);
   assert.deepEqual([d.done.from, d.done.to], [G.portals[near].name, branch]);
   assert.ok(S.log.some(e => e.text.startsWith(`M 10 out via ${branch} (`)), `${seed}: no "M 10 out via ${branch}"`);
   assert.ok([legIn, ...k.stem].every(e => d.seen.includes(e)) && !d.seen.includes(legOut), `${seed}: M 10 not up the near leg`);
   assert.ok(d.seen.some(e => G.edges[e].cls === 'crossover' && inGap(G.edges[e].a) && side(e) < 0), `${seed}: M 10 never crossed before the wye`);
-  assert.ok(d.exempt > 0, `${seed}: M 10 never ran wrong main inside the gap`);
+  assert.ok(d.gap > 0, `${seed}: M 10 never ran wrong main inside the gap`);
   assert.ok(allClear(S));
+}
+
+// the junction exemption is for running out by the branch, keyed on the route (spec "Junction exemption"). With M 2
+// wrong main on Main 1 west of the wye (north wye), the eastbound arrival's route from the stem signal across the gap
+// to Main 2 (gapWrong) is refused 'wrong main', for the operator and for a human alike, and locks nothing; a departure
+// from b on Main 2 across to the foot and up the stem is set, and its train, bound for the far end and routed up the
+// stem by hand, is exempt all the way out by the branch.
+{
+  const S = quiet(sN), G = S.layout, k = wyeOf(S);
+  const wm = G.edges.find(e => e.main === W && !e.junction && Math.max(G.nodes[e.a].x, G.nodes[e.b].x) < k.b - 8);
+  const O = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), [wm.id], G.nodes[wm.a].x < G.nodes[wm.b].x ? wm.a : wm.b);
+  assert.deepEqual(wrongMainTrains(S), [O]);
+  const across = S.routesFrom.get(k.stemSig).find(c => c.dir === E && G.nodes[c.exitNode].y === G.mainRow[E]);
+  assert.ok(across.gapWrong && !across.wrongMain, 'the stem signal\'s way to Main 2 crosses the gap on Main 1');
+  const A = stand(S, spawnTrain(S, { type: 'X', dir: E, entry: 2, name: 'X 8' }), S.routesFrom.get(k.portalSig)[0].edges, k.portal.node);
+  assert.equal(setRoute(S, k.stemSig, across.exitNode, { trainId: A.id }).reason, 'wrong main');
+  assert.equal(setRoute(S, k.stemSig, across.exitNode, { human: true }).reason, 'wrong main');
+  assert.ok(allFree(S));
+  A.path.forEach(e => S.edgeState[e].occ.delete(A.id));
+  S.trains.delete(A.id);
+  const bSig = sigAt(S, k.N(k.b, G.mainRow[E]), E), up = S.routesFrom.get(bSig).find(c => c.exitNode === k.portal.node), sg = G.signals[bSig];
+  assert.ok(!up.gapWrong && up.edges.some(e => G.edges[e].junction && G.edges[e].main === W), 'b on Main 2 to the branch crosses to the foot');
+  const D = stand(S, spawnTrain(S, { type: 'M', dir: E, name: 'M 4' }), [sg.from], farOf(G, sg.from, sg.node));
+  const r = setRoute(S, bSig, up.exitNode, { human: true });
+  assert.ok(r.ok, `the departure up the stem: ${r.reason}`);
+  moveTrains(S);
+  assert.ok(D.routes.includes(r.route.id) && D.exit === portalOf(S, W).id, 'M 4 bound for the far end did not take the route');
+  for (let i = 0; i < 900 && S.trains.has(D.id); i++) {
+    assert.ok(!isWrongMain(S, D) && wrongMainTrains(S).length === 1, `${D.name} counted wrong main on its way out by the branch`);
+    moveTrains(S);
+  }
+  assert.equal(S.completed.find(c => c.name === 'M 4')?.to, k.portal.name, 'M 4 not out by the branch');
 }
 
 // a human route can send a train out by another portal than its exit: up the stem it leaves by the branch; past the wye
@@ -1757,16 +1793,13 @@ for (const exit of [1, 2]) {
   else assert.ok(X.routes.every(r => !S.routes.get(r).cand.wrongMain), 'the branch-bound express was sent wrong main');
 }
 
-// the liveness valve on a frozen AUTO wedge (tools/freeze-wedge.mjs: s142 busy at 10:18 under the sim before the valve,
-// layout included, where it held for good): P 411, bound for the branch, has stood 18 min at b' with its way up the
-// stem occupied by P 264, which waits on L 268, opposed by M 425, which waits on Z 419, which waits on P 411. P 411
-// gives the branch up at once and runs for the far end; within the hour no train stands an hour.
-{
-  const fx = JSON.parse(readFileSync(new URL('./fixtures/wedge-s142.json', import.meta.url), 'utf8'));
-  const S = createSim(fx.layout, fx.seed, { density: 'busy', slowOrders: false }), G = S.layout, br = G.portals[2];
+// A frozen AUTO wedge (tools/freeze-wedge.mjs), layout included, in AUTO with the frozen trains only (no spawns, no slow
+// orders); trains frozen before reversing existed get those fields at their defaults.
+function wedgeSim(seed) {
+  const fx = JSON.parse(readFileSync(new URL(`./fixtures/wedge-${seed}.json`, import.meta.url), 'utf8'));
+  const S = createSim(fx.layout, fx.seed, { density: 'busy', slowOrders: false });
   Object.assign(S, { time: fx.time, nextTrainId: fx.nextTrainId, nextRouteId: fx.nextRouteId, auto: true });
-  S.nextSpawn = S.nextSpawn.map(() => Infinity); // the frozen trains only
-  // frozen before reversing existed: those trains' fields at their defaults
+  S.nextSpawn = S.nextSpawn.map(() => Infinity);
   for (const t of fx.trains) S.trains.set(t.id, { run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: t.dir, reversed1: false, ...t, events: [] });
   for (const { exitNode, sense, ...r } of fx.routes) {
     const cand = S.routesFrom.get(r.signal).find(c => c.exitNode === exitNode);
@@ -1776,7 +1809,17 @@ for (const exit of [1, 2]) {
   for (const [e, id] of fx.locks) S.edgeState[e].route = id;
   for (const [n, lie] of fx.lies) S.switchState.get(n).lie = lie;
   for (const [t, id] of fx.reserved) S.reserved.set(t, id);
-  const P = [...S.trains.values()].find(t => t.name === 'P 411');
+  return { S, names: fx.trains.map(t => t.name) };
+}
+const named = (S, name) => [...S.trains.values()].find(t => t.name === name);
+
+// the liveness valve on a frozen AUTO wedge (s142 busy at 10:18 under the sim before the valve, where it held for good):
+// P 411, bound for the branch, has stood 18 min at b' with its way up the stem occupied by P 264, which waits on L 268,
+// opposed by M 425, which waits on Z 419, which waits on P 411. P 411 gives the branch up at once and runs for the far
+// end; within the hour no train stands an hour.
+{
+  const { S } = wedgeSim('s142'), G = S.layout, br = G.portals[2];
+  const P = named(S, 'P 411');
   assert.ok(P.exit === br.id && P.dest === null && S.time - P.lastMoveTime >= 10 * 60 && G.nodes[headNode(S, P)].x === G.wye.x1, 'the frozen wedge');
   step(S);
   assert.ok(S.log.some(e => e.text === `P 411 missed ${br.name}`), 'P 411 kept the branch');
@@ -1786,6 +1829,30 @@ for (const exit of [1, 2]) {
       assert.ok(S.time - T.lastMoveTime < 3600, `${T.name} stood an hour after the valve`);
   }
   assert.equal(S.completed.find(c => c.name === 'P 411')?.to, G.portals[0].name, 'P 411 not out by the far end');
+}
+
+// the junction gridlock on a frozen AUTO wedge (s687 busy at 06:35 under the sim of e578790, where it held for good):
+// 16 s later that operator routed M 237, a branch arrival bound west, from the stem signal across Main 2's junction
+// edges to b (exempt then) while M 144 was wrong main. M 237 stood at b waiting for M 245 with its tail on those edges,
+// against Z 146, which M 144 waited on, which M 245 waited on. Now that route counts as the one wrong-main move
+// (gapWrong): M 237 waits at the stem signal until M 144 is home, then goes; within two hours no train stands an hour
+// and every frozen train leaves.
+{
+  const { S, names } = wedgeSim('s687'), M = named(S, 'M 237'), O = named(S, 'M 144');
+  const G = S.layout, stem = G.wye.stemSignal;
+  assert.ok(signalAheadOf(S, M) === stem && !routeFrom(S, stem) && wrongMainTrains(S).includes(O), 'the frozen wedge');
+  const home = S.routesFrom.get(stem).find(c => c.dir === M.dir && G.nodes[c.exitNode].y === G.mainRow[M.dir]);
+  assert.ok(home.gapWrong && !home.wrongMain, 'M 237\'s way home crosses Main 2 in the gap');
+  // 16 s on, where that operator set it (nothing opposes it by then), it is refused, and the operator has not set it
+  for (let i = 0; i < 16; i++) step(S);
+  assert.ok(!routeFrom(S, stem) && wrongMainTrains(S).includes(O), 's687: M 237 routed across the gap with M 144 wrong main');
+  assert.equal(setRoute(S, stem, home.exitNode, { trainId: M.id }).reason, 'wrong main');
+  for (let i = 0; i < 2 * 3600 && S.trains.size; i++) {
+    step(S);
+    for (const T of S.trains.values()) if (T.state !== 'dwelling' && T.state !== 'holding')
+      assert.ok(S.time - T.lastMoveTime <= 3600, `s687: ${T.name} stood an hour`);
+  }
+  assert.deepEqual(names.filter(n => !S.completed.some(c => c.name === n)), [], 's687: frozen trains never left');
 }
 
 // a branch-bound train a human left on the wrong main (westbound on Main 2) gives the branch up too, at once, and
