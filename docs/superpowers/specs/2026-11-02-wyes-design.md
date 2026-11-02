@@ -140,6 +140,16 @@ junction:  b | pair(6) | . | F1 . A . F2 | . | pair(6) | b'                 b' =
 terminus:  b | pair(6) | P | run(7) | F1 . A . F2 | run(7) | P | pair(6) | b'   b' = x1 + 34,  GAP_TERM = 35
 ```
 
+(Amended 2026-11-01, Task 6: the terminus as built is `b | pair(6) | . | P | run(7) | F1 . A . F2 | run(7) | P | . |
+pair(6) | b'`. Counted from `b`: the pairs are at `b+1..b+6` and `b+28..b+33`, `P` at `b+8` and `b+26`, `F1 = b+15`,
+`A = b+17`, `F2 = b+19`, and `b' = b+34 = x1 + 35`, so **`GAP_TERM = 36`** (the next module's `x0 = x1 + 36`). The empty
+column between each pair and its `P` makes the gap symmetric about the apex; the 35 above was approximate. Both mains
+carry nodes at the `P` and foot columns, so each run is one 7-cell main edge on either main. A terminus's `layout.wye` is
+`{ kind: 'terminus', side, gap, F1, F2, A, feetMain, x0: b, x1: b', P: { 1: <east P node>, '-1': <west P node> }, stub:
+<track id>, shunt: { F1: <signal id>, F2: <signal id> }, stubSignal }`. `P` is on the feet's main, keyed by arrival
+dir. There is no branch portal. The kind coin is the fourth draw of the `:junction` stream, after presence, side and
+gap, so a seed's presence, side and gap are the same as before termini existed.)
+
 - `F1`, `F2` are the **feet** on the main (two nodes four columns apart); `A` the **apex** two rows off the
   main, between them: north wye `A = (F1.x + 2, T − 2)`, south wye `A = (F1.x + 2, R2 + 2)`. Legs
   `F1–A` and `F2–A` are 45° edges of class `wye` (speed 30, both ways, len 2√2), like crossovers.
@@ -167,9 +177,16 @@ terminus:  b | pair(6) | P | run(7) | F1 . A . F2 | run(7) | P | pair(6) | b'   
   stem is the **stub platform**: a node one cell past the apex (the stub's exit signal node, `dir 0`,
   facing the apex) then a 7-cell `platform` edge to the buffer stop; the track is
   `{ cls: 'platform', dir: 0, name: '<Place> Union 1', stub: true, capacity: 7 − 0.5 }`.
+  (Amended 2026-11-01, Task 6: a junction stem is at least **four** cells long. This was ruled from screenshots: at
+  two cells, the stem's two signals and the tag of an arrival standing there crowd each other. The stub is two
+  `platform` edges, `A–S` (1 cell) and `S–buffer` (7). Both have `oneWay null` and belong to the stub track
+  (`edges: [A–S, S–buffer]`, capacity 6.5, `industry: null`). They share the branch section with the legs. The stub
+  signal faces `S–buffer`, and the buffer node has one edge.)
 - **Rows.** A north wye needs `T ≥ 4` (apex at row 2, stem rows 2..0) and the terminus's stub needs
   `T ≥ 10`; the generator pads `T` up to the need (empty rows above the top tracks). A south wye pads
   `rows` likewise. Place names stay at `y = −1`; the branch portal's name sits beside the portal.
+  (Amended 2026-11-01, Task 6, with the four-cell stem: north `T ≥ 6` for a junction (apex at row 4 or below) and
+  `T ≥ 10` for a terminus (apex 8, `S` 7, buffer 0); south `rows − 1 − R2 ≥ 6` and `≥ 10`.)
 - Both pairs in a wye gap are ordinary crossover pairs; sections split at crossover ends as today. Every
   main edge strictly between `b` and `b'` is tagged `junction: true` (both mains, including the one-cell
   pieces inside the pairs): the **junction gap**.
@@ -257,7 +274,8 @@ cases and the tail marker at the trailing end. The tag stays with the loco.
 - **Legs and stem** draw as track (`wye` and `branch` are track classes; `COLORS` unchanged). The
   junction section gets no special colour.
 - **Signal labels**: `${E|W|N|S}${x}${row letter}${d?}` with the letter from `facing` (dominant axis;
-  diagonals never carry signals).
+  diagonals never carry signals). (Amended 2026-11-01, Task 6: a shunt signal has an `s` suffix where a dwarf has
+  `d`: `E<x><row>s` at `F1`, `W<x><row>s` at `F2`. `lamps()` lights it as a dwarf.)
 - **Board**: From → To from the train's entry and exit portals; status words `backing in` and
   `reversing`. Inspector: `Direction` reads `eastbound to <exit portal>` / `westbound …` / for a `dir 0`
   head position on the stem the same with its dir; `Signal ahead` uses `signalAhead`.

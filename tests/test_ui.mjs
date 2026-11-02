@@ -161,12 +161,12 @@ for (const L of [N3, S18]) {
   assert.deepEqual([at(side * off)?.id, at(-side * off)?.kind === 'signal'], [L.wye.stemSignal, false], `${L.wye.side}: stem signal heads by facing`);
   // Two trains on the stem, one running toward the main and one toward the portal: the tag box clears the stem line
   // on the right of each one's travel, level with its head block.
-  const p = L.portals[2].node, stem = [p];
-  while (stem.length < 3) stem.push(L.edges.filter(e => e.cls === 'branch').map(e => (e.a === stem.at(-1) ? e.b : e.b === stem.at(-1) ? e.a : null)).find(n => n !== null && !stem.includes(n)));
+  const p = L.portals[2].node, stem = [p], branch = L.edges.filter(e => e.cls === 'branch');
+  while (stem.at(-1) !== L.wye.A) stem.push(branch.map(e => (e.a === stem.at(-1) ? e.b : e.b === stem.at(-1) ? e.a : null)).find(n => n !== null && !stem.includes(n)));
   const along = ns => ns.slice(1).map((n, i) => L.edges.find(e => (e.a === ns[i] && e.b === n) || (e.b === ns[i] && e.a === n)).id);
   const inbound = spawnTrain(S, { type: 'P', dir: 1, entry: 2, name: 'P 9' }), outbound = spawnTrain(S, { type: 'P', dir: -1, exit: 2, name: 'P 11' });
-  Object.assign(inbound, { path: along(stem), pathStart: p, headDist: 1.5 });
-  Object.assign(outbound, { path: along([...stem].reverse()), pathStart: stem[2], headDist: 1.9 });
+  Object.assign(inbound, { path: along(stem.slice(0, 3)), pathStart: p, headDist: 1.5 }); // the stem's first two cells
+  Object.assign(outbound, { path: along(stem.slice(0, 3).reverse()), pathStart: stem[2], headDist: 1.9 });
   S.queue[2].push({}, {});
   const rec2 = (rec = [], R2.draw(S, { blink: true, now: 16 }), rec), tags = rec2.filter(d => d.k === 'tag');
   for (const [t, right] of [[inbound, side], [outbound, -side]]) { // inbound runs toward the main: down a north stem, right = west
@@ -176,12 +176,13 @@ for (const L of [N3, S18]) {
     const blocks = trainBlocks(S, t), cy = (Y(blocks[0].y1) + Y(blocks[0].y2)) / 2;
     assert.ok(tag.y <= cy + 1 && tag.y + tag.h >= cy - 1, `${t.name}'s tag level with its head block (${tag.y}, ${cy})`);
   }
-  // Down the stem and round the turn onto a leg: the blocks stay a chain (each starts where the one ahead ends), the head
-  // moves on by no more than it advances, and the tag stays on the right of the head block's travel all the way.
+  // Down the whole stem (four cells or more) and round the turn onto a leg: the blocks stay a chain (each starts where the
+  // one ahead ends), the head moves on by no more than it advances, and the tag stays on the right of the head block's
+  // travel all the way.
   const leg = L.edges.find(e => e.cls === 'wye' && (e.a === L.wye.A || e.b === L.wye.A)), turner = spawnTrain(createSim(L, L.seed), { type: 'M', dir: 1, entry: 2 });
   Object.assign(turner, { path: [...along(stem), leg.id], pathStart: p });
   let last = null;
-  for (let hd = 0.9; hd <= 2 + Math.SQRT2 * 2; hd += 0.05) {
+  for (let hd = 0.9; hd <= stem.length - 1 + Math.SQRT2 * 2; hd += 0.05) {
     turner.headDist = hd;
     const bl = trainBlocks(S, turner), h = bl[0], l = Math.hypot(h.x1 - h.x2, h.y1 - h.y2), u = { x: (h.x1 - h.x2) / l, y: (h.y1 - h.y2) / l };
     assert.ok(bl.every((b, i) => i === 0 || (Math.abs(b.x1 - bl[i - 1].x2) < 1e-9 && Math.abs(b.y1 - bl[i - 1].y2) < 1e-9)), `a chain at ${hd}`);

@@ -337,7 +337,7 @@ const HIGH2 = { CLEAR: ['G', 'R'], APPROACH: ['Y', 'R'], ADVANCE_APPROACH: ['FY'
 const HIGH1 = { CLEAR: 'G', APPROACH: 'Y', ADVANCE_APPROACH: 'FY' };
 const DWARF = { RESTRICTING: 'FR', SLOW_CLEAR: 'G' };
 export function lamps(aspect, kind, heads) {
-  if (kind === 'dwarf') return { top: DWARF[aspect] ?? 'R' };
+  if (kind === 'dwarf' || kind === 'shunt') return { top: DWARF[aspect] ?? 'R' }; // a terminus's shunt signals light as dwarfs
   if (heads === 1) return { top: HIGH1[aspect] ?? 'R' };
   const [top, bottom] = HIGH2[aspect] ?? HIGH2.STOP;
   return { top, bottom };
@@ -551,7 +551,8 @@ export function logEvent(sim, text) {
   if (sim.log.length > 200) sim.log.shift();
 }
 
-// E12C, W41Ad: facing, column, row letter (A = row 0), a d suffix for dwarfs. The facing is the way a train reading it
+// E12C, W41Ad: facing, column, row letter (A = row 0), a d suffix for dwarfs (s for a terminus's shunt signals, E at F1
+// and W at F2, which share their node with no other signal). The facing is the way a train reading it
 // travels: from the far end of the edge it faces to its node (E/W along a row, N/S up/down a column), at a portal into
 // the panel. Unique: one signal per node and facing.
 const INTO = { west: 'E', east: 'W', north: 'S', south: 'N' }; // a portal's side -> the way its trains enter
@@ -563,7 +564,7 @@ export function signalLabel(sim, signalId) {
     const o = nodes[far(edges[s.from], s.node)], dx = n.x - o.x, dy = n.y - o.y; // y grows downward (south)
     facing = Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'E' : 'W') : (dy > 0 ? 'S' : 'N');
   }
-  return `${facing}${n.x}${String.fromCharCode(65 + n.y)}${s.kind === 'dwarf' ? 'd' : ''}`;
+  return `${facing}${n.x}${String.fromCharCode(65 + n.y)}${s.kind === 'dwarf' ? 'd' : s.kind === 'shunt' ? 's' : ''}`;
 }
 
 export const fits = (sim, train, trackId) => train.len <= sim.layout.tracks[trackId].capacity;
@@ -598,7 +599,9 @@ function reachability(sim) {
     reach.exits[`p${p.id}:${d}`] = exitsFrom(p.node, d, null);
   }
   for (const t of tracks) {
-    const s = signals.find(g => g.from === t.edges[0]); // a train at the track stands at its exit signal, facing its first edge
+    // A train at the track stands at its exit signal, facing the track edge it stands on: the first, or a terminus stub's
+    // second (its buffer edge; the first runs from the apex to the signal).
+    const s = signals.find(g => t.edges.includes(g.from));
     for (const d of [1, -1]) reach.exits[`t${t.id}:${d}`] = exitsFrom(s.node, d, s.from);
   }
   return reach;
