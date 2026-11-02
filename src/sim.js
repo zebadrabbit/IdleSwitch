@@ -132,7 +132,8 @@ function candidate(sim, sig, es, nodes, dir) {
     exitSignal: signalAhead(sim, exitNode, es.at(-1)) ?? null,
     diverging: switches.some(s => s.lie === 'reverse'),
     // it ends on the other direction's home main (a junction gap's piece of it doesn't count: the route runs on, out of
-    // the gap or into the branch; a terminus gap's does: its P columns are stands inside it)
+    // the gap or into the branch). Rule: a terminus gap's does (but for a terminus train: wrongMainOut). Its P columns are
+    // stands inside the gap, and on s200 a through train exempt there stood at P for good (see isWrongMain).
     wrongMain: lastMain?.main === -dir && !(lastMain.junction && wye?.kind === 'junction'),
     wrongMainOut: lastMain?.main === -dir && !lastMain.junction, // past the gap (a terminus train's own count)
     slow: SLOW_CLS.has(edges[es.at(-1)].cls) || (into !== null && !!tracks[into].stub), // into the stub: backing in
@@ -150,9 +151,16 @@ function candidate(sim, sig, es, nodes, dir) {
 // changes, model fouling points instead.
 // forTrain: the train a route starting at node is set for. Its own body on the trunk does not hold the points (a
 // reversed terminus train at the foot's shunt signal: its head stands FOUL short of the foot, clear of them).
+// A set route also owns the switches it lists until a train enters it. For every route but one from a shunt signal that
+// is the trunk lock already (a route through a switch uses its trunk, and none of a route is released before it is
+// entered), so nothing else changes; a shunt route leaves its foot by a leg and never locks the trunk, and without this
+// a through route from P threw the points back under a back-in route set by hand. Once entered, the train on the run
+// (the trunk) holds them until it is clear. (Owning them for the route's whole life would hold a switch after sectional
+// release has freed its trunk behind the train, which changes every seed's traffic.)
 export function switchLocked(sim, node, forTrain = null) {
   const sw = sim.switchAt.get(node), st = sw && sim.edgeState[sw.trunk];
-  return !!st && ([...st.occ].some(id => id !== forTrain?.id) || st.route !== null);
+  return !!st && ([...st.occ].some(id => id !== forTrain?.id) || st.route !== null
+    || [...sim.routes.values()].some(r => !r.entered && r.cand.switches.some(s => s.node === node)));
 }
 
 export function throwSwitch(sim, node) {
@@ -171,7 +179,10 @@ export function routeFrom(sim, signalId) {
 // Wrong main: its path, or a route set for it that it has yet to take (the operator sets several before any train
 // moves), runs on a main edge of the other direction's home. Edges of a junction gap (tagged junction) don't count
 // (spec "Junction exemption"); in a terminus's gap only for a terminus train, whose visit there counts as the one
-// wrong-main move instead (setRoute's onVisit rule).
+// wrong-main move instead (setRoute's onVisit rule). Rule: other trains have no exemption in a terminus's gap. Its P
+// columns are stands inside the gap, so a route there need not run through and out as at a junction; on s200 a through
+// train exempt in the gap stood at P, wrong main, holding the main a wrong-main train elsewhere had to get home on, for
+// good.
 export const isWrongMain = (sim, train) => {
   const exempt = sim.layout.wye?.kind === 'junction' || train.terminus;
   return [train.path, ...[...sim.routes.values()].filter(r => r.trainId === train.id && !train.routes.includes(r.id)).map(r => r.cand.edges)]
@@ -216,6 +227,10 @@ function opposing(sim, sense) {
   }));
 }
 
+// A route is wrong main for train t: past the gap for a terminus train (its running in the gap is exempt), else as the
+// candidate says.
+const wrongMainFor = (t, cand) => (t?.terminus ? cand.wrongMainOut : cand.wrongMain);
+
 // Holds: train t occupies one of the edges es, or a route set for it locks one.
 const holdsAny = (sim, t, es) => [...es].some(e => sim.edgeState[e].occ.has(t.id)
   || (sim.edgeState[e].route !== null && sim.routes.get(sim.edgeState[e].route).trainId === t.id));
@@ -257,7 +272,7 @@ export function setRoute(sim, signalId, exitNode, { human = false, trainId = nul
     || [...sim.trains.values()].some(t => t !== forTrain && t.id !== trainId && onVisit(sim, t));
   const terminus = !!forTrain?.terminus, leavesAgainst = terminus && signalId === sim.layout.wye.stubSignal
     && cand.edges.some(e => sim.layout.edges[e].main === -cand.dir);
-  if ((terminus ? cand.wrongMainOut || leavesAgainst : cand.wrongMain) && wmOut()) return fail('wrong main');
+  if ((wrongMainFor(forTrain, cand) || leavesAgainst) && wmOut()) return fail('wrong main');
   for (const s of cand.switches) sim.switchState.get(s.node).lie = s.lie;
   const route = { id: sim.nextRouteId++, signal: signalId, cand, dir: cand.dir, sense, trainId, human, entered: false,
     setAt: sim.time };
@@ -535,7 +550,7 @@ function adopt(sim, train) {
     train.routes.push(route.id);
     route.trainId = train.id;
     train.events.push({ t: sim.time, kind: 'route', signal: signalLabel(sim, route.signal), ...(route.human ? { human: true } : {}),
-      ...(route.cand.wrongMain ? { wrongMain: true } : {}) });
+      ...(wrongMainFor(train, route.cand) ? { wrongMain: true } : {}) });
   }
 }
 
@@ -897,7 +912,10 @@ function hold(sim, t, sig, cands) {
 //   signal): adopt refuses it, and nothing can pass that train; or
 // - wrong main (onto the other main, or from a signal on it) with no train of its direction at its signal. It counts
 //   as the one wrong-main train and locks the other direction's home main against it. A dir 0 signal is on no main;
-//   a train is at it when its path ends there (signalAheadOf), whichever its dir.
+//   a train is at it when its path ends there (signalAheadOf), whichever its dir; or
+// - from a terminus's shunt signal with no train at it: only a reversed terminus train ever comes there, and none can
+//   while the stub is busy. Left, one onto the main held a departure and the trains behind it at b for good, and a
+//   back-in route at the other foot kept the arrival reversing for hours.
 const GRACE = 3 * 60;
 function deadRoute(sim, r) {
   const { edges, tracks, signals, nodes, mainRow } = sim.layout;
@@ -905,6 +923,7 @@ function deadRoute(sim, r) {
   const from = edges[r.cand.edges[0]].track, into = edges[r.cand.edges.at(-1)].track, trains = [...sim.trains.values()];
   const sig = signals[r.signal], at = trains.filter(t => signalAheadOf(sim, t) === r.signal);
   if (at.length && at.every(t => r.dir !== 0 && t.dir !== r.dir)) return true;
+  if (sig.kind === 'shunt' && !at.length) return true;
   const onOther = sig.dir !== 0 && nodes[sig.node].y === mainRow[-sig.dir];
   if ((r.cand.wrongMain || onOther) && !at.length) return true;
   if (from === null) return into !== null && at.some(t => !fits(sim, t, into));
@@ -1034,14 +1053,15 @@ function operator(sim) {
     if (!cand || (into !== null && into !== t.dest)) continue;
     if (held && sim.layout.signals[sig].node === br.node) continue; // an arrival held at the portal (arrivalsHeld)
     if (cand.intoGap && turning.some(u => u !== t && u.dir !== cand.dir)) continue; // held out of the gap (terminusTurning)
-    if (cand.wrongMain && turning.some(u => u !== t)) continue; // nor round the trains held (terminusTurning)
+    const wm = wrongMainFor(t, cand);
+    if (wm && turning.some(u => u !== t)) continue; // nor round the trains held (terminusTurning)
     // Rule: a train bound for the branch is never sent wrong main (its moves through the junction gap are exempt and not
     // wrongMain). Stood at b or b' on the other main its only way on is the branch, and an arrival holding that inbound
     // can need the very section it stands in: a deadlock on three of 17 junction seeds in 8 busy hours. One already
     // wrong main gave the branch up above (the valve), so this only keeps the rest off the other main.
-    if (cand.wrongMain && t.dest === null && t.exit === br?.id) continue;
+    if (wm && t.dest === null && t.exit === br?.id) continue;
     if (setRoute(sim, sig, cand.exitNode, { trainId: t.id }).ok)
-      logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${cand.wrongMain ? ' (wrong main)' : ''}`);
+      logEvent(sim, `AUTO: ${signalLabel(sim, sig)} → ${t.name}${wm ? ' (wrong main)' : ''}`);
   }
 }
 

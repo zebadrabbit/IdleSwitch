@@ -2029,6 +2029,35 @@ for (const seed of [tN, tS]) {
   assert.equal(setRoute(S, w.shunt.F2, k.buffer, { human: true }).ok, true, `${seed}: a human NX for the standing train`);
 }
 
+// A route set from a shunt signal owns the foot's points until a train enters it: the points stand on its first edge,
+// not on its trunk (the run, where the reversed train stands), so the trunk rule alone left them free. With one set no
+// other route may move them, nor may a human throw them (the operator's through route from P threw them back under a
+// back-in route set by hand, and the reversed train backed up the leg with the points the other way).
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w;
+  const r = setRoute(S, w.shunt.F2, k.buffer, { human: true });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(S.switchState.get(w.F2).lie, 'reverse');
+  assert.deepEqual([switchLocked(S, w.F2), throwSwitch(S, w.F2)], [true, false], `${seed}: the points free under a shunt route`);
+  // the westbound through route from P east of the wye needs the points at F2 normal
+  const outer = G.edges.find(e => e.id !== k.run[E] && e.main === w.feetMain && (e.a === w.P[1] || e.b === w.P[1])).id;
+  assert.equal(setRoute(S, signalAhead(S, w.P[1], outer), w.P[-1]).reason, 'switch busy', `${seed}: a route moved the points under a shunt route`);
+  cancelRoute(S, r.route.id);
+  assert.equal(throwSwitch(S, w.F2), true, `${seed}: held after the route was cancelled`);
+}
+
+// A route from a shunt signal at which no train stands is dead after GRACE (only a reversed terminus train comes to a
+// shunt signal, and none can while the stub is busy): the operator clears it. Left, one onto the main held a departure
+// and the trains behind it at b for good, and a back-in route at the other foot kept the arrival reversing for hours.
+for (const seed of [tN, tS]) {
+  const S = quiet(seed), w = S.layout.wye, main = S.routesFrom.get(w.shunt.F1).find(c => c.dir === E && !c.slow);
+  assert.equal(setRoute(S, w.shunt.F1, main.exitNode, { human: true }).ok, true);
+  S.auto = true;
+  for (let i = 0; i < 3 * 60 + 2; i++) step(S);
+  assert.equal(routeFrom(S, w.shunt.F1), null, `${seed}: a route from a shunt signal with no train at it stood`);
+  assert.ok(S.log.some(e => e.text.startsWith(`AUTO: cleared route ${signalLabel(S, w.shunt.F1)} → `)));
+}
+
 // a train for the stub (from either main portal): terminus, its arrival dir kept, bound first for the pull-ahead signal
 // past the wye for that dir; its exit the far end until it departs. Every other train is no terminus train.
 {
@@ -2062,8 +2091,11 @@ for (const seed of [tN, tS]) {
 // its loco trailing, dwells 10 min, departs forward (loco leading), climbs the other leg and leaves by the portal it came
 // in by. No point of it ever jumps (at a reversal its tail is where its head was), its path always chains from
 // pathStart, and the board reads reversing, then backing in.
-for (const [seed, d] of [[tN, E], [tS, E], [tN, W], [tS, W]]) {
+// (once more from the west on tN, with a back-in route set by hand at the other foot while it runs up to P: it is
+// cleared GRACE after it was set, and the mission goes on)
+for (const [seed, d, other] of [[tN, E], [tS, E], [tN, W], [tS, W], [tN, E, true]]) {
   const S = quiet(seed), G = S.layout, k = termOf(S), w = k.w, entry = portalOf(S, d), stub = G.tracks[w.stub].name;
+  let poked = !other;
   S.auto = true;
   S.queue[entry.id].push({ id: S.nextTrainId++, name: 'P 2', type: 'P', dir: d, entry: entry.id, exit: portalOf(S, -d).id, dest: w.stub,
     terminus: true, len: trainLength('P'), spawnTime: S.time, sched: S.time });
@@ -2074,6 +2106,8 @@ for (const [seed, d] of [[tN, E], [tS, E], [tN, W], [tS, W]]) {
     step(S);
     T ??= [...S.trains.values()].find(t => t.name === 'P 2') ?? null;
     if (!T || !S.trains.has(T.id)) continue;
+    if (!poked && !T.reversed1 && headNode(S, T) === w.P[d] && T.speed > 0)
+      poked = setRoute(S, d === E ? w.shunt.F1 : w.shunt.F2, k.buffer, { human: true }).ok;
     let n = T.pathStart;
     for (const e of T.path) { assert.ok(G.edges[e].a === n || G.edges[e].b === n, `${seed} ${d}: the path is not chained`); n = farOf(G, e, n); }
     assert.ok(phase === 'in' || T.headDist - T.len >= T.pathOff - 1e-9, `${seed} ${d}: the tail is off the path`); // (in: entering)
@@ -2101,6 +2135,9 @@ for (const [seed, d] of [[tN, E], [tS, E], [tN, W], [tS, W]]) {
   assert.deepEqual([[...legs.back], [...legs.out]], d === E ? [[k.leg.F2], [k.leg.F1]] : [[k.leg.F1], [k.leg.F2]], `${seed} ${d}: legs`);
   assert.ok(words.has('reversing') && words.has('backing in'), `${seed} ${d}: status words ${[...words]}`);
   assert.ok(!S.log.some(e => e.text.startsWith('STALL')) && S.routes.size === 0 && S.reserved.size === 0);
+  // its running in the gap against a main's home direction is exempt: never logged as wrong main
+  assert.ok(!S.log.some(e => e.text.endsWith('P 2 (wrong main)')), `${seed} ${d}: logged wrong main`);
+  if (other) assert.ok(poked && S.log.some(e => e.text.startsWith('AUTO: cleared route ')), 'the back-in route at the other foot was not set, or not cleared');
 }
 
 // Nothing follows a terminus train into the gap on the feet main until it has reversed: while it stands at its
