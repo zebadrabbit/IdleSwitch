@@ -51,7 +51,7 @@ case "${1:-}" in
     # --chmod: local dirs like favicon/ are 700, which the web server can't enter (404s).
     rsync -avz --delete --chmod=D755,F644 \
       --exclude .git --exclude .github --exclude .claude --exclude .superpowers --exclude .venv \
-      --exclude docs --exclude tests \
+      --exclude docs --exclude tests --exclude tools \
       --exclude manage.sh --exclude CHANGELOG.md --exclude .gitignore --exclude '.server.*' \
       ./ "${DEPLOY_TARGET:-dogzrbar@firetailfab.com:/home/dogzrbar/public_html/firetailfab/idleswitch/}"
     ;;
