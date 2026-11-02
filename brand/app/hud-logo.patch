@@ -1,0 +1,41 @@
+--- index.html	2026-11-02 17:13:44.839265465 -0600
++++ index.html	2026-11-02 17:19:13.866488974 -0600
+@@ -5,12 +5,15 @@
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>IdleSwitch</title>
+ <meta name="theme-color" content="#0b1020">
++<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
++<link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
++<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+ <link rel="stylesheet" href="src/style.css">
+ </head>
+ <body>
+ <canvas id="map"></canvas>
+ <header id="hud">
+-  <span class="wordmark">IdleSwitch</span>
++  <a class="wordmark" href="./" title="IdleSwitch"><img class="full" src="assets/logo-hud.svg" alt="IdleSwitch"><img class="glyph" src="assets/logo-glyph.svg" alt="IdleSwitch"></a>
+   <span id="hud-clock"></span>
+   <span id="hud-sky" title="lighting"><i class="sun">☀</i><i class="moon">☾</i></span>
+   <button id="btn-pause" title="pause / resume (Space)">⏸</button>
+--- src/style.css	2026-11-02 17:13:44.839775990 -0600
++++ src/style.css	2026-11-02 17:19:13.868546395 -0600
+@@ -13,7 +13,9 @@
+ #hud { position: fixed; top: 0; left: 0; right: 0; height: var(--hud-h); display: flex; align-items: center;
+   gap: 12px; padding: 0 12px; background: color-mix(in srgb, var(--panel) 88%, transparent); border-bottom: 1px solid var(--panel-border); z-index: 10;
+   white-space: nowrap; overflow: hidden; }
+-#hud .wordmark { font-weight: 600; color: var(--accent); letter-spacing: 1px; }
++#hud .wordmark { display: flex; align-items: center; height: 18px; margin-right: 2px; }
++#hud .wordmark img { height: 18px; display: block; }
++#hud .wordmark .glyph { display: none; }
+ #hud .spacer { flex: 1; }
+ #hud-clock { font: 600 14px var(--mono); color: var(--text); min-width: 5ch; }
+ #hud-sky { position: relative; width: 16px; display: inline-block; }
+@@ -26,7 +28,7 @@
+ #hud-seed::before { content: 'seed '; color: var(--dim); font-family: system-ui, sans-serif; }
+ #hud button[data-panel] { color: var(--dim); }
+ #hud button.on { color: var(--accent); }
+-@media (max-width: 1160px) { #hud .wordmark { display: none; } #hud { gap: 8px; } } /* room for the zoom buttons */
++@media (max-width: 1160px) { #hud .wordmark .full { display: none; } #hud .wordmark .glyph { display: block; } #hud { gap: 8px; } } /* room for the zoom buttons */
+ @media (max-width: 1000px) { #hud-seed { display: none; } }
+ button, select, input { font: inherit; }
+ button { background: var(--panel); color: var(--accent); border: 1px solid var(--panel-border);

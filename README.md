@@ -1,5 +1,9 @@
 # IdleSwitch
 
+![IdleSwitch: the trains keep running](brand/github/readme-banner-1600x400.png)
+
+**The trains keep running.**
+
 Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itself on a dark dispatcher's panel: track lights red under trains, signals step green, yellow, red behind them, switches throw, a yard breathes in and out. A virtual operator sets the routes. When you feel like it, take the panel and route trains yourself, NX-style; walk away and the operator takes it back. Nothing needs you and nothing punishes you for leaving. The same seed gives the same terminal and, at the same density and day length, the same day of traffic. Vanilla JS and canvas, no dependencies, no build step. Built to run at https://firetailfab.com/idleswitch/.
 
 ## Controls
