@@ -9,9 +9,13 @@
 // nodes[i].id === i, likewise edges/signals/tracks/portals. An edge's oneWay is null (both ways) or the
 // node it may be entered from; a signal stands at its node for trains arriving on edge `from` (null at a
 // portal).
+//
+// About 60 % of terminals also grow a junction wye (Keddie) in one inter-module gap, on Main 1 with the apex
+// above it (north) or on Main 2 with the apex below (south): two feet on that main, legs up to the apex, and
+// a vertical single-track stem from the apex to a third portal at the panel edge (spec "The wye").
 import { makeRng, pick, randInt } from './rng.js';
 
-export const CLASS_SPEED = { main: 60, crossover: 30, ladder: 30, platform: 30, yard: 15, siding: 15, spur: 15 };
+export const CLASS_SPEED = { main: 60, crossover: 30, ladder: 30, platform: 30, yard: 15, siding: 15, spur: 15, wye: 30, branch: 45 };
 export const CAPACITY_MIN = { platform: 6, yard: 12, siding: 14, spur: 14 };
 
 const INDUSTRIES = [
@@ -30,6 +34,8 @@ const KINDS = ['station', 'yard', 'sidings'];
 const DWARF = new Set(['yard', 'siding', 'spur']); // tracks whose exit signal is a dwarf
 const MARGIN = 8; // columns from a portal to the nearest module: crossover pair, boundary signal
 const GAP = 9;    // columns between modules (x0 of the next = x1 of this + GAP): signal, pair, signal
+const GAP_WYE = 22; // a junction gap: signal, pair, empty, F1 . A . F2, empty, pair, signal
+const WYE_P = 0.6;  // share of terminals with a wye
 
 const range = n => Array.from({ length: n }, (_, i) => i);
 
@@ -92,17 +98,26 @@ export function generate(seed) {
   // ponytail: rejection sampling; worst case (n=4) accepts ~7% of draws, so ~14 tries on average.
   // A constructive interleave would bound it, but nothing here is hot.
   do kinds = range(n).map(() => pick(rng, KINDS)); while (!validMix(kinds));
-  const names = shuffle(rng, PLACES); // at most 2 portals + 4 modules + 2 industries = 8 of 24
+  const names = shuffle(rng, PLACES); // at most 2 portals + 4 modules + 2 industries + a branch = 9 of 24
   let ni = 0, sidings = 0;
   const place = () => names[ni++];
   const west = `${place()} ${pick(rng, PORTAL_SUFFIX)}`;
   const east = `${place()} ${pick(rng, PORTAL_SUFFIX)}`;
   const mods = kinds.map(kind => planModule(rng, kind, place, () => (sidings += 2) - 2));
+  // The wye draws from its own stream, so the main one (and every layout without a wye) is untouched. Its first
+  // draw is the presence coin; side and gap follow only when there is one. The stream is ':junction', not the plan's
+  // ':wye': on ':wye' the frozen fixture seed s47 draws 0.553 first, and no order of the presence, side and gap draws
+  // (nor any of the first 12 draws as the coin) keeps all five fixture seeds wye-free.
+  const wr = makeRng(seed + ':junction');
+  const wye = wr() < WYE_P ? { side: wr() < 0.5 ? 'north' : 'south', gap: randInt(wr, 0, n - 2) } : null;
   let x = MARGIN;
-  for (const m of mods) { m.x0 = x; m.x1 = x + width(m); x = m.x1 + GAP; }
+  mods.forEach((m, i) => { m.x0 = x; m.x1 = x + width(m); x = m.x1 + (wye?.gap === i ? GAP_WYE : GAP); });
   const cols = mods[mods.length - 1].x1 + MARGIN + 1;
-  const T = Math.max(...mods.map(m => m.top.length)), R2 = T + 2;
-  const rows = R2 + 1 + Math.max(...mods.map(m => m.bot.length));
+  // Rows: a north wye needs its apex at row 2 or below with the stem up to row 0 (T >= 4); a south wye its stem at
+  // least two cells below the apex (rows - 1 >= R2 + 4). Padding is empty rows beyond the module tracks.
+  const T = Math.max(...mods.map(m => m.top.length), wye?.side === 'north' ? 4 : 0), R2 = T + 2;
+  const rows = Math.max(R2 + 1 + Math.max(...mods.map(m => m.bot.length)), wye?.side === 'south' ? R2 + 5 : 0);
+  const wb = wye && mods[wye.gap].x1 + 1; // the wye gap's west boundary signal column (the spec's b); b' = wb + 20
 
   // --- build: plain closures over flat arrays ---
   const nodes = [], edges = [], signals = [], tracks = [], at = new Map();
@@ -112,8 +127,8 @@ export function generate(seed) {
     return at.get(k);
   };
   const edge = (a, b, cls, oneWay, track = null, extra) => {
-    const dx = Math.abs(nodes[a].x - nodes[b].x), diag = nodes[a].y !== nodes[b].y;
-    edges.push({ id: edges.length, a, b, cls, oneWay, speed: CLASS_SPEED[cls], len: diag ? dx * Math.SQRT2 : dx, track,
+    const dx = Math.abs(nodes[a].x - nodes[b].x), dy = Math.abs(nodes[a].y - nodes[b].y); // horizontal, vertical or 45°
+    edges.push({ id: edges.length, a, b, cls, oneWay, speed: CLASS_SPEED[cls], len: !dx ? dy : dy ? dx * Math.SQRT2 : dx, track,
       main: null, section: null, ...extra });
     return edges.length - 1;
   };
@@ -130,9 +145,10 @@ export function generate(seed) {
   // end, joined in order on both rows. A pair at column a: A = Main 1 (a) -> Main 2 (a+2), B = Main 2
   // (a+3) -> Main 1 (a+5), so each direction has exactly one way across.
   // ponytail: one fixed pair per gap and margin, none inside a module. A real panel varies them; a fixed
-  // pair keeps every gap the same width and the geometry crossing-free by construction.
-  const pairs = [1, ...mods.map(m => m.x1 + 2)];
-  const xs = [0, cols - 1, ...mods.flatMap(m => [m.x0 - 1, m.x0, m.x1, m.x1 + 1]),
+  // pair keeps every gap the same width and the geometry crossing-free by construction. The wye gap has a second
+  // pair at wb+14 and main nodes at its feet (wb+8, wb+12) on both rows.
+  const pairs = [1, ...mods.flatMap((m, i) => (wye?.gap === i ? [m.x1 + 2, m.x1 + 15] : [m.x1 + 2]))];
+  const xs = [0, cols - 1, ...mods.flatMap(m => [m.x0 - 1, m.x0, m.x1, m.x1 + 1]), ...(wye ? [wb + 8, wb + 12] : []),
     ...pairs.flatMap(a => [a, a + 2, a + 3, a + 5])].sort((a, b) => a - b);
   const mainIn = new Map(); // `${node}:${dir}` -> the main edge a dir train arrives at node by
   for (const [y, main] of [[T, -1], [R2, 1]])
@@ -172,6 +188,31 @@ export function generate(seed) {
     side(m.bot, 1, ladder(x0, R2, 1, 1, kb, 1), ladder(x1, R2, -1, 1, kb, 1));
   }
 
+  // The junction wye: feet F1 = wb+8 and F2 = wb+12 on its main, apex A two rows off it at wb+10, 45° legs (class
+  // wye), then the stem (class branch) one edge per cell from A to the panel edge, where the branch portal is. Its
+  // two signals serve both directions (dir 0): the portal signal and the stem signal one cell before the apex,
+  // facing down the stem. No other signal stands inside the gap (atomic routes through it).
+  let wyeOut = null;
+  if (wye) {
+    const north = wye.side === 'north', y = north ? T : R2, sy = north ? -1 : 1, edgeY = north ? 0 : rows - 1;
+    const F1 = node(wb + 8, y), F2 = node(wb + 12, y), stem = [node(wb + 10, y + 2 * sy)], stemEdges = [];
+    edge(F1, stem[0], 'wye', null);
+    edge(F2, stem[0], 'wye', null);
+    for (let yy = y + 3 * sy; yy !== edgeY + sy; yy += sy) {
+      stem.push(node(wb + 10, yy));
+      stemEdges.push(edge(stem.at(-2), stem.at(-1), 'branch', null));
+    }
+    portals.push({ id: 2, node: stem.at(-1), name: `${place()} Branch`, dir: 0, side: wye.side });
+    signal(stem.at(-1), 0, 'high', null);
+    const stemSignal = signals.length;
+    signal(stem[1], 0, 'high', stemEdges[1]);
+    wyeOut = { kind: 'junction', side: wye.side, gap: wye.gap, F1, F2, A: stem[0], stemSignal, portal: 2,
+      feetMain: north ? -1 : 1, x0: wb, x1: wb + 20 };
+    // The junction gap: every main edge strictly between b and b', both mains.
+    const inside = n => nodes[n].x > wb && nodes[n].x < wb + 20;
+    for (const e of edges) if (e.cls === 'main' && inside(e.a) && inside(e.b)) e.junction = true;
+  }
+
   // Switches: every 3-edge node. With v(e) the unit vector from the node along edge e: trunk = the edge
   // whose v has a negative dot product with both others (the lone edge on one x-side; at a wye apex, the
   // stem); normal = the leg nearest the trunk's continuation -v(trunk) (main continues main, ladder
@@ -186,6 +227,7 @@ export function generate(seed) {
     const v = es.map(e => { const o = far(e, nd.id), dx = o.x - nd.x, dy = o.y - nd.y, l = Math.hypot(dx, dy); return [dx / l, dy / l]; });
     const dot = (i, j) => v[i][0] * v[j][0] + v[i][1] * v[j][1];
     const t = [0, 1, 2].find(i => [0, 1, 2].every(j => j === i || dot(i, j) < 0));
+    if (t === undefined) throw new Error(`no trunk at node ${nd.id} (${nd.x},${nd.y})`);
     const [p, q] = [0, 1, 2].filter(i => i !== t);
     const nearer = dot(t, q) - dot(t, p); // > 0: p is nearer the continuation
     const n = Math.abs(nearer) > 1e-9 ? (nearer > 0 ? p : q) : (far(es[p], nd.id).x < far(es[q], nd.id).x ? p : q);
@@ -198,9 +240,11 @@ export function generate(seed) {
   const xo = new Set(edges.filter(e => e.cls === 'crossover').flatMap(e => [e.a, e.b]));
   let sec = -1, prev = null;
   for (const e of edges) if (e.cls === 'main') { if (e.a !== prev || xo.has(e.a)) sec++; e.section = sec; prev = e.b; }
+  // The wye's legs and stem: one more section, the branch (not a main).
+  if (wye) { sec++; for (const e of edges) if (e.cls === 'wye' || e.cls === 'branch') e.section = sec; }
 
   return {
-    seed, cols, rows, nodes, edges, switches, signals, tracks, portals, wye: null, mainRow: { 1: R2, '-1': T },
+    seed, cols, rows, nodes, edges, switches, signals, tracks, portals, wye: wyeOut, mainRow: { 1: R2, '-1': T },
     places: mods.map(m => ({ name: m.name, x: (m.x0 + m.x1) / 2, y: -1 })), // label row above the top tracks
     modules: mods.map(m => ({ kind: m.kind, x0: m.x0, x1: m.x1, name: m.name })),
   };

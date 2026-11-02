@@ -17,9 +17,11 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
   for (const e of layout.edges) { adj.get(e.a).push(e.id); adj.get(e.b).push(e.id); }
   const start = 6 * 3600; // 06:00
   // A west or east portal is left by both rows of its end, the leaving dir's home main first: both run on off the panel
-  // as a two-track main.
+  // as a two-track main. A junction's branch portal (dir 0) is left by its own node, for either dir.
+  // ponytail: Task 3 shim. The branch portal loads but runs no traffic yet (spawner, reachability and exitLabel skip it).
   const { nodes, mainRow, portals } = layout;
-  const ends = (p, dir) => [mainRow[dir], mainRow[-dir]].map(y => nodes.find(n => n.x === nodes[p.node].x && n.y === y).id);
+  const ends = (p, dir) => (p.dir === 0 ? [p.node]
+    : [mainRow[dir], mainRow[-dir]].map(y => nodes.find(n => n.x === nodes[p.node].x && n.y === y).id));
   const sim = {
     layout, adj,
     edgeState: layout.edges.map(() => ({ occ: new Set(), route: null })),
@@ -542,7 +544,8 @@ export const holdingTracks = (sim, dir) =>
 // ponytail: one findPath per (start, dir, goal), up to ~110 per layout: createSim takes ~7 ms instead of ~1. One flood
 // per start collecting every track and exit it reaches would do if layouts grow.
 function reachability(sim) {
-  const { portals, tracks, signals } = sim.layout, reach = { tracks: {}, exits: {} };
+  const { tracks, signals } = sim.layout, reach = { tracks: {}, exits: {} };
+  const portals = sim.layout.portals.filter(p => p.dir !== 0); // ponytail: Task 3 shim, the branch is neither entry nor exit yet
   const exitsFrom = (node, dir, from) =>
     new Set(portals.filter(x => findPath(sim, node, dir, { exit: x.id }, {}, from)?.length).map(x => x.id));
   for (const p of portals) for (const d of [1, -1]) {
@@ -605,6 +608,7 @@ function canEnter(sim, q) {
 
 function spawner(sim) {
   for (const p of sim.layout.portals) {
+    if (p.dir === 0) continue; // ponytail: Task 3 shim, no branch traffic yet
     const queue = sim.queue[p.id];
     while (sim.time >= sim.nextSpawn[p.id]) {
       // ponytail: a full queue (QUEUE_MAX) drops the draw. The board lists queued trains as due soon, and past a

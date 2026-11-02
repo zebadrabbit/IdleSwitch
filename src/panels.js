@@ -19,7 +19,7 @@ const trainLabel = (sim, id) => esc(sim.trains.get(id)?.name ?? sim.queue.flat()
 // Where a candidate route ends: its exit signal, else off the panel at either main (or a buffer stop).
 export function exitLabel(sim, c) {
   if (c.exitSignal !== null) return signalLabel(sim, c.exitSignal);
-  for (const p of sim.layout.portals) if (exitNodesOf(sim, p.id, -p.dir).includes(c.exitNode)) return `exit to ${p.name}`;
+  for (const p of sim.layout.portals) if (p.dir !== 0 && exitNodesOf(sim, p.id, -p.dir).includes(c.exitNode)) return `exit to ${p.name}`; // ponytail: Task 3 shim skips the branch portal
   return 'end of track';
 }
 

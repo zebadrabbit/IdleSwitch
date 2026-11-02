@@ -127,6 +127,9 @@ for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]
 // every signal has >= 1 candidate; candidates end at a node that has a signal of that dir or is an exit node
 for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]) {
   const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout;
+  // A junction wye's layout loads (above), but its routes are Task 4's: dir 0 signals, routes into the stem, and two
+  // through routes to one exit (crossing at either pair of the junction gap).
+  if (G.wye) continue;
   const swAt = new Map(G.switches.map(s => [s.node, s]));
   for (const sig of G.signals) {
     const cs = S.routesFrom.get(sig.id);
@@ -396,11 +399,13 @@ assert.ok(allClear(sim));
   const wm = sig => S.routesFrom.get(sig.id).find(c => c.wrongMain).exitNode;
   assert.equal(setRoute(S, sigA.id, wm(sigA), { human: true }).ok, true);
   assert.equal(setRoute(S, sigB.id, wm(sigB)).reason, 'wrong main'); }
-// signalLabel unique over 50 seeds; the facing letter (from the edge it faces, or the portal's side) is E for eastbound
+// signalLabel unique over 50 seeds; the facing letter (from the edge it faces, or the portal's side) is E for eastbound,
+// W for westbound, and for a junction's two dir 0 signals (the stem's and the branch portal's) the way down or up the
+// stem toward the main: S on a north wye, N on a south one
 for (let i = 0; i < 50; i++) {
-  const S = createSim(generate(`lab${i}`), 'x'), ls = S.layout.signals.map(s => signalLabel(S, s.id));
+  const S = createSim(generate(`lab${i}`), 'x'), ls = S.layout.signals.map(s => signalLabel(S, s.id)), wye = S.layout.wye;
   assert.equal(new Set(ls).size, ls.length, `lab${i}`);
-  S.layout.signals.forEach((s, k) => assert.equal(ls[k][0], s.dir === E ? 'E' : 'W', `lab${i}: ${ls[k]}`));
+  S.layout.signals.forEach((s, k) => assert.equal(ls[k][0], s.dir === E ? 'E' : s.dir === W ? 'W' : wye.side === 'north' ? 'S' : 'N', `lab${i}: ${ls[k]}`));
 }
 
 console.log('sim core ok');
