@@ -20,7 +20,7 @@
 - Signals right-hand: for +x travel the signal is drawn on the +y side, for −x on the −y side, each with a direction chevron.
 - Trains never pass a Stop aspect; two trains never occupy the same edge.
 - Dark navy background, never pure black. Base `#0b1020`.
-- Deploy target `dogzrbar@firetailfab.com:/home/dogzrbar/public_html/firetailfab/idleswitch/`; rsync flags and exclusions as `../Gridworks/manage.sh`.
+- Deploy target the git-ignored `.deploy` file; rsync flags and exclusions as `../Gridworks/manage.sh`.
 - Repo `zebadrabbit/IdleSwitch`, public, MIT, homepage `https://firetailfab.com/idleswitch/`.
 - Units: 1 cell = 0.05 mile. `MPH = 1/180` cells per sim-second per mph. Car block `CAR = 0.6` cells, locomotive `LOCO = 0.8` cells. `CELL = 24` px at zoom 1.
 - Mark every deliberate shortcut with a `// ponytail:` comment naming the ceiling.

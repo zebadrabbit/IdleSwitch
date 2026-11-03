@@ -48,12 +48,15 @@ case "${1:-}" in
     ;;
   deploy)
     # No build step: the site is the repo root. Ship it as-is, minus dev-only files.
+    # The target (user@host:/path/) lives in the git-ignored .deploy file or DEPLOY_TARGET, never here.
+    TARGET="${DEPLOY_TARGET:-$(cat .deploy 2>/dev/null || true)}"
+    [ -n "$TARGET" ] || { echo "deploy: put user@host:/path/ in .deploy or set DEPLOY_TARGET" >&2; exit 1; }
     # --chmod: local dirs like favicon/ are 700, which the web server can't enter (404s).
     rsync -avz --delete --delete-excluded --chmod=D755,F644 \
       --exclude .git --exclude .github --exclude .claude --exclude .superpowers --exclude .venv \
       --exclude docs --exclude tests --exclude tools --exclude brand \
       --exclude manage.sh --exclude CHANGELOG.md --exclude .gitignore --exclude '.server.*' \
-      ./ "${DEPLOY_TARGET:-dogzrbar@firetailfab.com:/home/dogzrbar/public_html/firetailfab/idleswitch/}"
+      --exclude .deploy ./ "$TARGET"
     ;;
   *)
     echo "usage: $0 {start|stop|restart|status|logs [n]|test|deploy}   (PORT=$PORT, override with PORT=nnnn)"

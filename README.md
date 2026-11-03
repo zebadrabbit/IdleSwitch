@@ -89,7 +89,7 @@ The Settings panel (5) holds sim speed, density, return to AUTO after 2 idle min
 
 ```
 index.html                  page shell
-manage.sh                   dev server, tests, deploy
+manage.sh                   dev server, tests
 src/rng.js                  seeded PRNG
 src/gen.js                  terminal generator
 src/sim.js                  interlocking, routes, signals, trains, traffic
@@ -122,10 +122,6 @@ Serves the repo root on http://localhost:8890 (override with `PORT=nnnn ./manage
 ```
 
 Needs Node 22. No packages to install.
-
-## Deploy
-
-`./manage.sh deploy` rsyncs the repo root to firetailfab.com/idleswitch, minus dev-only files. Needs SSH access to the host (override the target with `DEPLOY_TARGET`).
 
 ## Status
 

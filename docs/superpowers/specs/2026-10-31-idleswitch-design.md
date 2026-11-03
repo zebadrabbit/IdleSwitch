@@ -323,7 +323,7 @@ README.md  LICENSE (MIT)  .gitignore
 docs/superpowers/specs/     this file, and plans
 ```
 
-Deploy target: `dogzrbar@firetailfab.com:/home/dogzrbar/public_html/firetailfab/idleswitch/`,
+Deploy target: the git-ignored `.deploy` file,
 same rsync flags and exclusions as Gridworks.
 
 ## Repository
