@@ -1,6 +1,6 @@
 // Panel bodies as HTML strings built from sim state (no DOM). ui.js puts them in place and wires the buttons
 // through their data-* attributes. Everything from the sim or the URL goes through esc().
-import { TYPES, MPH, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, signalAheadOf, portalAtNode, switchLocked,
+import { TYPES, MPH, isLight, DENSITY, aspectOf, signalHeads, lamps, signalLabel, routeFrom, signalAheadOf, portalAtNode, switchLocked,
   isWrongMain } from './sim.js';
 import { COLORS } from './render.js';
 import { SPEEDS, DAY_LENGTHS, formatClock, formatDelay } from './ui-util.js';
@@ -104,7 +104,7 @@ function trainHTML(sim, t, armed) {
   return kv([['Train', `${swatch(COLORS.types[t.type])}<b class="mono">${esc(t.name)}</b>`], ['Type', esc(TYPES[t.type].name)],
     ['Direction', `${t.dir > 0 ? 'east' : 'west'}bound to ${esc(L.portals[t.exit].name)}`],
     ['Speed', `${Math.round(t.speed / MPH)} mph`], ['State', state],
-    ['Destination', t.dest === null ? '–' : esc(trackName(L, t.dest))], ['Length', `${TYPES[t.type].cars} cars`],
+    ['Destination', t.dest === null ? '–' : esc(trackName(L, t.dest))], ['Length', isLight(t) ? 'light engine' : `${t.cars} cars`],
     ['Delay', delayHTML(formatDelay(sim.time - t.sched))],
     ['Signal ahead', ahead === undefined ? 'none (exit)' : `<span class="mono">${signalLabel(sim, ahead)}</span> ${aspectHTML(sim, ahead)}`]])
     + (armed !== null ? `<div class="sub">Routes from ${signalLabel(sim, armed)}</div>${exitsHTML(sim, armed)}` : '');

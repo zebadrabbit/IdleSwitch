@@ -6,7 +6,7 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   wrongMainTrains, PASS_WAIT,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
-  trainBlocks, headNode, reverse, PUSH_MPH,
+  trainBlocks, headNode, reverse, PUSH_MPH, CUT_MIN, CUT_MAX, cutLen,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
   WRONG_MAIN_COST, MOVING_COST, STANDING_COST, nightLevel, SLOW_ORDER, edgeSpeed, slowOrderLabel, OPERATORS } from '../src/sim.js';
 import { trainStatus, boardHTML, exitLabel } from '../src/panels.js';
@@ -16,7 +16,7 @@ const L = generate('lebanon');
 assert.ok(L.modules.some(m => m.kind === 'station'), 'lebanon has a station (no seed loop needed)');
 const sim = createSim(L, 'lebanon');
 const W = -1, E = 1;
-const SLOW = ['yard', 'siding', 'spur'];
+const SLOW = ['yard', 'siding', 'spur', 'stub', 'lead'];
 const farOf = (G, e, n) => { const ed = G.edges[e]; assert.ok(ed.a === n || ed.b === n, `edge ${e} not at node ${n}`); return ed.a === n ? ed.b : ed.a; };
 const walk = (G, from, es) => es.reduce((ns, e) => [...ns, farOf(G, e, ns.at(-1))], [from]); // node ids along an edge list
 const allClear = S => S.routes.size === 0 && S.edgeState.every(s => s.route === null && s.occ.size === 0);
@@ -626,7 +626,7 @@ for (const t of Object.keys(TYPES)) assert.ok(close(trainLength(t), LOCO + TYPES
 const X = spawnTrain(S, { type: 'X', dir: W, name: 'X 101' });
 const exitW = exitNodes(S, X)[0];
 assert.equal(S.trains.get(X.id), X);
-assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, entry: 1, exit: 0, prio: 5, len: trainLength('X'),
+assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, cars: 8, entry: 1, exit: 0, prio: 5, len: trainLength('X'),
   maxSpeed: 60 * MPH, path: [], pathStart: pnode(S, W), routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null,
   goal: { exit: 0 }, dwellUntil: 0, holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false,
   events: [], run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: W, reversed1: false });
@@ -2367,5 +2367,52 @@ for (const stood of [20, 19]) {
   assert.ok(S.log.some(e => e.text === `P 2 missed ${G.tracks[w.stub].name}`));
   assert.deepEqual([S.completed.find(c => c.name === 'P 2')?.to, T.terminus, T.reversed1, S.reserved.size], [portalOf(S, W).name, false, false, 0]);
 }
+}
+
+// ---- Industrial cuts: cars per train, standing cuts, and the cut as a wall (spec "Traffic", "The visit" 8)
+{
+  const quiet = seed => { const S = createSim(generate(seed), seed); S.nextSpawn = S.nextSpawn.map(() => Infinity); return S; };
+  const stand = (S, T, path, start) => { // T on path from start, head FOUL short of its end
+    Object.assign(T, { path: [...path], pathStart: start, state: 'stopped' });
+    T.headDist = pathLength(S, T) - FOUL;
+    path.forEach(e => S.edgeState[e].occ.add(T.id));
+    return T;
+  };
+  assert.equal(trainLength('M', 5), LOCO + 5 * CAR);
+  const S0 = quiet('s7');
+  const lt = spawnTrain(S0, { type: 'M', dir: W, cars: 0 }), ld = spawnTrain(S0, { type: 'M', dir: W, cars: 4 });
+  assert.deepEqual([lt.len, lt.cars, ld.cars, spawnTrain(S0, { type: 'M', dir: W }).cars], [LOCO, 0, 4, TYPES.M.cars]);
+  const F0 = S0.layout.fan, lead0 = S0.layout.edges.find(e => [e.a, e.b].includes(F0.Lt) && [e.a, e.b].includes(F0.J)).id;
+  stand(S0, lt, [lead0], F0.Lt); stand(S0, ld, [lead0], F0.Lt);
+  ld.headDist = pathLength(S0, ld);
+  assert.deepEqual([trainBlocks(S0, lt).map(b => b.kind), trainBlocks(S0, ld).filter(b => b.kind === 'car').length], [['loco'], 4]);
+  const cutsOf = S => [...S.cuts.values()].map(c => [c.track, c.type, c.cars]);
+  for (const seed of ['s7', 's5']) {
+    const S = createSim(generate(seed), seed), F = S.layout.fan;
+    assert.equal(F.stubs.filter(id => S.cuts.has(id)).length, F.count - 1, `${seed}: one stub empty`);
+    for (const [id, c] of S.cuts) {
+      assert.ok((F.stubs.includes(id) || S.layout.spurStubs.some(k => k.stub === id)) && c.track === id && c.type === S.layout.tracks[id].industry.trainType, `${seed}: cut ${id}`);
+      assert.ok(c.cars >= CUT_MIN && c.cars <= CUT_MAX && cutLen(c) === c.cars * CAR, `${seed}: cut size ${c.cars}`);
+    }
+    assert.deepEqual(cutsOf(createSim(generate(seed), seed)), cutsOf(S), `${seed}: cuts are deterministic`);
+  }
+  assert.equal(createSim(generate('lebanon'), 'lebanon').cuts.size, 0);
+  // the wall: a light engine at J's shunt routed into a stub stops FOUL short of the buffer, or a cut short of that
+  const stopHead = full => {
+    const S = quiet('s7'), G = S.layout, F = G.fan, id = F.stubs[0], [e1, e2] = G.tracks[id].edges;
+    S.cuts.clear();
+    if (full) S.cuts.set(id, { track: id, type: 'C', cars: 5 });
+    const buffer = [G.edges[e2].a, G.edges[e2].b].find(n => n !== G.edges[e1].a && n !== G.edges[e1].b);
+    const lead = G.edges.find(e => [e.a, e.b].includes(F.Lt) && [e.a, e.b].includes(F.J));
+    const T = stand(S, spawnTrain(S, { type: 'M', dir: E, cars: 0 }), [lead.id], F.Lt);
+    T.speed = 0;
+    assert.equal(setRoute(S, F.shunt.J, buffer, { trainId: T.id }).ok, true);
+    for (let i = 0; i < 2000 && !(T.speed === 0 && T.state === 'stopped' && T.headDist > 5); i++) { moveTrains(S); S.time++; }
+    assert.ok(T.headDist > 5, 'the train took the route into the stub');
+    return [T.headDist, pathLength(S, T)];
+  };
+  const [h0, p0] = stopHead(false), [h1, p1] = stopHead(true);
+  assert.ok(close(h0, p0 - FOUL, 1e-6), `empty stub: ${h0} vs ${p0}`);
+  assert.ok(close(h1, p1 - FOUL - 5 * CAR, 1e-6), `full stub: ${h1} vs ${p1}`);
 }
 console.log('terminus ok');

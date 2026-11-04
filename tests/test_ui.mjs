@@ -289,4 +289,10 @@ for (const seed of ['s8', 's14']) {
   }
 }
 
+// A light engine's inspector says so.
+{
+  const Q = createSim(generate('lebanon'), 'lebanon'), T = spawnTrain(Q, { type: 'M', dir: 1, cars: 0 });
+  assert.match(inspectorHTML(Q, { kind: 'train', id: T.id }, null), /light engine/);
+}
+
 console.log('ui ok');

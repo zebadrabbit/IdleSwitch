@@ -11,7 +11,7 @@
 // (reverse): its path becomes the edges it stands on, reversed, and its dir flips (spec "Phase 2").
 import { makeRng, pick, randInt } from './rng.js';
 
-const SLOW_CLS = new Set(['yard', 'siding', 'spur']);
+const SLOW_CLS = new Set(['yard', 'siding', 'spur', 'stub', 'lead']);
 const far = (edge, n) => (edge.a === n ? edge.b : edge.a);
 
 export function createSim(layout, seed, opts = { density: 'normal' }) {
@@ -36,6 +36,7 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
     queue: portals.map(() => []), nextSpawn: portals.map(() => start), completed: [], // by portal id
     time: start, log: [], auto: false, density: opts.density ?? 'normal',
     rng: makeRng(seed + ':sim'), branchRng: makeRng(seed + ':branch'), _aspects: new Map(),
+    cuts: new Map(), cutRng: makeRng(seed + ':cuts'),
     dayLength: opts.dayLength ?? 2400, slowOrders: opts.slowOrders ?? true, extras: makeRng(seed + ':extras'), slowOrder: null,
   };
   sim.nextSlowOrder = start - SLOW_ORDER.gap * Math.log(1 - sim.extras());
@@ -55,7 +56,19 @@ export function createSim(layout, seed, opts = { density: 'normal' }) {
   sim.reach = reachability(sim);
   // Train numbers count up per direction from a seeded start in 100..400: even eastbound, odd westbound.
   sim.nextName = { 1: 2 * randInt(sim.rng, 50, 200), '-1': 2 * randInt(sim.rng, 50, 199) + 1 };
+  initialCuts(sim);
   return sim;
+}
+
+// Standing cuts (spec "Traffic"): every stub of a fan but one (cutRng picks) holds one, each spur stub by a fair coin;
+// a cut is its stub's industry type, CUT_MIN..CUT_MAX cars. Drawn only when a stub exists, so other seeds are untouched.
+export const CUT_MIN = 3, CUT_MAX = 8;
+export const cutLen = cut => cut.cars * CAR;
+function initialCuts(sim) {
+  const { fan, spurStubs, tracks } = sim.layout, put = id =>
+    sim.cuts.set(id, { track: id, type: tracks[id].industry.trainType, cars: randInt(sim.cutRng, CUT_MIN, CUT_MAX) });
+  if (fan) { const empty = pick(sim.cutRng, fan.stubs); fan.stubs.filter(id => id !== empty).forEach(put); }
+  for (const { stub } of spurStubs ?? []) if (sim.cutRng() < 0.5) put(stub);
 }
 
 // The west or east portal a dir train enters by (the far end's is portalFor(-dir), where it leaves).
@@ -213,6 +226,7 @@ export const wrongMainTrains = sim => [...sim.trains.values()].filter(t => isWro
 function senseIn(sim, e, u) {
   const { edges, nodes, mainRow, wye } = sim.layout, ed = edges[e], a = nodes[u], b = nodes[far(ed, u)];
   if (ed.main != null) return Math.sign(b.x - a.x);
+  if (ed.cls === 'lead' || ed.cls === 'stub') return Math.sign(b.x - a.x) * -sim.layout.fan.main; // the fan: +1 outbound
   const y = mainRow[wye.feetMain];
   return Math.abs(b.y - y) < Math.abs(a.y - y) ? 1 : -1;
 }
@@ -435,7 +449,8 @@ export const TYPES = {
   L: { name: 'Local', prio: 0, cars: 6, max: 40, acc: 0.5, dec: 0.8 },
 };
 
-export const trainLength = type => LOCO + TYPES[type].cars * CAR;
+export const trainLength = (type, cars = TYPES[type].cars) => LOCO + cars * CAR;
+export const isLight = train => train.cars === 0;
 
 // Head at the entry portal node with nothing occupied; its first adopted route gives it its first edges.
 // Positions are cumulative along the train's run from that portal: path[0] starts at pathOff, at node pathStart.
@@ -446,11 +461,11 @@ export const trainLength = type => LOCO + TYPES[type].cars * CAR;
 // then the portal it came in by (where its reversed dir now runs, so the board and captions read true). run: cells
 // run before its last reversal (pathOff restarts there); locoAtTail and pushing while it backs in; reversed1 once it has
 // turned round at P.
-export function spawnTrain(sim, { type, dir, dest = null, name, id = sim.nextTrainId++, entry = portalFor(sim, dir),
+export function spawnTrain(sim, { type, dir, dest = null, cars = TYPES[type].cars, name, id = sim.nextTrainId++, entry = portalFor(sim, dir),
   exit = portalFor(sim, -dir) }) {
   const T = TYPES[type], terminus = dest !== null && !!sim.layout.tracks[dest].stub;
   const train = {
-    id, name: name ?? `${type} ${id}`, type, dir, entry, exit, prio: T.prio, len: trainLength(type), maxSpeed: T.max * MPH,
+    id, name: name ?? `${type} ${id}`, type, dir, cars, entry, exit, prio: T.prio, len: trainLength(type, cars), maxSpeed: T.max * MPH,
     path: [], pathStart: sim.layout.portals[entry].node, routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
     goal: terminus ? { node: sim.layout.wye.P[dir] } : dest !== null ? { track: dest } : { exit },
     dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, stalled: false, events: [],
@@ -493,7 +508,7 @@ export function pointAt(sim, train, dist) {
 // lag (cells) draws the train that far behind its head: the renderer passes the unelapsed part of the last step's
 // advance so motion is smooth between 1 s sim steps.
 export function trainBlocks(sim, train, lag = 0) {
-  const out = [], start = train.pathOff, end = pathLength(sim, train), head = train.headDist - lag, n = TYPES[train.type].cars;
+  const out = [], start = train.pathOff, end = pathLength(sim, train), head = train.headDist - lag, n = train.cars;
   const cars = Array.from({ length: n }, (_, j) => [head - ((train.locoAtTail ? 0 : LOCO) + j * CAR), CAR, 'car']); // [front, size, kind]
   const loco = [train.locoAtTail ? head - n * CAR : head, LOCO, 'loco'];
   for (const [front, size, kind] of train.locoAtTail ? [...cars, loco] : [loco, ...cars]) {
@@ -614,6 +629,12 @@ export function despawnTrain(sim, train) {
 export const PUSH_MPH = 15; // a pushing train's limit (spec "Reversal")
 
 // One step of dt sim seconds for every train. Does not advance sim.time (step owns it).
+// The stop point: FOUL short of the path's end, and a cut short of that when the path ends in a stub holding one (the
+// loco runs up to the cut and touches it; nothing runs into a cut, however it was routed).
+export function stopDist(sim, train) {
+  const last = sim.layout.edges[train.path.at(-1)], cut = last && sim.cuts.get(last.track);
+  return train.pathOff + train.path.reduce((s, e) => s + sim.layout.edges[e].len, 0) - FOUL - (cut ? cutLen(cut) : 0);
+}
 export function moveTrains(sim, dt = 1) {
   const { edges, tracks } = sim.layout;
   for (const train of [...sim.trains.values()]) {
@@ -643,7 +664,7 @@ export function moveTrains(sim, dt = 1) {
       s = end;
     }
     if (train.pushing) vAllowed = Math.min(vAllowed, PUSH_MPH * MPH);
-    const remaining = runOff ? Infinity : s - train.headDist - FOUL; // to the stop point FOUL short of the path's end
+    const remaining = runOff ? Infinity : stopDist(sim, train) - train.headDist; // to the stop point
     vAllowed = Math.min(vAllowed, Math.sqrt(2 * dec * Math.max(0, remaining)));
     // ponytail: brake curve is one-sided; fine for a panel sim
     let v = Math.min(train.speed + acc * dt, vAllowed), adv = v * dt;
@@ -752,7 +773,7 @@ export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
     ...(stub === null ? [] : [{ type: 'P', dest: stub, weight: 6 * pax, terminus: true }, { type: 'X', dest: stub, weight: 3 * pax, terminus: true }])];
   // A train too long for its track would wedge the queue for good. The generator's capacity floors mean this
   // drops nothing; the spawn gate checks fits again anyway.
-  return menu.filter(m => m.dest === null || fits(sim, { len: trainLength(m.type) }, m.dest));
+  return menu.filter(m => m.dest === null || fits(sim, { len: trainLength(m.type, m.cars) }, m.dest));
 }
 
 const dwellFor = (sim, type, dest) => (dest === null ? 0 : sim.layout.tracks[dest].stub ? DWELL.terminus
@@ -778,7 +799,7 @@ function newEntry(sim, portalId) {
   // Its home main, portal to far end.
   const mainLen = edges.reduce((s, e) => s + (e.main === dir ? e.len : 0), 0);
   const run = mainLen / (0.8 * TYPES[type].max * MPH);
-  return { id: sim.nextTrainId++, name, type, dir, entry: portalId, exit, dest, len: trainLength(type), ...(terminus ? { terminus } : {}),
+  return { id: sim.nextTrainId++, name, type, dir, entry: portalId, exit, dest, cars: TYPES[type].cars, len: trainLength(type), ...(terminus ? { terminus } : {}),
     spawnTime: sim.time, sched: Math.round(sim.time + run + dwellFor(sim, type, dest) + 5 * 60) };
 }
 
