@@ -1193,14 +1193,14 @@ for (const seed of ['s1', 's3']) {
 // light engine out of its spur stub held 37 min), in from the fan's serving portal and out at the far end;
 // at least three visits (a set-out or a pick-up) completed per fan seed. Two spur-stub seeds (pN north, pS south; s7, s42,
 // s47, fS and fS2 have one too) with the same, plus: at most one train in a spur and its stub; every train drawn for a spur
-// with a stub a visitor of at most CUT_MAX cars (never a unit train); its visitors in from its dir's portal (or the branch)
-// and out at the far end; at least three visits completed per spur stub of pN and pS.
+// with a stub a visitor of at most CUT_MAX cars (never a unit train); its visitors in from its dir's main portal (never the
+// branch) and out at the far end; at least three visits completed per spur stub of pN and pS.
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
 let sawWrongMain = false;
 for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, fN, fS, fS2, pN, pS])]) {
   const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0), F = G.fan;
-  const fanEdges = F ? fanGeo(S).fan : [], visitors = new Map(), heldS = new Map(); // name -> its shunt kind, s held after its visit
+  const fanEdges = F ? fanGeo(S).fan : [], visitors = new Set(), heldS = new Map(); // visitors' names; name -> s held after its visit
   const spurs = G.spurStubs.map(k => [...G.tracks[k.spur].edges, ...S.adj.get(k.Xs), ...G.tracks[k.stub].edges]);
   const branchSec = w ? G.edges.find(e => e.cls === 'wye').section : null, rows = [G.mainRow[E], G.mainRow[W]];
   const feet = w?.kind === 'terminus' ? termOf(S).feet : [], loco = new Map(); // train id -> locoAtTail after the last step
@@ -1235,8 +1235,9 @@ for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, f
       const coming = T.run === 0 && T.pathOff === 0 && T.pathStart === G.portals[T.entry].node;
       assert.ok(coming || T.headDist - T.len >= T.pathOff - 1e-9, `${seed}: ${T.name}'s tail is off its path`);
       if (S.cuts.has(G.edges[T.path.at(-1)]?.track)) assert.ok(T.headDist <= stopDist(S, T) + 1e-6, `${seed}: ${T.name} past a cut`);
-      if (T.shunt) visitors.set(T.name, T.shunt.kind);
+      if (T.shunt) visitors.add(T.name);
       if (!T.terminus && !visitors.has(T.name)) continue;
+      if (T.shunt) assert.equal(T.holdFor, null, `${seed}: visitor ${T.name} held during its visit`); // (never held: spec)
       if (T.holdFor !== null) heldS.set(T.name, (heldS.get(T.name) ?? 0) + 1);
       const since = S.time - T.events.find(e => e.kind === 'entered').t - (heldS.get(T.name) ?? 0);
       assert.ok(since <= 3600, `${seed}: ${T.terminus ? 'terminus' : 'visitor'} ${T.name} in for ${since} s`);
@@ -1316,8 +1317,7 @@ for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, f
     // in at its dir's portal or the branch, out at the far end or the branch, never in and out by the branch; a terminus
     // train (it reversed) in and out by its dir's portal, within the hour
     const d = Number(c.name.split(' ')[1]) % 2 ? W : E, term = c.events.some(e => e.kind === 'reversing') && !visitors.has(c.name);
-    if (visitors.has(c.name)) assert.ok((visitors.get(c.name) === 'fan' ? [portalOf(S, F.main).name] : [portalOf(S, d).name, br?.name]).includes(c.from)
-      && c.to === portalOf(S, -d).name, `${seed}: visitor ${c.name} from ${c.from} to ${c.to}`);
+    if (visitors.has(c.name)) assert.ok(c.from === portalOf(S, d).name && c.to === portalOf(S, -d).name, `${seed}: visitor ${c.name} from ${c.from} to ${c.to}`);
     else if (term) assert.ok(c.from === portalOf(S, d).name && c.to === c.from && c.exitTime - c.events[1].t <= 3600, `${seed}: terminus ${c.name} from ${c.from} to ${c.to}`);
     else assert.ok([portalOf(S, d).name, br?.name].includes(c.from) && [portalOf(S, -d).name, br?.name].includes(c.to) && c.from !== c.to,
       `${seed}: ${c.name} from ${c.from} to ${c.to}`);
@@ -2772,13 +2772,15 @@ for (const [visitor, stood] of [[false, 0], [true, 0], [true, 600]]) {
   assert.ok(on('V 1'), 'not entered with the train home');
 }
 
-// A human route from the fan's lead signal (Lt) or from a stub's signal with no train at it dies after GRACE, like a shunt's
-// (amendment 2026-11-04, the monkey runs): only a visitor ever stands there. Lt's runs down the lead onto the run and held
-// the run 35 min on s12 under random clicking; one from a stub signal lived on while a visitor was bound for that stub.
-for (const from of ['Lt', 'stub']) {
-  const S = quiet(fN), G = S.layout, F = G.fan, full = fullOf(S);
-  const sig = from === 'Lt' ? F.leadSignal : fanGeo(S).stubSig(full), c = S.routesFrom.get(sig)[0];
-  if (from === 'stub') spawnTrain(S, { type: 'M', dir: F.main, dest: full, cars: 0, shunt: true, name: 'V 1' }); // bound for it, at its portal
+// A human route from the fan's lead signal (Lt) or from a stub's signal (a fan's Si, a spur stub's Sq) with no train at it
+// dies after GRACE, like a shunt's (amendment 2026-11-04, the monkey runs): only a visitor ever stands there. Lt's runs down
+// the lead onto the run and held the run 35 min on s12 under random clicking; one from a stub signal lived on while a visitor
+// was bound for that stub (Sq on pS: the visitor's dest as from its reverse 1).
+for (const from of ['Lt', 'Si', 'Sq']) {
+  const S = quiet(from === 'Sq' ? pS : fN), F = S.layout.fan, k = from === 'Sq' && spurGeo(S, 'south');
+  const sig = from === 'Lt' ? F.leadSignal : from === 'Si' ? fanGeo(S).stubSig(fullOf(S)) : k.stubSig, c = S.routesFrom.get(sig)[0];
+  if (from === 'Si') spawnTrain(S, { type: 'M', dir: F.main, dest: fullOf(S), cars: 0, shunt: true, name: 'V 1' }); // bound for it, at its portal
+  if (from === 'Sq') spawnTrain(S, { type: 'M', dir: k.d, dest: k.spur, cars: 0, shunt: true, name: 'V 1' }).dest = k.stub;
   const r = setRoute(S, sig, c.exitNode, { human: true }).route;
   assert.ok(r, `${from}: route not set`);
   S.auto = true;
@@ -2792,7 +2794,8 @@ for (const from of ['Lt', 'stub']) {
 // westbound spur with a stub (above Main 1), pS: an eastbound one (below Main 2).
 // The menu: a spur with a stub is an industrial lead. In place of its spur item, one visit with dest the spur and stub its
 // stub, of the spur's industry type: loaded (CUT_MAX here: newEntry draws the cut) at 3 x frt while the stub is empty, light
-// at 2 x frt while it is full; none while the spur is held or a visitor for it is queued. A spur with no stub keeps its item.
+// at 2 x frt while it is full; none while the spur is held or a visitor for it is queued, and none at a junction's branch
+// portal (only at its dir's main portal, as the fan's). A spur with no stub keeps its item.
 for (const [seed, side] of [[pN, 'north'], [pS, 'south']]) {
   const S = quiet(seed), G = S.layout, k = spurGeo(S, side), d = k.d, at = portalOf(S, d).id, type = k.sp.industry.trainType;
   const items = () => trafficMenu(S, d).filter(m => m.dest === k.spur);
@@ -2800,6 +2803,8 @@ for (const [seed, side] of [[pN, 'north'], [pS, 'south']]) {
   assert.deepEqual(items(), [{ type, cars: CUT_MAX, dest: k.spur, stub: k.stub, weight: 3, shunt: true }], `${seed}: loaded`);
   S.cuts.set(k.stub, { track: k.stub, type, cars: 5 });
   assert.deepEqual(items(), [{ type, cars: 0, dest: k.spur, stub: k.stub, weight: 2, shunt: true }], `${seed}: light`);
+  for (const p of G.portals.filter(p => p.dir === 0)) // (pN is a junction whose branch reaches the spur)
+    assert.deepEqual([S.reach.tracks[`${p.id}:${d}`].has(k.spur), trafficMenu(S, d, p.id).filter(m => m.dest === k.spur)], [true, []], `${seed}: drawn at the branch portal`);
   for (const t of G.tracks.filter(t => t.cls === 'spur' && t.stubOf == null))
     assert.deepEqual(trafficMenu(S, t.dir).filter(m => m.dest === t.id), [{ type: t.industry.trainType, dest: t.id, weight: 2 }], `${seed}: ${t.name}`);
   S.queue[at].push({ id: 90, name: 'M 91', type, dir: d, entry: at, exit: portalOf(S, -d).id, dest: k.spur, cars: 0, shunt: true,

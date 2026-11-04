@@ -173,6 +173,9 @@ the 25-minute industry dwell.
   exists, weight `2 × frt`. A spur with a stub replaces its spur item with the same two, keyed on its one stub. Both
   items drop from the menu while the fan (or the spur) is not free or while a visitor for it is queued (the terminus's
   "one in the offing" rule, for the same reason).
+  (Amended 2026-11-04, Task 4 fix round 1: **a spur stub's items come from its dir's main portal only**, never a
+  junction's branch portal, as the fan's. Drawn at the branch too, s166's visitors stood at the stem waiting to cross the
+  gap until the valve gave the visit up: 1 visit and 4 given up in 8 busy hours, against 6 and none now.)
 - **Reservation.** A fan is one unit: `trackFree` for any of its stubs is false while a train is in, routed into or
   reserved for any track of the fan (`sim.reserved` is set on the visitor's `dest` stub as today, and `fanOf(track)`
   widens the check). A spur stub is reached only over its spur, so reserving the spur covers both: a stub visitor's

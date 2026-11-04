@@ -791,7 +791,9 @@ function reachability(sim) {
 // its first full stub, each of its stub's industry type, marked shunt. Rule: only while the fan is free and no visitor for
 // it is queued (one in the offing, as the terminus). A spur with a stub is an industrial lead: in place of its spur item, the
 // same visit keyed on its one stub (dest the spur, whose reservation covers the stub), loaded while the stub is empty, light
-// while it is full, by the same rule on the spur. So no unit train is ever drawn for it.
+// while it is full, by the same rule on the spur, and like the fan's at its dir's main portal only (drawn at a junction's
+// branch portal too, s166's stood at the stem to cross the gap until the valve gave the visit up). So no unit train is ever
+// drawn for it.
 export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
   const reach = sim.reach.tracks[`${portalId}:${dir}`], mine = sim.layout.tracks.filter(t => t.dir === dir && reach.has(t.id));
   const n = nightOf(sim), pax = 1 - 0.7 * n, frt = 1 + 0.7 * n, { wye, portals, fan, tracks } = sim.layout, visits = [];
@@ -807,7 +809,7 @@ export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
     { type: 'M', dest: null, weight: 3 * frt },
     ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 * pax })),
     ...mine.filter(t => t.cls === 'spur').flatMap(t => (t.stubOf == null ? [{ type: t.industry.trainType, dest: t.id, weight: 2 * frt }]
-      : !trackFree(sim, t.id) || sim.queue.some(q => q.some(k => k.shunt && k.dest === t.id)) ? []
+      : !trackFree(sim, t.id) || sim.queue.some(q => q.some(k => k.shunt && k.dest === t.id)) || portalId !== portalFor(sim, dir) ? []
       : [{ type: t.industry.trainType, cars: sim.cuts.has(t.stubOf) ? 0 : CUT_MAX, dest: t.id, stub: t.stubOf,
         weight: (sim.cuts.has(t.stubOf) ? 2 : 3) * frt, shunt: true }])),
     ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 })),
@@ -981,8 +983,9 @@ function shuntStep(sim, t) {
     t.events.push({ t: sim.time, kind: 'reversing', signal: sig });
   };
   if (s.stage === 'approach') {
-    if (still && headNode(sim, t) === s.stand && (s.stub == null ? clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false })
-      : clearToReverse(sim, t, tracks[t.dest].edges))) { // (a fan visitor's last edge is the run)
+    if (still && headNode(sim, t) === s.stand && (s.stub == null
+      ? clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false }) // (a fan visitor's last edge is the run)
+      : clearToReverse(sim, t, tracks[t.dest].edges))) {
       t.dest = s.stub ?? t.dest;
       turn(-t.arrival, { track: t.dest }, 'in');
     }

@@ -76,6 +76,7 @@ for (const seed of monkey ? seeds.slice(0, Number(process.argv[3] ?? 20)) : seed
     `visits ${r.visits.join('/')}`, `missed ${r.missed}`, `STALL ${r.stalls}`, `stand ${min(r.stand)}`, `stuck ${min(r.stuck)}`,
     `full ${r.full}/${r.stubs}`, r.wedged.length ? `WEDGE ${r.wedged.join(', ')}` : (monkey ? 'recovered' : 'ok')].join('  '));
 }
+if (!rows.length) { console.log('no industrial seeds in range'); process.exit(0); }
 const sum = k => rows.reduce((s, r) => s + r[k], 0), top = k => rows.reduce((a, r) => (r[k] > a[k] ? r : a), rows[0]);
 const wedges = rows.filter(r => r.wedged.length);
 console.log(`\n${rows.length} seeds (${rows.filter(r => r.fan).length} fans, ${sum('spur')} spur stubs), ${monkey ? '4 h clicking + 1 h AUTO' : '8 h busy AUTO'}:`
