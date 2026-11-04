@@ -977,9 +977,10 @@ function missions(sim) {
 // shunt signal backs it into its stub. in: stopped in a stub (its dest, or one a human sent it into), it works it if it
 // can, loaded at an empty one (setOut) or light at a full one (pickUp), and when its dwell is up its cars become the cut
 // (or the cut's its cars) where they stand, the loco's pixels unmoved; then, or at once where it can work nothing, it turns
-// round, loco leading, for Lt (out after a set-out, depart otherwise). out: at Lt, light, it turns round again for the
-// first other full stub (in), if any. At Lt otherwise it is done with the fan and runs for its exit. Each reversal waits
-// one still step (!adv, as the terminus's) and for no other train or route in the sections it stands in (clearToReverse).
+// round, loco leading, for Lt (out after a set-out while another stub of the fan is full and a fair coin on cutRng says so,
+// depart otherwise: spec "The visit" 7, amended). out: at Lt, light, it turns round again for the first other full stub
+// (in). At Lt otherwise it is done with the fan and runs for its exit. Each reversal waits one still step (!adv, as the
+// terminus's) and for no other train or route in the sections it stands in (clearToReverse).
 // A spur stub's visitor (kind spur) runs the same stages with the spur's exit signal for its stand and its lead: it turns
 // round there when its spur is clear, waiting for no wrong-main train (it stands on no main: spec "Builder check" 4), bound
 // now for the stub (its dest; the spur stays reserved for it), and with one stub it leaves after its one set-out or pick-up.
@@ -1017,7 +1018,8 @@ function shuntStep(sim, t) {
       logEvent(sim, `${t.name} picked up ${n} cars at ${name()}`);
       t.events.push({ t: sim.time, kind: 'pickUp', track: name(), cars: n });
     }
-    turn(t.arrival, { node: s.lead }, s.stage === 'setOut' ? 'out' : 'depart');
+    const pick = s.stage === 'setOut' && s.fan?.stubs.some(id => id !== t.dest && sim.cuts.has(id)) && sim.cutRng() < 0.5;
+    turn(t.arrival, { node: s.lead }, pick ? 'out' : 'depart');
   } else if (s.stage === 'in' && t.state === 'stopped' && (s.fan?.stubs ?? [s.stub]).includes(at)) {
     if (at !== t.dest) retarget(at);
     if (isLight(t) === sim.cuts.has(at)) {

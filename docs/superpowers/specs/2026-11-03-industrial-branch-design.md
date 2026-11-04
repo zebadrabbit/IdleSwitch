@@ -213,6 +213,11 @@ terminus train is. `arrival` is its dir on entry. Stages, for a **loaded** visit
    touched.
 7. **Decide.** If some other stub of the fan is full: `dest` = the first full stub, **reverse 3** (`−arrival`; the
    loco "pushes" alone; head node `J`), `goal = { track: dest }`, continue at 8. Otherwise skip to 11 and leave light.
+   (Amended 2026-11-04, final review: **a fair coin on `sim.cutRng`.** A loaded visitor that has set out picks up at
+   another full stub only on one side of a coin drawn on `sim.cutRng`; on the other it leaves light though a full stub
+   exists. A light visitor still always picks up. The coin is drawn once, as the set-out ends, and only when another
+   stub of the fan is full, so no other draw moves and traffic without a fan is untouched. Picking up every time drained
+   each fan to one cut within the first hour: see "What is left to the builder".)
 8. **Back on.** Routed from `J`'s shunt to that stub's buffer. The **stop point** on a path that ends in a full stub
    is `cut.cars × CAR` short of the usual one (`FOUL` short of the buffer): the loco runs up to the cut and touches it.
    `moveTrains` applies this to every train whose path ends at a stub holding a cut, so nothing can ever run into a
@@ -446,3 +451,9 @@ The exact data shape of `train.shunt` and the stage names; how `cars` threads th
 and `newEntry`; the industry suffixes for spur-stub names; the exact menu weights if the long runs show stubs stuck
 all full or all empty (the balance knob is the light-visit weight); label and buffer-bar placement at every zoom; the
 order of the `:industrial` draws (fixed once, then frozen by the fixtures).
+
+(Amended 2026-11-04, final review: **the balance knob was step 7, not the light-visit weight.** With step 7 picking up
+every time, a loaded visit is net zero on a fan that holds a cut and a light visit is −1, so no weight lifts a fan back
+above one cut once it is down to it. Measured on 8 three-stub fans × 8 busy hours, hours with 0/1/2/3 cuts were about
+2.4/4.8/0.9/0.0, every fan below two cuts within 11–62 min (the review's seeds; on the first eight three-stub fans, s5,
+s11, s14, s19, s20, s23, s25 and s28: 1.2/5.2/1.6/0.1). With step 7's coin (above) those eight give 0.7/2.9/3.4/1.0.)

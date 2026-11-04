@@ -340,8 +340,9 @@ for (const seed of ['s7', 's5', 's3']) {
     assert.equal(d.filter(r => r.k === 'moveTo' && r.alpha === 0.7).length, n, `${seed}: ${n} cut cars at 70 %`);
   }
 }
-// A set-out or a pick-up moves no pixel: on s7 the first visitor sets its cars out on one stub of the fan, then runs light to
-// the other and picks up a cut of another type. The car strokes on that stub are where they were the frame before (each
+// A set-out or a pick-up moves no pixel: on s7 the first visitor sets its cars out on one stub of the fan and leaves light
+// (step 7's coin), a light engine picks that cut up, and the next visitor sets out there, then runs light to the other stub
+// and picks up a cut of another type. The car strokes on that stub are where they were the frame before (each
 // from either end: a stroke reads the same both ways, and the train turns round in the same step), in the same colour; the
 // picked-up cars then crossfade to the train's colour (spec "The visit" 9: one 16 ms frame of a 120 ms ease, then all).
 {
@@ -357,7 +358,7 @@ for (const seed of ['s7', 's5', 's3']) {
     return rec.flatMap((r, i) => r.k === 'moveTo' && r.alpha === 0.7 && Math.abs(r.a[1] - Y(p.y)) < 1e-6 && r.a[0] >= lo && r.a[0] <= hi
       ? [r.a[0] < rec[i + 1].a[0] ? [...r.a, ...rec[i + 1].a, r.s] : [...rec[i + 1].a, ...r.a, r.s]] : []).sort((a, b) => a[0] - b[0]);
   };
-  for (let i = 0; i < 3000 && done.length < 2; i++) {
+  for (let i = 0; i < 8000 && done.length < 4; i++) {
     const t = [...S.trains.values()].find(t => t.state === 'dwelling' && L.fan.stubs.includes(t.dest));
     if (!t) { step(S); continue; }
     const id = t.dest, had = S.cuts.get(id), before = carsOn(id);
@@ -365,13 +366,14 @@ for (const seed of ['s7', 's5', 's3']) {
     if (S.cuts.get(id) === had) continue;
     const after = carsOn(id), cut = had ?? S.cuts.get(id), [from, to] = [cut.type, t.type].map(k => rgbOf(COLORS.types[k]));
     const tinted = (bl, f) => bl.every(b => rgbOf(b[4]).every((v, k) => Math.abs(v - from[k]) <= f * Math.abs(to[k] - from[k]) + 0.5));
-    done.push([t.type, cut.type]);
+    done.push([had ? 'pickUp' : 'setOut', t.type, cut.type]);
     assert.ok(before.length === cut.cars && after.length === cut.cars && before.every((b, j) => b.slice(0, 4).every((v, k) => Math.abs(v - after[j][k]) < 1e-9))
       && tinted(before, 0) && tinted(after, 0.13), `s7: ${had ? 'a pick-up' : 'a set-out'} at ${L.tracks[id].name} moves no pixel ${JSON.stringify([before, after])}`);
     for (let k = 0; k < 40; k++) carsOn(id);
     assert.ok(carsOn(id).every(b => String(rgbOf(b[4])) === String(to)), `s7: then the train's colour`);
   }
-  assert.deepEqual(done, [['M', 'M'], ['M', 'I']], 's7: a set-out, then a pick-up of a cut of another type');
+  assert.deepEqual(done, [['setOut', 'M', 'M'], ['pickUp', 'M', 'M'], ['setOut', 'M', 'M'], ['pickUp', 'M', 'I']],
+    's7: a set-out, a light pick-up, a set-out, then a pick-up of a cut of another type');
 }
 assert.match(legendHTML(), /standing cut/);
 

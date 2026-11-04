@@ -1013,9 +1013,10 @@ for (const seed of ['lebanon', 's7', 's42']) {
 // overriding a hold by hand: the operator's un-entered hold route is cancelled and a human main route is set from
 // the same signal; the train drops the hold, takes the main and runs out, and nothing stalls. The awaited train is
 // a through X/Z (it never dwells or holds, and can't pass the holder now ahead of it on the main), so nothing but
-// the override itself can end the hold.
+// the override itself can end the hold. On s7's base layout: with its fan, such a hold comes and goes with the visits.
 {
-  const S = busySim('s7'), G = S.layout;
+  const S = createSim(generate('s7', { industrial: false }), 's7', { density: 'busy' }), G = S.layout;
+  S.auto = true;
   let T = null;
   for (let i = 0; i < 2 * 3600 && !T; i++) {
     step(S);
@@ -1191,13 +1192,15 @@ for (const seed of ['s1', 's3']) {
 // whose path ends in a full stub stands short of it); a visitor's reversals pass the same check as a terminus train's;
 // every visitor out within the hour of entering (time held for an overtake after its visit aside, as any train may be: s3's
 // light engine out of its spur stub held 37 min), in from the fan's serving portal and out at the far end;
-// at least three visits (a set-out or a pick-up) completed per fan seed. Two spur-stub seeds (pN north, pS south; s7, s42,
+// at least three visits (a set-out or a pick-up) completed per fan seed, and on some fan seed, at some minute after the
+// first hour, two cuts or more standing in a fan with no train in it (the fans do not drain to one cut: spec "The visit"
+// 7, amended). Two spur-stub seeds (pN north, pS south; s7, s42,
 // s47, fS and fS2 have one too) with the same, plus: at most one train in a spur and its stub; every train drawn for a spur
 // with a stub a visitor of at most CUT_MAX cars (never a unit train); its visitors in from its dir's main portal (never the
 // branch) and out at the far end; at least three visits completed per spur stub of pN and pS.
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
-let sawWrongMain = false;
+let sawWrongMain = false, sawFanFull = false;
 for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, fN, fS, fS2, pN, pS])]) {
   const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0), F = G.fan;
   const fanEdges = F ? fanGeo(S).fan : [], visitors = new Set(), heldS = new Map(); // visitors' names; name -> s held after its visit
@@ -1222,6 +1225,7 @@ for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, f
       const inFan = new Set([...S.trains.values()].filter(T => T.path.some(e => fanEdges.includes(e))).map(T => T.id));
       for (const e of fanEdges) if (S.edgeState[e].route !== null) inFan.add(S.routes.get(S.edgeState[e].route).trainId);
       assert.ok(inFan.size <= 1, `${seed}: two trains in the fan`);
+      if (i >= 3600 && !(i % 60) && !inFan.size && F.stubs.filter(id => S.cuts.has(id)).length >= 2) sawFanFull = true;
     }
     for (const es of spurs) {
       const inIt = new Set([...S.trains.values()].filter(T => T.path.some(e => es.includes(e))).map(T => T.id));
@@ -1350,6 +1354,7 @@ for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, f
 }
 assert.ok(held.size > 0, 'the overtake rule never held a train');
 assert.ok(sawWrongMain, 'no wrong-main run in 32 busy hours: the feature is dormant');
+assert.ok(sawFanFull, 'no fan held two cuts with no train in it after the first hour: the fans drain');
 
 // determinism: same seed, same day
 {
@@ -2609,7 +2614,8 @@ const said = (S, T, lines) => { // T's log lines in this order
 
 // A loaded visit: in by the serving portal, stands at P, turns round, backs in to the empty stub and sets its cars out
 // there as a standing cut, runs out light to Lt, turns round, backs on to the full stub's cut and picks it up, runs out
-// to Lt and leaves by the far end loco first. The board reads backing in, setting out and picking up.
+// to Lt and leaves by the far end loco first. The board reads backing in, setting out and picking up. (Step 7's coin,
+// spec "The visit" 7 amended, lands on the pick-up on fN and fS; on fS2 below it leaves light.)
 for (const seed of [fN, fS]) {
   let empty, full;
   const { S, T, words, left } = visit(seed, 4, S => { empty = emptyOf(S); full = fullOf(S); });
@@ -2622,7 +2628,8 @@ for (const seed of [fN, fS]) {
   assert.deepEqual([left.get(empty)?.cars, left.has(full), T.cars], [4, false, cut], `${seed}: the cuts as it left`);
   for (const w of ['backing in', 'setting out', 'picking up']) assert.ok(words.has(w), `${seed}: status words ${[...words]}`);
 }
-// A light visit picks up and leaves loaded; a loaded one with no other stub full sets out and leaves light.
+// A light visit picks up and leaves loaded; a loaded one with no other stub full sets out and leaves light, and so does
+// one whose coin says so though the other stub is full (fS2).
 for (const seed of [fN, fS]) {
   const { S, T } = visit(seed, 0), full = T.events.find(e => e.kind === 'pickUp').track;
   assert.deepEqual(kindsOf(T), ['queued', 'entered', 'route', 'reversing', 'route', 'backing', 'arrived', 'pickUp', 'reversing', 'route',
@@ -2633,6 +2640,12 @@ for (const seed of [fN, fS]) {
   const { S, T } = visit(fN, 5, S => S.cuts.clear()), stub = T.events.find(e => e.kind === 'setOut').track;
   assert.deepEqual(kindsOf(T).slice(-6), ['setOut', 'reversing', 'route', 'departed', 'route', 'out'], 'drop-only');
   assert.ok(T.cars === 0 && S.log.some(e => e.text === `V 1 departed ${stub} light`));
+}
+{
+  let full;
+  const { S, T, left } = visit(fS2, 4, S => { full = fullOf(S); }), stub = T.events.find(e => e.kind === 'setOut').track;
+  assert.deepEqual(kindsOf(T).slice(-6), ['setOut', 'reversing', 'route', 'departed', 'route', 'out'], 'the coin: leaves light');
+  assert.ok(T.cars === 0 && S.log.some(e => e.text === `V 1 departed ${stub} light`) && left.has(full), 'the coin: the other stub still full');
 }
 
 // A visitor a human routes into a stub other than its dest adapts (spec "Human routes"): loaded into a full stub (the
