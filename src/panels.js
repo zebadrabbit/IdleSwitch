@@ -136,7 +136,7 @@ const ASPECTS = [ // name, high 1 head, high 2 heads (top bottom), dwarf
   ['Diverging Clear', '', 'R G', ''], ['Diverging Approach', '', 'R Y', ''], ['Restricting', '', 'R FR', 'FR'],
   ['Slow Clear', '', '', 'G'], ['Stop', 'R', 'R R', 'R']];
 export const KEYS = [['Space', 'pause'], ['+ / −', 'speed'], ['A', 'AUTO / MANUAL'], ['F, 0', 'reset view'],
-  ['H', 'hide chrome'], ['Esc', 'clear selection'], ['1–5', 'board, log, inspector, legend, settings'], ['?', 'legend'],
+  ['H', 'hide chrome'], ['Esc', 'clear selection'], ['1–5', 'board, log, inspector, legend, settings'], ['?', 'about'],
   ['N', 'new seed'], ['wheel / drag', 'zoom / pan']];
 
 export function legendHTML() {
@@ -149,6 +149,27 @@ export function legendHTML() {
     + '<div class="sub">Trains</div><div class="cols">'
     + Object.keys(TYPES).map(t => `<div>${swatch(COLORS.types[t])}<span class="mono">${t}</span> ${TYPES[t].name}</div>`).join('') + '</div>'
     + `<div class="sub">Keys</div>${kv(KEYS.map(([k, v]) => [`<kbd>${k}</kbd>`, v]))}`;
+}
+
+// ---- About (static): what this is, where it lives, what it is not.
+export function aboutHTML() {
+  const a = (href, text) => `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+  return '<p><b>IdleSwitch</b> is an idle sim of a CTC dispatcher\'s panel. A seeded rail terminal draws itself and a virtual '
+    + 'operator routes the day\'s trains through it. Watch it, or take the panel and set routes yourself, NX-style: click an '
+    + 'entrance signal, then an exit. Walk away and the operator takes it back. The same seed always gives the same terminal '
+    + 'and the same day.</p>'
+    + kv([['Site', a('https://firetailfab.com/idleswitch/', 'firetailfab.com/idleswitch')],
+      ['Source', a('https://github.com/zebadrabbit/idleswitch', 'github.com/zebadrabbit/idleswitch')],
+      ['Issues', a('https://github.com/zebadrabbit/idleswitch/issues', 'report a bug or an idea')],
+      ['License', a('https://github.com/zebadrabbit/idleswitch/blob/main/LICENSE', 'MIT')]])
+    + '<div class="sub">Disclaimers</div>'
+    + '<p>This is a screensaver with things to do, not a training tool. Its interlocking, signal aspects, speeds and '
+    + 'priorities are a simplified sketch of North American practice and should not be taken as a reference for any of it.</p>'
+    + '<p>Every terminal, place, railroad and operator name is generated from the seed. Any resemblance to a real place, '
+    + 'company or person is coincidence. IdleSwitch is not affiliated with any railroad, agency or signalling vendor.</p>'
+    + '<p>Nothing leaves your browser: no accounts, no analytics, no network calls after the page loads. Panel layout and '
+    + 'settings are kept in this browser\'s local storage only.</p>'
+    + '<p class="dim">Software provided as is, without warranty of any kind, under the MIT License. Built by zebadrabbit with Claude.</p>';
 }
 
 // ---- Settings (built once; ui.js keeps the controls in sync).

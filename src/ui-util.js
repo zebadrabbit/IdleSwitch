@@ -1,7 +1,7 @@
 // Pure UI helpers (no DOM, no globals): clock and delay text, docking, NX matching, the frame clock, and
 // localStorage parsing with defaults. Unit-tested by tests/test_ui.mjs.
 
-export const PANELS = ['board', 'log', 'inspector', 'legend', 'settings']; // keys 1..5, in this order
+export const PANELS = ['board', 'log', 'inspector', 'legend', 'settings', 'about']; // keys 1..5 in this order; about is ?
 export const SPEEDS = [1, 2, 4, 8];
 export const DOCK_SNAP = 24; // px from a window edge that docks a released panel
 export const MAX_DT = 0.25;  // s of real time one frame may advance; a tab back from the background doesn't race
@@ -79,6 +79,7 @@ export const DEFAULT_LAYOUT = {
   board: { x: 0, y: 0, dock: 'right', hidden: false },
   log: { x: 0, y: 0, dock: 'bottom', hidden: false },
   inspector: { x: 12, y: 44, dock: null, hidden: false },
+  about: { x: 120, y: 90, dock: null, hidden: true },
   legend: { x: 324, y: 44, dock: null, hidden: true },
   settings: { x: 672, y: 44, dock: null, hidden: true },
   size: { left: 420, right: 420, bottom: 200 },

@@ -6,7 +6,7 @@ import { createRenderer, mix } from './render.js';
 import { createIdleCamera, tween, centreOn, pauseSkip, IDLE_CAM_MS } from './camera.js';
 import { PANELS, SPEEDS, DEFAULT_SETTINGS, DEFAULT_LAYOUT, formatClock, dockFor, matchCandidate, tick, randomSeed, loadJSON, saveJSON,
   cleanSettings, cleanLayout, clampDock } from './ui-util.js';
-import { boardHTML, logHTML, inspectorHTML, legendHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
+import { boardHTML, logHTML, inspectorHTML, legendHTML, aboutHTML, settingsHTML, densityOptions, exitLabel, switchLabel } from './panels.js';
 
 const SIM_PER_SEC = 10;      // sim seconds per real second at 1x
 const IDLE_MS = 120000;      // MANUAL with no input this long returns to AUTO (setting idleReturn)
@@ -341,6 +341,7 @@ function refreshPanels() {
 }
 
 bodies.legend.innerHTML = legendHTML();
+bodies.about.innerHTML = aboutHTML();
 bodies.settings.innerHTML = settingsHTML(settings, seed);
 document.body.classList.toggle('noflash', !settings.flash);
 bodies.settings.addEventListener('change', e => {
@@ -497,7 +498,7 @@ addEventListener('keydown', e => {
     ' ': togglePause, '+': () => stepSpeed(1), '=': () => stepSpeed(1), '-': () => stepSpeed(-1), a: toggleAuto,
     f: () => fit(true), 0: () => fit(true),
     h: () => { document.body.classList.toggle('bare'); if (state.fitted) fit(); refreshPanels(); },
-    Escape: () => { clearSelection(); refreshPanels(); }, '?': () => togglePanel('legend'), n: () => loadSeed(newSeed()),
+    Escape: () => { clearSelection(); refreshPanels(); }, '?': () => togglePanel('about'), n: () => loadSeed(newSeed()),
   };
   if (k >= '1' && k <= '5') togglePanel(PANELS[Number(k) - 1]);
   else if (keys[k]) keys[k]();

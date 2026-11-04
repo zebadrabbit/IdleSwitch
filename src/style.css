@@ -63,6 +63,10 @@ input[type=radio], input[type=checkbox] { accent-color: var(--accent); }
 #panel-board, #panel-log { width: 420px; max-height: 50vh; }
 #panel-legend { width: 340px; }
 #panel-settings { width: 280px; }
+#panel-about { width: 360px; }
+#panel-about p { margin: 0 0 8px; }
+.panel a { color: var(--accent); text-decoration: none; }
+.panel a:hover { text-decoration: underline; }
 body > .panel { resize: both; overflow: hidden; min-width: 220px; min-height: 60px; } /* floating */
 .panel.hidden { display: none; }
 .panel.dragging { z-index: 20; opacity: .92; }

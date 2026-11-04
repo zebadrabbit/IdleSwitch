@@ -17,7 +17,7 @@ Sit back and watch a CTC rail terminal run itself. A seeded terminal draws itsel
 | H | Hide all chrome for a bare panel |
 | Esc | Clear the selection |
 | 1 - 5 | Toggle panels: train board, log, inspector, legend, settings |
-| ? | Toggle the legend |
+| ? | Toggle the about panel |
 | N | New random seed |
 
 Mouse: drag to pan, wheel to zoom about the cursor. The HUD's − and + zoom about the middle of the map and ⌖ resets the view; they glide rather than jump, as F and 0 do. Click the seed in the HUD to type one in and load it (Enter), roll a new one or copy this one; Escape or a click elsewhere closes it. Drag the inner edge of a dock to resize it (double-click the edge for the default size); dock sizes are saved with the layout, and a floating panel resizes from its corner until reload.
