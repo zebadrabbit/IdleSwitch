@@ -216,8 +216,8 @@ terminus train is. `arrival` is its dir on entry. Stages, for a **loaded** visit
    (Amended 2026-11-04, final review: **a fair coin on `sim.cutRng`.** A loaded visitor that has set out picks up at
    another full stub only on one side of a coin drawn on `sim.cutRng`; on the other it leaves light though a full stub
    exists. A light visitor still always picks up. The coin is drawn once, as the set-out ends, and only when another
-   stub of the fan is full, so no other draw moves and traffic without a fan is untouched. Picking up every time drained
-   each fan to one cut within the first hour: see "What is left to the builder".)
+   stub of the fan is full, so no other generator's draws move and traffic without a fan is untouched. Picking up every
+   time drained each fan to one cut, most within the first hour: see "What is left to the builder".)
 8. **Back on.** Routed from `J`'s shunt to that stub's buffer. The **stop point** on a path that ends in a full stub
    is `cut.cars × CAR` short of the usual one (`FOUL` short of the buffer): the loco runs up to the cut and touches it.
    `moveTrains` applies this to every train whose path ends at a stub holding a cut, so nothing can ever run into a
