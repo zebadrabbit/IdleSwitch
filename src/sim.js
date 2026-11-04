@@ -473,17 +473,19 @@ export const isLight = train => train.cars === 0;
 // turned round at P.
 // A fan visitor (shunt: the queue entry's flag) carries train.shunt (spec "The visit"): its stage, its stand (P, where it
 // turns round to back in), its lead (Lt, where it turns round between stubs and leaves from) and its fan; bound first for
-// its stand.
+// its stand. A spur stub's visitor (its dest a spur with a stub) has the spur's exit signal for both, and its stub.
 export function spawnTrain(sim, { type, dir, dest = null, cars = TYPES[type].cars, name, id = sim.nextTrainId++, entry = portalFor(sim, dir),
   exit = portalFor(sim, -dir), shunt = false }) {
-  const T = TYPES[type], terminus = dest !== null && dest === sim.layout.wye?.stub, fan = sim.layout.fan;
+  const T = TYPES[type], terminus = dest !== null && dest === sim.layout.wye?.stub, { fan, tracks, signals } = sim.layout;
+  const sig = shunt && tracks[dest].stubOf != null && signals.find(g => g.from === tracks[dest].edges[1] && g.kind !== 'shunt');
+  const visit = !shunt ? null : sig ? { kind: 'spur', stage: 'approach', stand: sig.node, lead: sig.node, leadSignal: sig.id, stub: tracks[dest].stubOf }
+    : { kind: 'fan', stage: 'approach', stand: fan.P, lead: fan.Lt, leadSignal: fan.leadSignal, fan };
   const train = {
     id, name: name ?? `${type} ${id}`, type, dir, cars, entry, exit, prio: T.prio, len: trainLength(type, cars), maxSpeed: T.max * MPH,
     path: [], pathStart: sim.layout.portals[entry].node, routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest,
-    goal: terminus ? { node: sim.layout.wye.P[dir] } : shunt ? { node: fan.P } : dest !== null ? { track: dest } : { exit },
+    goal: terminus ? { node: sim.layout.wye.P[dir] } : visit ? { node: visit.stand } : dest !== null ? { track: dest } : { exit },
     dwellUntil: 0, holdFor: null, spawnTime: sim.time, sched: sim.time, lastMoveTime: sim.time, stops: 0, stalled: false, events: [],
-    run: 0, locoAtTail: false, pushing: false, terminus, arrival: dir, reversed1: false,
-    shunt: shunt ? { kind: 'fan', stage: 'approach', stand: fan.P, lead: fan.Lt, leadSignal: fan.leadSignal, fan } : null,
+    run: 0, locoAtTail: false, pushing: false, terminus, arrival: dir, reversed1: false, shunt: visit,
   };
   sim.trains.set(id, train);
   return train;
@@ -616,6 +618,8 @@ function occupy(sim, train) {
   }
 }
 
+// Drops every reservation the train holds (a spur stub's visitor holds its spur while bound for the stub).
+const unreserve = (sim, train) => { for (const [t, id] of sim.reserved) if (id === train.id) sim.reserved.delete(t); };
 // Releases every edge the train still holds, cancels any route set for it that it never entered, drops its
 // reservation, then logs its delay and records it in sim.completed with its portals' names, its distance (cells of path
 // run, portal to portal) and its event log.
@@ -629,7 +633,7 @@ export function despawnTrain(sim, train) {
   }
   train.path = [];
   for (const r of [...sim.routes.values()]) if (!r.entered && r.trainId === train.id) cancelRoute(sim, r.id);
-  for (const [t, id] of sim.reserved) if (id === train.id) sim.reserved.delete(t);
+  unreserve(sim, train);
   train.state = 'done';
   sim.trains.delete(train.id);
   const delay = sim.time - train.sched, m = Math.round(delay / 60);
@@ -785,7 +789,9 @@ function reachability(sim) {
 // A fan's visits (spec "Traffic") are drawn for its serving dir (fan.main) at its serving portal only: a loaded visit to its
 // first empty stub (CUT_MAX cars here, for the fits filter: newEntry draws CUT_MIN..CUT_MAX) and a light one (no cars) to
 // its first full stub, each of its stub's industry type, marked shunt. Rule: only while the fan is free and no visitor for
-// it is queued (one in the offing, as the terminus).
+// it is queued (one in the offing, as the terminus). A spur with a stub is an industrial lead: in place of its spur item, the
+// same visit keyed on its one stub (dest the spur, whose reservation covers the stub), loaded while the stub is empty, light
+// while it is full, by the same rule on the spur. So no unit train is ever drawn for it.
 export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
   const reach = sim.reach.tracks[`${portalId}:${dir}`], mine = sim.layout.tracks.filter(t => t.dir === dir && reach.has(t.id));
   const n = nightOf(sim), pax = 1 - 0.7 * n, frt = 1 + 0.7 * n, { wye, portals, fan, tracks } = sim.layout, visits = [];
@@ -800,7 +806,10 @@ export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
   const menu = [{ type: 'X', dest: null, weight: 3 * pax }, { type: 'Z', dest: null, weight: 2 * frt },
     { type: 'M', dest: null, weight: 3 * frt },
     ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 * pax })),
-    ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 * frt })),
+    ...mine.filter(t => t.cls === 'spur').flatMap(t => (t.stubOf == null ? [{ type: t.industry.trainType, dest: t.id, weight: 2 * frt }]
+      : !trackFree(sim, t.id) || sim.queue.some(q => q.some(k => k.shunt && k.dest === t.id)) ? []
+      : [{ type: t.industry.trainType, cars: sim.cuts.has(t.stubOf) ? 0 : CUT_MAX, dest: t.id, stub: t.stubOf,
+        weight: (sim.cuts.has(t.stubOf) ? 2 : 3) * frt, shunt: true }])),
     ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 })),
     ...(stub === null ? [] : [{ type: 'P', dest: stub, weight: 6 * pax, terminus: true }, { type: 'X', dest: stub, weight: 3 * pax, terminus: true }]),
     ...visits];
@@ -809,8 +818,9 @@ export function trafficMenu(sim, dir, portalId = portalFor(sim, dir)) {
   return menu.filter(m => m.dest === null || fits(sim, { len: trainLength(m.type, m.cars) }, m.dest));
 }
 
-// A fan visit's allowance (spec "Schedule"): its two dwells and five minutes of shunting.
-const dwellFor = (sim, type, dest) => (dest === null ? 0 : sim.layout.tracks[dest].cls === 'stub' ? DWELL.setOut + DWELL.pickUp + 5 * 60
+// A visit's allowance (spec "Schedule"), to a fan's stub or a spur with a stub: its two dwells and five minutes of shunting.
+const dwellFor = (sim, type, dest) => (dest === null ? 0 : sim.layout.tracks[dest].cls === 'stub' || sim.layout.tracks[dest].stubOf != null
+  ? DWELL.setOut + DWELL.pickUp + 5 * 60
   : sim.layout.tracks[dest].stub ? DWELL.terminus
   : sim.layout.tracks[dest].cls === 'spur' ? DWELL.industry : DWELL[type]);
 
@@ -901,7 +911,7 @@ function clearToReverse(sim, t, es = []) {
 // A terminus train (spec "The terminus mission"): stopped at its pull-ahead node it reverses (its head now at the far
 // foot's shunt signal, from which the operator backs it into the stub) and arrives at the buffer like any train at its
 // track; when its dwell is up it reverses again (dir unchanged, loco leading) and leaves for the portal it came in by.
-// A fan visitor runs its own stages (shuntStep).
+// A visitor (a fan's or a spur stub's) runs its own stages (shuntStep).
 function missions(sim) {
   const { tracks } = sim.layout;
   for (const t of sim.trains.values()) {
@@ -953,6 +963,9 @@ function missions(sim) {
 // round, loco leading, for Lt (out after a set-out, depart otherwise). out: at Lt, light, it turns round again for the
 // first other full stub (in), if any. At Lt otherwise it is done with the fan and runs for its exit. Each reversal waits
 // one still step (!adv, as the terminus's) and for no other train or route in the sections it stands in (clearToReverse).
+// A spur stub's visitor (kind spur) runs the same stages with the spur's exit signal for its stand and its lead: it turns
+// round there when its spur is clear, waiting for no wrong-main train (it stands on no main: spec "Builder check" 4), bound
+// now for the stub (its dest; the spur stays reserved for it), and with one stub it leaves after its one set-out or pick-up.
 function shuntStep(sim, t) {
   const { tracks } = sim.layout, s = t.shunt, at = trackAhead(sim, t), still = t.state === 'stopped' && !t.adv;
   const name = () => tracks[t.dest].name, retarget = id => { sim.reserved.delete(t.dest); t.dest = id; sim.reserved.set(id, t.id); };
@@ -966,8 +979,11 @@ function shuntStep(sim, t) {
     t.events.push({ t: sim.time, kind: 'reversing', signal: sig });
   };
   if (s.stage === 'approach') {
-    if (still && headNode(sim, t) === s.stand && clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false }))
-      turn(-t.arrival, { track: t.dest }, 'in'); // (its last edge is the run)
+    if (still && headNode(sim, t) === s.stand && (s.stub == null ? clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false })
+      : clearToReverse(sim, t, tracks[t.dest].edges))) { // (a fan visitor's last edge is the run)
+      t.dest = s.stub ?? t.dest;
+      turn(-t.arrival, { track: t.dest }, 'in');
+    }
   } else if (t.state === 'dwelling') {
     if (sim.time < t.dwellUntil || !clearToReverse(sim, t)) return;
     if (s.stage === 'setOut') {
@@ -984,7 +1000,7 @@ function shuntStep(sim, t) {
       t.events.push({ t: sim.time, kind: 'pickUp', track: name(), cars: n });
     }
     turn(t.arrival, { node: s.lead }, s.stage === 'setOut' ? 'out' : 'depart');
-  } else if (s.stage === 'in' && t.state === 'stopped' && s.fan.stubs.includes(at)) {
+  } else if (s.stage === 'in' && t.state === 'stopped' && (s.fan?.stubs ?? [s.stub]).includes(at)) {
     if (at !== t.dest) retarget(at);
     if (isLight(t) === sim.cuts.has(at)) {
       Object.assign(t, { state: 'dwelling', dwellUntil: sim.time + (isLight(t) ? DWELL.pickUp : DWELL.setOut) });
@@ -993,22 +1009,22 @@ function shuntStep(sim, t) {
       t.events.push({ t: sim.time, kind: 'arrived', track: name() });
     } else if (!t.adv && clearToReverse(sim, t)) turn(t.arrival, { node: s.lead }, 'depart');
   } else if (still && headNode(sim, t) === s.lead && (s.stage === 'out' || s.stage === 'depart')) {
-    const full = s.stage === 'out' ? s.fan.stubs.find(id => id !== t.dest && sim.cuts.has(id)) : undefined;
+    const full = s.stage === 'out' ? s.fan?.stubs.find(id => id !== t.dest && sim.cuts.has(id)) : undefined;
     if (full === undefined) {
       logEvent(sim, `${t.name} departed ${name()}${isLight(t) ? ' light' : ''}`);
       t.events.push({ t: sim.time, kind: 'departed', track: name() });
-      sim.reserved.delete(t.dest);
+      unreserve(sim, t);
       Object.assign(t, { dest: null, shunt: null, goal: { exit: t.exit } });
     } else if (clearToReverse(sim, t)) { retarget(full); turn(-t.arrival, { track: full }, 'in'); }
   }
 }
 // The visitor gives its visit up (spec "Human routes", "The valve", "Builder check" 2): it keeps whatever it has coupled
-// and runs for the far end of the way it now faces.
+// and runs for the far end of the way it now faces. A spur stub's visitor misses its stub.
 function missShunt(sim, t) {
-  const track = sim.layout.tracks[t.dest].name;
+  const track = sim.layout.tracks[t.shunt.stub ?? t.dest].name;
   logEvent(sim, `${t.name} missed ${track}`);
   t.events.push({ t: sim.time, kind: 'missed', track });
-  sim.reserved.delete(t.dest);
+  unreserve(sim, t);
   t.exit = portalFor(sim, -t.dir);
   Object.assign(t, { dest: null, shunt: null, goal: { exit: t.exit } });
 }
@@ -1203,11 +1219,12 @@ function operator(sim) {
       && c.edges.slice(path.length).every(e => edges[e].track === t.goal.track);
     const cand = cands.find(c => c.edges.every((e, i) => path[i] === e)) ?? cands.find(runsOn) ?? cands.find(c => c.exitNode === legEnd);
     const into = cand ? edges[cand.edges.at(-1)].track : null;
-    // Rule: never into a track that isn't its destination (holds go through hold()); a way round through one = wait.
+    // Rule: never into a track that isn't its destination (holds go through hold()); a way round through one = wait. A spur
+    // stub's visitor bound for its stub runs out of it back up its spur (spec "The visit").
     // Wrong-main candidates are fine: the way round a train on the main is over the crossovers.
     // ponytail: findPath doesn't price tracks, so a way round through one can still beat the other main and the train
     // waits. Price tracks other than the goal in findPath if passing ever looks too rare.
-    if (!cand || (into !== null && into !== t.dest)) continue;
+    if (!cand || (into !== null && into !== t.dest && into !== tracks[t.dest]?.spur)) continue;
     if (held && sim.layout.signals[sig].node === br.node) continue; // an arrival held at the portal (arrivalsHeld)
     if (cand.intoGap && turning.some(u => u !== t && u.dir !== cand.dir)) continue; // held out of the gap (terminusTurning)
     const wm = wrongMainFor(t, cand);
