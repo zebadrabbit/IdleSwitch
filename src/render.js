@@ -260,7 +260,7 @@ export function createRenderer(canvas) {
       line(X(b.x) - n.x * lw, Y(b.y) - n.y * lw, X(b.x) + n.x * lw, Y(b.y) + n.y * lw, P.track, lw, 'butt');
     };
     for (const t of L.tracks) {
-      if (t.stub) { stub(t); continue; }
+      if (t.stub) { if (t.cls === 'platform') stub(t); continue; } // the terminus's; an industrial stub's label comes with its drawing
       const ns = t.edges.flatMap(id => [nodes[edges[id].a], nodes[edges[id].b]]), y = Y(ns[0].y);
       const lo = Math.min(...ns.map(n => n.x)), hi = Math.max(...ns.map(n => n.x));
       if (t.cls === 'platform') {

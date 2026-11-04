@@ -162,14 +162,16 @@ for (const seed of ['lebanon', 's0', 's7', 's42', 's47']) {
 // is an exit for either dir from both main portals and from every track before the wye (west of it eastbound, east of it
 // westbound); entering there a dir train reaches the tracks beyond the wye for its dir and the far end, never the branch.
 // A terminus has no branch portal; its stub (a dir 0 track) is reached from both main portals, and leads to the far end.
+// The industrial stubs (class stub) are left out: a fan's is reached head first only against its serving dir, a spur's
+// never, and no plain train is drawn for either (test_gen, spec "Builder check" 3).
 const ids = set => [...set].sort((a, b) => a - b);
 for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]) {
   const S = seed === 'lebanon' ? sim : createSim(generate(seed), seed), G = S.layout, w = G.wye;
   const br = G.portals.find(p => p.dir === 0), before = (t, d) => !!br && (d === E ? tx(G, t) < w.x0 : tx(G, t) > w.x1);
   assert.equal(!br, w?.kind !== 'junction', `${seed}: a branch portal iff a junction`);
   for (const d of [E, W]) {
-    const p = portalOf(S, d), x = portalOf(S, -d), mine = G.tracks.filter(t => t.dir === d || t.stub).map(t => t.id);
-    assert.deepEqual(ids(S.reach.tracks[`${p.id}:${d}`]), mine, `${seed} ${d}: tracks from the portal`);
+    const p = portalOf(S, d), x = portalOf(S, -d), mine = G.tracks.filter(t => t.dir === d || (t.stub && t.cls !== 'stub')).map(t => t.id);
+    assert.deepEqual(ids(S.reach.tracks[`${p.id}:${d}`]).filter(t => G.tracks[t].cls !== 'stub'), mine, `${seed} ${d}: tracks from the portal`);
     assert.deepEqual(ids(S.reach.exits[`p${p.id}:${d}`]), br ? [x.id, br.id] : [x.id], `${seed} ${d}: exits from the portal`);
     for (const t of mine) assert.deepEqual(ids(S.reach.exits[`t${t}:${d}`]), before(t, d) ? [x.id, br.id] : [x.id], `${seed} ${d}: exits from track ${t}`);
     assert.deepEqual(trafficMenu(S, d, p.id), trafficMenu(S, d), `${seed} ${d}: the portal of that dir by default`);
@@ -208,9 +210,10 @@ for (const seed of ['lebanon', ...Array.from({ length: 50 }, (_, i) => `s${i}`)]
       assert.equal(c.nodes.length, c.edges.length + 1);
       const exitSig = facing(c.exitNode, c.edges.at(-1)) ?? null;
       assert.equal(c.exitSignal, exitSig);
-      // ... or at a buffer stop (a terminus's stub: a dead end that is no portal), from a shunt signal only (backing in)
+      // ... or at a buffer stop (a terminus's stub or an industrial one: a dead end that is no portal), from a shunt signal
+      // only (backing in)
       if (exitSig === null) assert.ok(c.dir !== 0 && (G.portals.some(p => exitNodesOf(S, p.id, c.dir).includes(c.exitNode))
-        || (sig.kind === 'shunt' && S.adj.get(c.exitNode).length === 1 && G.tracks[G.wye?.stub]?.edges.includes(c.edges.at(-1)))),
+        || (sig.kind === 'shunt' && S.adj.get(c.exitNode).length === 1 && G.tracks[last.track]?.stub)),
         `${seed}: candidate ends at neither a signal nor an exit`);
       // a terminus's shunt signals end no route: walks run through the feet (spec "Shunt signals")
       assert.ok(c.edges.slice(0, -1).every((e, i) => [undefined, 'shunt'].includes(G.signals[facing(ns[i + 1], e)]?.kind)), `${seed}: candidate runs past a signal`);
@@ -467,12 +470,15 @@ assert.ok(allClear(sim));
 // signalLabel unique over 50 seeds; the facing letter (from the edge it faces, or the portal's side) is E for eastbound,
 // W for westbound, and for a wye's dir 0 signals: a junction's two (the stem's and the branch portal's) and a terminus's
 // stub signal the way down or up the column toward the main, S on a north wye, N on a south one; a terminus's shunt
-// signals the way in from their run (E at F1, W at F2), with an s suffix
+// signals the way in from their run (E at F1, W at F2), with an s suffix; an industrial one (a fan's or a spur stub's,
+// outside the wye's gap) the way in along its row from the edge it faces (a north fan's Lt: W)
 for (let i = 0; i < 50; i++) {
-  const S = createSim(generate(`lab${i}`), 'x'), ls = S.layout.signals.map(s => signalLabel(S, s.id)), wye = S.layout.wye;
+  const S = createSim(generate(`lab${i}`), 'x'), G = S.layout, ls = G.signals.map(s => signalLabel(S, s.id)), wye = G.wye;
+  const inWye = s => !!wye && G.nodes[s.node].x > wye.x0 && G.nodes[s.node].x < wye.x1;
+  const along = s => (G.nodes[s.node].x > G.nodes[farOf(G, s.from, s.node)].x ? 'E' : 'W');
   assert.equal(new Set(ls).size, ls.length, `lab${i}`);
-  S.layout.signals.forEach((s, k) => assert.equal(ls[k][0], s.dir === E ? 'E' : s.dir === W ? 'W' : s.kind === 'shunt' ? (s.node === wye.F1 ? 'E' : 'W')
-    : wye.side === 'north' ? 'S' : 'N', `lab${i}: ${ls[k]}`));
+  S.layout.signals.forEach((s, k) => assert.equal(ls[k][0], s.dir === E ? 'E' : s.dir === W ? 'W' : !inWye(s) ? along(s)
+    : s.kind === 'shunt' ? (s.node === wye.F1 ? 'E' : 'W') : wye.side === 'north' ? 'S' : 'N', `lab${i}: ${ls[k]}`));
   S.layout.signals.forEach((s, k) => assert.equal(ls[k].at(-1) === 's', s.kind === 'shunt', `lab${i}: ${ls[k]} suffix`));
 }
 
@@ -1285,10 +1291,11 @@ assert.ok(sawWrongMain, 'no wrong-main run in 32 busy hours: the feature is dorm
 }
 
 // run fixture (tools/freeze-run.mjs, frozen from the sim before travel moved onto the path): s42 busy in AUTO for two
-// hours logs the same last 200 lines and completes the same trains, in order, with the same delays
+// hours logs the same last 200 lines and completes the same trains, in order, with the same delays (on the base layout:
+// industry off, spec "Builder check" 1)
 {
   const fx = JSON.parse(readFileSync(new URL('./fixtures/run-s42.json', import.meta.url), 'utf8'));
-  const S = busySim('s42');
+  const S = createSim(generate('s42', { industrial: false }), 's42', { density: 'busy' }); S.auto = true;
   for (let i = 0; i < 7200; i++) step(S);
   assert.deepEqual(S.log.map(e => e.text), fx.log, 'run fixture: log');
   assert.deepEqual(S.completed.map(c => [c.name, c.delay]), fx.completed, 'run fixture: completed');

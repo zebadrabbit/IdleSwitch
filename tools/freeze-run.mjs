@@ -12,7 +12,7 @@ const SEED = 's42', STEPS = 7200;
 const simPath = resolve(process.argv[2] ?? new URL('../src/sim.js', import.meta.url).pathname);
 const { createSim, step } = await import(pathToFileURL(simPath).href);
 
-const sim = createSim(generate(SEED), SEED, { density: 'busy' });
+const sim = createSim(generate(SEED, { industrial: false }), SEED, { density: 'busy' }); // the base layout
 sim.auto = true;
 for (let i = 0; i < STEPS; i++) step(sim);
 const run = { log: sim.log.map(e => e.text), completed: sim.completed.map(c => [c.name, c.delay]) };
