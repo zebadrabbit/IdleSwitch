@@ -228,7 +228,8 @@ export const wrongMainTrains = sim => [...sim.trains.values()].filter(t => isWro
 function senseIn(sim, e, u) {
   const { edges, nodes, mainRow, wye } = sim.layout, ed = edges[e], a = nodes[u], b = nodes[far(ed, u)];
   if (ed.main != null) return Math.sign(b.x - a.x);
-  if (ed.cls === 'lead' || ed.cls === 'stub') return Math.sign(b.x - a.x) * -sim.layout.fan.main; // the fan: +1 outbound
+  // the fan: +1 outbound (a spur stub's edges are of these classes too, on layouts with no fan, but have no section)
+  if (ed.cls === 'lead' || ed.cls === 'stub') return Math.sign(b.x - a.x) * -sim.layout.fan?.main;
   const y = mainRow[wye.feetMain];
   return Math.abs(b.y - y) < Math.abs(a.y - y) ? 1 : -1;
 }
@@ -986,6 +987,7 @@ function missions(sim) {
 // now for the stub (its dest; the spur stays reserved for it), and with one stub it leaves after its one set-out or pick-up.
 function shuntStep(sim, t) {
   const { tracks } = sim.layout, s = t.shunt, at = trackAhead(sim, t), still = t.state === 'stopped' && !t.adv;
+  // retarget: a fan visitor's only (a spur stub's has its one stub)
   const name = () => tracks[t.dest].name, retarget = id => { sim.reserved.delete(t.dest); t.dest = id; sim.reserved.set(id, t.id); };
   const turn = (dir, goal, stage) => {
     const before = signalAheadOf(sim, t);
@@ -997,10 +999,10 @@ function shuntStep(sim, t) {
     t.events.push({ t: sim.time, kind: 'reversing', signal: sig });
   };
   if (s.stage === 'approach') {
-    if (still && headNode(sim, t) === s.stand && (s.stub == null
+    if (still && headNode(sim, t) === s.stand && (s.kind === 'fan'
       ? clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false }) // (a fan visitor's last edge is the run)
       : clearToReverse(sim, t, tracks[t.dest].edges))) {
-      t.dest = s.stub ?? t.dest;
+      if (s.kind === 'spur') t.dest = s.stub;
       turn(-t.arrival, { track: t.dest }, 'in');
     }
   } else if (t.state === 'dwelling') {
@@ -1018,9 +1020,9 @@ function shuntStep(sim, t) {
       logEvent(sim, `${t.name} picked up ${n} cars at ${name()}`);
       t.events.push({ t: sim.time, kind: 'pickUp', track: name(), cars: n });
     }
-    const pick = s.stage === 'setOut' && s.fan?.stubs.some(id => id !== t.dest && sim.cuts.has(id)) && sim.cutRng() < 0.5;
+    const pick = s.stage === 'setOut' && s.kind === 'fan' && s.fan.stubs.some(id => id !== t.dest && sim.cuts.has(id)) && sim.cutRng() < 0.5;
     turn(t.arrival, { node: s.lead }, pick ? 'out' : 'depart');
-  } else if (s.stage === 'in' && t.state === 'stopped' && (s.fan?.stubs ?? [s.stub]).includes(at)) {
+  } else if (s.stage === 'in' && t.state === 'stopped' && (s.kind === 'fan' ? s.fan.stubs : [s.stub]).includes(at)) {
     if (at !== t.dest) retarget(at);
     if (isLight(t) === sim.cuts.has(at)) {
       Object.assign(t, { state: 'dwelling', dwellUntil: sim.time + (isLight(t) ? DWELL.pickUp : DWELL.setOut) });
@@ -1029,7 +1031,7 @@ function shuntStep(sim, t) {
       t.events.push({ t: sim.time, kind: 'arrived', track: name() });
     } else if (!t.adv && clearToReverse(sim, t)) turn(t.arrival, { node: s.lead }, 'depart');
   } else if (still && headNode(sim, t) === s.lead && (s.stage === 'out' || s.stage === 'depart')) {
-    const full = s.stage === 'out' ? s.fan?.stubs.find(id => id !== t.dest && sim.cuts.has(id)) : undefined;
+    const full = s.stage === 'out' ? s.fan.stubs.find(id => id !== t.dest && sim.cuts.has(id)) : undefined; // (out: a fan's)
     if (full === undefined) {
       logEvent(sim, `${t.name} departed ${name()}${isLight(t) ? ' light' : ''}`);
       t.events.push({ t: sim.time, kind: 'departed', track: name() });
@@ -1041,7 +1043,7 @@ function shuntStep(sim, t) {
 // The visitor gives its visit up (spec "Human routes", "The valve", "Builder check" 2): it keeps whatever it has coupled
 // and runs for the far end of the way it now faces. A spur stub's visitor misses its stub.
 function missShunt(sim, t) {
-  const track = sim.layout.tracks[t.shunt.stub ?? t.dest].name;
+  const track = sim.layout.tracks[t.shunt.kind === 'fan' ? t.dest : t.shunt.stub].name;
   logEvent(sim, `${t.name} missed ${track}`);
   t.events.push({ t: sim.time, kind: 'missed', track });
   unreserve(sim, t);

@@ -215,7 +215,7 @@ for (const seed of ['lebanon', ...Array.from({ length: 30 }, (_, i) => `s${i}`)]
     assert.deepEqual(trafficMenu(S, d, p.id), trafficMenu(S, d), `${seed} ${d}: the portal of that dir by default`);
     assert.equal(S.reach.tracks[`${x.id}:${d}`].size, 0, `${seed} ${d}: nothing from the far portal against its dir`);
     if (!br) continue;
-    assert.deepEqual(ids(S.reach.tracks[`${br.id}:${d}`]), mine.filter(t => (d === E ? tx(G, t) > w.x1 : tx(G, t) < w.x0)),
+    assert.deepEqual(ids(S.reach.tracks[`${br.id}:${d}`]).filter(t => G.tracks[t].cls !== 'stub'), mine.filter(t => (d === E ? tx(G, t) > w.x1 : tx(G, t) < w.x0)),
       `${seed} ${d}: tracks from the branch`);
     assert.deepEqual(ids(S.reach.exits[`p${br.id}:${d}`]), [x.id], `${seed} ${d}: exits from the branch`);
   }

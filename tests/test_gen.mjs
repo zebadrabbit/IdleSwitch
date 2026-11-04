@@ -137,7 +137,11 @@ for (const seed of seeds) {
   // at least one module of kind station or yard
   assert.ok(L.modules.some(m => m.kind === 'station' || m.kind === 'yard'), `${seed}: no station or yard`);
   for (const t of L.tracks) {
-    if (t.stub) continue; // the terminus stub: dir 0, both ways (below)
+    // an industrial stub's last edge is its buffer edge, horizontal, ending (b) at the degree-1 buffer: cutBlocks, the
+    // renderer's bufferBar and its name rule read it so
+    const buf = t.cls === 'stub' && L.edges[t.edges.at(-1)];
+    assert.ok(!buf || (adj[buf.b].length === 1 && L.nodes[buf.a].y === L.nodes[buf.b].y), `${seed}: stub ${t.name}'s buffer edge`);
+    if (t.stub) continue; // a stub, the terminus's or an industrial one (a fan's or a spur's): dir 0, both ways (below)
     const tn = [...new Set(t.edges.flatMap(e => [L.edges[e].a, L.edges[e].b]))];
     const end = tn.reduce((m, n) => (L.nodes[n].x - L.nodes[m].x) * t.dir > 0 ? n : m); // exit-end node
     assert.ok(t.edges.every(e => L.edges[e].track === t.id && oneWayDir(L.edges[e]) === t.dir), `${seed}: track ${t.name} edges`);

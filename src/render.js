@@ -281,8 +281,10 @@ export function createRenderer(canvas) {
         // ponytail: no collision avoidance; at a wide terminal's fit zoom names overlap the next row, as yard names do.
         const font = `small-caps ${labelPx}px ${SANS}`, cy = y + (t.dir || (ns[0].y < L.mainRow[-1] ? -1 : 1)) * Math.min(cellPx / 2, lw / 2 + 9);
         let cx = X((lo + hi) / 2);
+        // ponytail: Q's column is Xs's (the entry edge's far end) less t.dir, one 45° cell back (gen's spur-stub geometry).
         if (t.stubOf != null) { const e = edges[t.edges[0]]; cx = X((nodes[e.a].x + nodes[e.b].x - t.dir) / 2); } // entry to Q
         if (t.stub) {
+          // ponytail: the stub's way from its buffer edge's x alone; gen lays that edge level, ending at the buffer (test_gen).
           const e = edges[t.edges.at(-1)], a = nodes[e.a], b = nodes[e.b], d = Math.sign(b.x - a.x), x0 = X(a.x) + d * 8, x1 = X(b.x) - d * lw;
           ctx.font = font;
           const w = ctx.measureText(t.name).width;

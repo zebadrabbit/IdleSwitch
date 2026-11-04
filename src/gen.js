@@ -105,7 +105,7 @@ function planModule(rng, kind, place, sidingCount) {
 // Wide enough that row index i (1-based) still meets its floor: capacity = width - 2i - 1.5. A spur with a stub needs one
 // more (2i + 17), so the stub's buffer is no further upstream than the spur's entry ladder node.
 const width = m => Math.max(...[m.top, m.bot].flatMap(side =>
-  side.map((t, i) => CAPACITY_MIN[t.cls] + 2 * (i + 1) + 2 + (t.stub ? 1 : 0))));
+  side.map((t, i) => CAPACITY_MIN[t.cls] + 2 * (i + 1) + 2 + (t.hasStub ? 1 : 0))));
 
 export function generate(seed, opts = { industrial: true }) {
   const rng = makeRng(seed);
@@ -143,7 +143,7 @@ export function generate(seed, opts = { industrial: true }) {
       const used = new Set(spurs.map(t => t.industry.key));
       fan.inds = shuffle(ir, INDUSTRIES).filter(d => !used.has(d.key)).slice(0, fan.count);
     }
-    for (const t of spurs) t.stub = ir() < SPUR_STUB_P;
+    for (const t of spurs) t.hasStub = ir() < SPUR_STUB_P;
   }
   let x = MARGIN;
   mods.forEach((m, i) => {
@@ -155,7 +155,7 @@ export function generate(seed, opts = { industrial: true }) {
   // panel edge (junction), or S one cell past the apex and the 7-cell stub to its buffer (terminus). North that is
   // T >= off, south rows - 1 >= R2 + off. A fan needs count + 1 (stub i on row 2 + i off its main), a side whose spur has
   // a stub one row beyond its tracks. Padding is empty rows beyond the module tracks.
-  const off = !wye ? 0 : term ? 10 : 6, deep = side => side.length + (side.at(-1).stub ? 1 : 0);
+  const off = !wye ? 0 : term ? 10 : 6, deep = side => side.length + (side.at(-1).hasStub ? 1 : 0);
   const T = Math.max(...mods.map(m => deep(m.top)), wye?.side === 'north' ? off : 0, fan?.side === 'north' ? fan.count + 1 : 0), R2 = T + 2;
   const rows = Math.max(R2 + 1 + Math.max(...mods.map(m => deep(m.bot))), wye?.side === 'south' ? R2 + 1 + off : 0,
     fan?.side === 'south' ? R2 + 2 + fan.count : 0);
@@ -224,7 +224,7 @@ export function generate(seed, opts = { industrial: true }) {
   const spurStubs = [];
   const side = (list, dir, entry, exit) => list.forEach((t, k) => {
     const id = tracks.length, a = entry[k + 1], b = exit[k + 1];
-    const sig = node(nodes[b].x - dir, nodes[b].y), Xs = t.stub ? node(nodes[sig].x - 7 * dir, nodes[sig].y) : null;
+    const sig = node(nodes[b].x - dir, nodes[b].y), Xs = t.hasStub ? node(nodes[sig].x - 7 * dir, nodes[sig].y) : null;
     const e0 = Xs === null ? null : edge(a, Xs, t.cls, a, id), from = Xs ?? a;
     const e1 = edge(from, sig, t.cls, from, id), e2 = edge(sig, b, t.cls, sig, id);
     signal(sig, dir, DWARF.has(t.cls) ? 'dwarf' : 'high', e1);

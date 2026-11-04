@@ -383,6 +383,9 @@ machine follows what actually happened (arrived where, with what). A human canno
   seeds with every invariant plus: one train in a fan at a time, no head past a cut, no train in a stub longer than
   `DWELL.setOut + STALL`. Long runs before merge: every fan seed and every spur-stub seed in s0..s399, 8 h busy, AUTO:
   0 wedges, 0 STALL, and the monkey runs (random human clicking) all recover.
+  (Amended 2026-11-04, final review: the long runs, before step 7's coin, reached 0 wedges and 7 self-clearing STALLs
+  on 6 of the 252 seeds, none of them a spur-stub cycle, accepted because breaking them means loosening "one wrong-main
+  train": see the amendment under "The shove is the wrong-main move".)
 - `test_ui` / `test_camera`: status words; the inspector's `Length` row for a light engine; `followCandidates` with
   light engines.
 - Visual: screenshots of a north fan and a south fan, a spur stub on each side, day and night; a train backing in; a
