@@ -1,3 +1,4 @@
+/* ponytail: when you change this file, bump ?v= on the stylesheet link in index.html; the host caches css for 7 days */
 :root { --bg:#0b1020; --panel:#121a2e; --panel-border:#243052; --text:#cfd6ea; --dim:#7d88a6;
   --accent:#5aa9ff; --green:#39d353; --amber:#f0b429; --red:#ff4d4f;
   --hud-h: 32px; /* --side-w-left, --side-w-right, --bottom-h: docked panel sizes, set by ui.js */
