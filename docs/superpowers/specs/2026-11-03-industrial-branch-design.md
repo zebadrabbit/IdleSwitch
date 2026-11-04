@@ -340,6 +340,38 @@ machine follows what actually happened (arrived where, with what). A human canno
 - Byte-identity is tested through a generator knob (`generate(seed, { industrial: false })`), so the fixture seeds
   keep pinning the base generator whether or not the `:industrial` stream gives them a fan.
 
+## Builder check (2026-11-03, before the plan ran)
+
+A fresh reader planned from this document and asked four things; rulings:
+
+1. **Fixture seeds that draw a fan or a stub.** Every fixture test that generates a layout (`layouts.json`,
+   `run-s42.json`) does so with `generate(seed, { industrial: false })`; the wedge fixtures embed their layouts and
+   are untouched. No stream-name search, no re-freeze, no lowered probabilities. The fixtures pin the base generator and the base sim; `layouts-industrial.json`
+   (new) pins the industrial layouts.
+2. **The `X` and `Xs` shunts' main candidates.** `candidates()` also gives `X` the main onward (straight on to `b'`
+   on Main 1, wrong main, and across the east pair to `b'` on Main 2), as a terminus foot's shunt keeps the main
+   onward. Kept: no new rule, and it is what makes a human-misrouted visitor possible. The operator never picks them
+   for a visitor (its goal is the stub). A visitor a human sends onto a main at any stage gives the visit up
+   (`missed`), keeps whatever it has coupled, and runs for the far end of the direction it is then facing
+   (`exit = portalFor(sim, −dir)`), as a terminus train sent away after reversing does. `Xs` has only the stub
+   candidate (the spur's edges are one-way).
+3. **Reachability.** On the empty layout `findPath` reaches a fan's stubs only against the serving direction, so
+   `sim.reach` is not how stubs get on the menu: `trafficMenu` adds them from `layout.fan` (serving dir `fan.main`,
+   serving portal `portalFor(sim, fan.main)`) and from `tracks[].stubOf`; a visitor's exit is fixed to the far end
+   of its arrival dir and `reach.exits` is not consulted for it. The generator test's reachability clause becomes:
+   from `X` reversed (dir `−fan.main`, `from` the run) every stub is reachable; from no portal in the serving dir is
+   any stub reachable on the empty layout (so no plain train is ever drawn for one).
+4. **The reverse-1 wrong-main wait is for fan visitors only.** A spur-stub visitor reverses on the spur, on no main,
+   and waits for nothing but `clearToReverse` on the spur's edges. The fan gate is the same predicate `setRoute` uses
+   for `wrong main` (no other wrong-main train, no untaken wrong-main route, no terminus train on its visit),
+   factored out as one function, so a fan and a terminus in one terminal cannot both be mid-move.
+
+Also noted by the check: `senseIn()` reads `mainRow[wye.feetMain]` (throws with no wye) and gives every horizontal
+edge the same sense. The fan section defines its own: `+1` outbound `= sign(Δx) × (−fan.main)` (every fan edge has
+`Δx ≠ 0`), and `createSim` keeps a `section → sense function` or `section → main` map for the wye's and the fan's
+sections. The south fan's mirror leaves the gap's pairs at `b+9` and `b+25` rather than at `b+1`: fine, the pairs list
+is arbitrary.
+
 ## What is left to the builder
 
 The exact data shape of `train.shunt` and the stage names; how `cars` threads through `trainLength`, `trainBlocks`
