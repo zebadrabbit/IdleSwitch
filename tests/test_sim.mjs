@@ -2738,6 +2738,40 @@ for (const seed of [fN, fS]) {
   assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
 }
 
+// While a fan visitor is on its way to its stand (stage approach), the operator sends no other train wrong main, unless that
+// train has stood STARVE (amendment 2026-11-04, the long runs): "passing" above on fN, M 2 standing on its home main and
+// X 4 behind it at the portal, with no visitor, with one at its portal, and with one there and X 4 stood 10 min.
+for (const [visitor, stood] of [[false, 0], [true, 0], [true, 600]]) {
+  const S = quiet(fN), F = S.layout.fan, M = spawnTrain(S, { type: 'M', dir: E, name: 'M 2' }), ps = entrySig(S, E);
+  const home = S.routesFrom.get(ps).find(c => !c.wrongMain);
+  assert.equal(setRoute(S, ps, home.exitNode, { trainId: M.id }).ok, true);
+  assert.equal(setRoute(S, home.exitSignal, S.routesFrom.get(home.exitSignal).find(c => !c.diverging).exitNode, { trainId: M.id }).ok, true);
+  for (let i = 0; i < 3600 && M.state !== 'stopped'; i++) step(S);
+  M.lastMoveTime = S.time - PASS_WAIT;
+  if (visitor) spawnTrain(S, { type: 'M', dir: F.main, dest: emptyOf(S), cars: 4, shunt: true, name: 'V 1' });
+  S.auto = true;
+  const X = spawnTrain(S, { type: 'X', dir: E, name: 'X 4' });
+  X.lastMoveTime = S.time - stood;
+  step(S);
+  assert.equal(!!S.routes.get(X.routes[0])?.cand.wrongMain, !visitor || stood > 0, `visitor ${visitor}, stood ${stood}: wrong main`);
+}
+// A fan visitor enters only while no train is wrong main (the same amendment): queued at the serving portal it waits while
+// one is out and enters once that one is home. A spur stub's visitor (fN has one, eastbound) is not held.
+{
+  const S = quiet(fN), G = S.layout, d = G.fan.main, at = portalOf(S, d).id, home = wrongMain(S);
+  const k = G.spurStubs.find(k => G.tracks[k.spur].dir === -d), pa = portalOf(S, -d).id, type = G.tracks[k.spur].industry.trainType;
+  S.queue[at].push({ id: 90, name: 'V 1', type: 'M', dir: d, entry: at, exit: pa, dest: emptyOf(S), cars: 4, shunt: true, len: trainLength('M', 4),
+    spawnTime: S.time, sched: S.time });
+  S.queue[pa].push({ id: 91, name: 'V 2', type, dir: -d, entry: pa, exit: at, dest: k.spur, cars: 4, shunt: true, len: trainLength(type, 4),
+    spawnTime: S.time, sched: S.time });
+  const on = name => [...S.trains.values()].some(t => t.name === name);
+  for (let i = 0; i < 5; i++) step(S);
+  assert.deepEqual([on('V 1'), on('V 2')], [false, true], 'entered with a train wrong main');
+  home();
+  step(S);
+  assert.ok(on('V 1'), 'not entered with the train home');
+}
+
 // ---- The spur stub visit (spec "The spur stub (geometry)", "Traffic", "The visit": a visitor at a spur stub). pN: a
 // westbound spur with a stub (above Main 1), pS: an eastbound one (below Main 2).
 // The menu: a spur with a stub is an industrial lead. In place of its spur item, one visit with dest the spur and stub its

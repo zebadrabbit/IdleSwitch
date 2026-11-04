@@ -261,6 +261,25 @@ machine follows what actually happened (arrived where, with what). A human canno
   wrong-main train, so `setRoute` refuses every other wrong-main route meanwhile by the existing rule. It needs no
   junction exemption: none of its routes has a main edge against the home sense (arrival and departure are home-sense
   runs, the shove's main running is on edges it already holds).
+  (Amended 2026-11-04, Task 4 long runs: **nobody else goes wrong main while a fan visitor approaches.** The 8-hour busy
+  AUTO sweep of the 252 seeds in s0..s399 with a fan or a spur stub (`tools/sweep-industrial.mjs`) logged 22 STALLs on 8
+  fan seeds and no wedge. The base layouts of those seeds run clean. In three of the cycles the visitor's own wait for
+  "no other train wrong main" closed the loop:
+  - s230, 06:00 + 259 min: a train sent round the approaching visitor on Main 2 (the pathfinder passes a standing
+    visitor, though the visitor "is not passed") stood at `b'`. Its way home ran over the visitor's run, and its way on
+    along Main 2 was held head on by an eastbound at `P`.
+  - s366, 294 min: a branch arrival sent across the junction gap waited on a train queued behind the visitor at `P`.
+  - s125, 68 to 71 min: the visitor entered behind a train already wrong main in the terminus gap, whose way home was held
+    by the queue behind the visitor's stand.
+  Each held the visitor until the valve (20 min), and held a train behind them for 30 min. Two rules follow.
+  - While a fan visitor is on its approach (entered, not yet turned round), the operator sends no other train wrong main,
+    nor across a junction gap's other main (`gapWrong`). A train that has stood STARVE is exempt.
+  - A fan visitor enters from its portal queue only while `wrongMainBusy`, the gate's predicate, is false.
+  With them, the same sweep logs 7 STALLs on 6 seeds, again no wedge, and 66 visits given up instead of 84. Four of the
+  six seeds are new: the rules move traffic on fan seeds. Five of the six show the older cycle kinds, where a wrong-main
+  train meets an opposing train while its way home is held by a queue at a terminus gap or a junction: s12, s145, s93,
+  s197 and s369. The sixth, s357, is a visitor cycle through the exemption. Without the exemption, a branch arrival
+  already waiting at a junction stem starved behind successive visitors (s366), and s368 wedged.)
 - **Nothing stands between `b'` and `P` but the visitor.** A route from `b'` ends at `P`, which the visitor occupies,
   so followers wait at `b'` with no new rule (the terminus's follower rule falls out of the geometry). While it backs
   in and once it is off the main, through traffic in both directions runs under the fan as normal: the gap is blocked

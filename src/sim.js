@@ -862,7 +862,9 @@ function canEnter(sim, q) {
     || (r.dir !== q.dir && r.dir !== 0)))) return false;
   // A train still waiting at this portal for its first route occupies nothing: never stack another behind it.
   for (const t of sim.trains.values()) if (t.entry === q.entry && !t.path.length) return false;
-  return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest));
+  // Rule: a fan visitor enters only while no train is wrong main (the operator sends none out while it approaches): on s125
+  // one entered behind a train already out, whose way home was held by the queue behind the visitor's stand.
+  return q.dest === null || (fits(sim, q, q.dest) && trackFree(sim, q.dest) && !(q.shunt && fanOf(sim, q.dest) && wrongMainBusy(sim, null, { visits: false })));
 }
 
 function spawner(sim) {
@@ -1158,6 +1160,7 @@ function operator(sim) {
   // ponytail: a fixed threshold, not aging; worst stand 16.8 min over 60 busy seeds. Age it if denser traffic starves.
   const rank = t => t.prio + (sim.time - t.lastMoveTime >= STARVE ? 10 : 0);
   const br = branchOf(sim), held = arrivalsHeld(sim, br), turning = terminusTurning(sim);
+  const approaching = [...sim.trains.values()].some(u => u.shunt?.kind === 'fan' && u.shunt.stage === 'approach');
   for (const t of [...sim.trains.values()].sort((a, b) => rank(b) - rank(a) || a.id - b.id)) {
     if (t.state === 'dwelling' || t.state === 'holding' || t.holdFor !== null) continue; // holding or on its way in
     const node = headNode(sim, t), last = t.path.at(-1) ?? null, sig = signalAhead(sim, node, last);
@@ -1229,6 +1232,12 @@ function operator(sim) {
     if (cand.intoGap && turning.some(u => u !== t && u.dir !== cand.dir)) continue; // held out of the gap (terminusTurning)
     const wm = wrongMainFor(t, cand);
     if (wm && turning.some(u => u !== t)) continue; // nor round the trains held (terminusTurning)
+    // Rule: nor while a fan visitor is on its way to its stand, where it turns round only with no other train wrong main.
+    // One sent out meanwhile can need the visitor to clear: on s230 a train sent round it on the other main stood at b'
+    // with its way home over the visitor's run and its way on held head on; on s366 one sent wrong main across the junction
+    // waited on a train queued behind the visitor. Each held the visitor 20 min (the valve) and a train behind them 30. One
+    // that has stood STARVE is not held (it goes first by rank, and the visitor waits for it).
+    if ((wm || cand.gapWrong) && approaching && sim.time - t.lastMoveTime < STARVE) continue;
     // Rule: a train bound for the branch is never sent wrong main (its moves through the junction gap are exempt and not
     // wrongMain). Stood at b or b' on the other main its only way on is the branch, and an arrival holding that inbound
     // can need the very section it stands in: a deadlock on three of 17 junction seeds in 8 busy hours. One already
