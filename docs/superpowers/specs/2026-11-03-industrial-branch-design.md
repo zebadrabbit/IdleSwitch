@@ -273,14 +273,14 @@ machine follows what actually happened (arrived where, with what). A human canno
   main all that time, or the section opposed) gives the visit up and runs on: at a fan, its route `P → b` is its home
   sense and always available when free; at a spur, it departs by the spur's exit. One that has stood `2 × STARVE` at
   `b'` with its way to `P` refused does the same. Expected to fire rarely; counted in the long runs.
-  (Amended 2026-11-04, Task 3: **a visitor at its stand also gives up while a terminus train is turning round**
-  (`terminusTurning`: one that has stood STARVE in its stub waiting to leave, or at `b`/`b'` waiting to come in). The gate's
-  "no terminus train on its visit" clause has the visitor wait out that visit, standing on its home main, where it can hold
-  the very trains the terminus train waits on. On s14 busy (a south terminus and a south fan, both on Main 2) a terminus
-  train in its stub waited from 06:45 for the eastbound trains in its gap to clear, and they were queued behind a visitor
-  standing at `P` from 06:54, which was waiting on that visit. The valve released the visitor at 20 min, a minute before the
-  terminus train had stood 30 (STALL). With the rule, s14 runs 8 busy hours with 6 visits, 4 given up and a longest stand
-  of 20.7 min. The valve counts time stood anywhere short of the stand, not only at `b'`.)
+  (Amended 2026-11-04, Task 3: the valve counts time stood anywhere short of the stand, not only at `b'`.)
+  (Amended 2026-11-04, Task 3 review: **reverse 1 does not wait out a terminus visit** (see "Builder check" 4). With the
+  gate waiting on every terminus visit, s14 busy wedged: a terminus train in its stub waited from 06:45 for the eastbound
+  trains in its gap to clear, and they were queued behind a visitor standing at `P` from 06:54 that was waiting on that
+  visit. The valve released the visitor a minute before the terminus train had stood 30 min (STALL). The first fix, a
+  give-up at the stand while a terminus train was turning round, kept s14 under 30 min but gave up most visits on
+  terminus seeds (s12: 1 visit, 8 given up in 8 h; s14: 6 and 4; s19: 5 and 5). It is withdrawn. With the gate below, the
+  same 8 busy hours give s12 10 visits, s14 11 and s19 12, none given up, and s14's longest stand is 17.0 min.)
 - **Dead routes.** Shunt routes with no train at their signal die after GRACE (the existing rule covers `X`, `J` and
   `Xs`).
 - **The cut is a wall.** The stop-point rule in stage 8 applies to every train and every stub. The soak asserts no
@@ -383,6 +383,12 @@ A fresh reader planned from this document and asked four things; rulings:
    and waits for nothing but `clearToReverse` on the spur's edges. The fan gate is the same predicate `setRoute` uses
    for `wrong main` (no other wrong-main train, no untaken wrong-main route, no terminus train on its visit),
    factored out as one function, so a fan and a terminus in one terminal cannot both be mid-move.
+   (Amended 2026-11-04, Task 3 review: **the fan gate drops the terminus clause.** It waits only for another wrong-main
+   train and for an untaken wrong-main route (`wrongMainBusy(…, { visits: false })`); `setRoute`'s predicate is unchanged.
+   The two gaps share no section, and the shove needs nothing beyond its own run and lead, so neither move can block the
+   other's way home. A shoving visitor still counts in `wrongMainTrains`, so the terminus train's own wrong-main routes
+   (leaving its stub against the feet main) wait out that minute. The soak's "no train sent wrong main during a terminus
+   visit" check exempts the shove. Waiting out every terminus visit, the gate gave up most visits on terminus seeds.)
 
 Also noted by the check: `senseIn()` reads `mainRow[wye.feetMain]` (throws with no wye) and gives every horizontal
 edge the same sense. The fan section defines its own: `+1` outbound `= sign(Δx) × (−fan.main)` (every fan edge has

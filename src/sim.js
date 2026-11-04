@@ -270,12 +270,14 @@ const holdsAny = (sim, t, es) => [...es].some(e => sim.edgeState[e].occ.has(t.id
 const onVisit = (sim, t) => t.terminus && holdsAny(sim, t, sim.gapEdges);
 // One more wrong-main move would make two (setRoute's 'wrong main'; spec "Builder check" 4): another train is wrong main (but
 // the one it is for, and the one at signalId, which may go on or home), an untaken human wrong-main route (or one wrong main
-// inside a junction gap: gapWrong) waits for its train, or a terminus train is on its visit (setRoute's onVisit rule). A fan
-// visitor's reverse 1 waits on the same, so a fan and a terminus in one terminal are never both mid-move.
+// inside a junction gap: gapWrong) waits for its train, or (visits) a terminus train is on its visit (setRoute's onVisit
+// rule). A fan visitor's reverse 1 waits on the first two only (ruling 2026-11-04): its shove runs on its own run and lead,
+// in a gap that shares no section with a terminus's, and while it shoves it is wrong main itself, so the terminus train's
+// own wrong-main routes wait out that minute. Waiting out every terminus visit, it gave most visits up on terminus seeds.
 const untaken = r => r.trainId === null && !r.entered && (r.cand.wrongMain || r.cand.gapWrong); // (one at this signal: 'already set')
-const wrongMainBusy = (sim, forTrain, { signalId = null, trainId = forTrain?.id ?? null } = {}) =>
+const wrongMainBusy = (sim, forTrain, { signalId = null, trainId = forTrain?.id ?? null, visits = true } = {}) =>
   wrongMainTrains(sim).some(t => t.id !== trainId && signalAheadOf(sim, t) !== signalId) || [...sim.routes.values()].some(untaken)
-  || [...sim.trains.values()].some(t => t !== forTrain && t.id !== trainId && onVisit(sim, t));
+  || (visits && [...sim.trains.values()].some(t => t !== forTrain && t.id !== trainId && onVisit(sim, t)));
 
 export function setRoute(sim, signalId, exitNode, { human = false, trainId = null } = {}) {
   // exitNode names the candidate: candidates() keeps one per exit node.
@@ -964,7 +966,7 @@ function shuntStep(sim, t) {
     t.events.push({ t: sim.time, kind: 'reversing', signal: sig });
   };
   if (s.stage === 'approach') {
-    if (still && headNode(sim, t) === s.stand && clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t))
+    if (still && headNode(sim, t) === s.stand && clearToReverse(sim, t, t.path.slice(-1)) && !wrongMainBusy(sim, t, { visits: false }))
       turn(-t.arrival, { track: t.dest }, 'in'); // (its last edge is the run)
   } else if (t.state === 'dwelling') {
     if (sim.time < t.dwellUntil || !clearToReverse(sim, t)) return;
@@ -1166,12 +1168,7 @@ function operator(sim) {
     // Rule (spec "Never wrong main", "The valve"): a fan visitor that has not turned round gives its visit up (missShunt)
     // when it is wrong main (only a human sends it: the operator never does, below) or has stood 2 x STARVE, at its stand
     // unable to turn round (another train wrong main all that time, or its section held) or short of it, its way refused.
-    // At its stand it also gives up while a terminus train is turning round (terminusTurning): it would wait out that
-    // train's visit (wrongMainBusy), standing on its home main, where it can hold the very trains the terminus train waits
-    // on. On s14 the terminus train's way out of its stub against Main 2 waited on the eastbound trains queued behind a
-    // visitor at P, which waited on that visit: the valve broke it at 20 min, and the terminus train had stood 30.
-    if (t.shunt?.stage === 'approach' && (isWrongMain(sim, t) || sim.time - t.lastMoveTime >= 2 * STARVE
-      || (turning.length && node === t.shunt.stand))) missShunt(sim, t);
+    if (t.shunt?.stage === 'approach' && (isWrongMain(sim, t) || sim.time - t.lastMoveTime >= 2 * STARVE)) missShunt(sim, t);
     const path = findPath(sim, node, t.dir, t.goal,
       { trainId: t.id, blockedCost: MOVING_COST, standingCost: STANDING_COST, wrongMainCost: WRONG_MAIN_COST }, last);
     if (!path) {
