@@ -3,7 +3,7 @@
 // 11 px, strokes never below 2 px) so a four-module terminal fitted to 1366 px (~15 px a cell) stays legible.
 // World px = grid cell * CELL. camera {x, y} is the world-px point at the canvas's top-left corner and zoom
 // the screen px per world px: screen = (world - camera) * zoom.
-import { aspectOf, signalHeads, lamps, trainBlocks, switchLocked, nightOf, SLOW_ORDER } from './sim.js';
+import { aspectOf, signalHeads, lamps, trainBlocks, cutBlocks, switchLocked, nightOf, SLOW_ORDER } from './sim.js';
 
 export const CELL = 24;
 export const COLORS = {
@@ -76,11 +76,12 @@ export function createRenderer(canvas) {
 
   // Eased state per id (spec "Fades"): edge ids, 'sw:<node>', 'stub:<edge>:<node>', '<signal>:<head>' lamps and
   // 'h<signal>:<head>' their halos, scalars 'hl:<end>' headlight, 'eot:<end>' tail marker, 'tag:<end>' its tag (end:
-  // '<train>:<1 while its loco trails, else 0>'), 'lock:<node>' padlock, 'slow' label, 'night' the night level. First
-  // sight starts at `from` (default the target: snaps); an id not drawn in a frame is dropped. was: where each of a
-  // train's 'hl', 'eot' and 'tag' was last drawn, kept while its fade lasts.
+  // '<train>:<1 while its loco trails, else 0>'), 'lock:<node>' padlock, 'cars:<train>' its cars' colour, 'slow' label,
+  // 'night' the night level. First sight starts at `from` (default the target: snaps); an id not drawn in a frame is
+  // dropped. was: where each of a train's 'hl', 'eot' and 'tag' was last drawn, kept while its fade lasts. cutsWas: the
+  // standing cuts as last drawn.
   const fade = new Map(), seen = new Set(), was = new Map();
-  let dt = 0, lastNow = -Infinity, lastSlow = null, capAt = null; // capAt: the caption's text and the box it shows in
+  let dt = 0, lastNow = -Infinity, lastSlow = null, capAt = null, cutsWas = new Map(); // capAt: the caption's text and the box it shows in
   function eased(id, to, tau, from = to) {
     let s = fade.get(id);
     if (!s) fade.set(id, (s = [...from]));
@@ -238,11 +239,16 @@ export function createRenderer(canvas) {
         ctx.globalCompositeOperation = 'source-over';
       }
     };
+    // The buffer stop at b, the end of a dead-end track's last edge a-b: a bar 2 lw long across it.
+    const bufferBar = (a, b) => {
+      const l = Math.hypot(b.x - a.x, b.y - a.y), n = rightOf({ x: (b.x - a.x) / l, y: (b.y - a.y) / l });
+      line(X(b.x) - n.x * lw, Y(b.y) - n.y * lw, X(b.x) + n.x * lw, Y(b.y) + n.y * lw, P.track, lw, 'butt');
+    };
     // A terminus's stub runs from the apex through S, its exit signal, to the buffer stop: the box beside the S-buffer
     // edge on the right of departure travel (west of a north stub, east of a south one), hugging it (nothing stands
     // beside a stub), a cell clear of S and half a cell of the buffer as on a row, turned so the name reads bottom to top
     // either side. A name longer than the box starts 4 px in from its S end (clear of S's second head, upstream at tight
-    // zooms) and runs on past the buffer, beyond the panel's edge row. The buffer stop: a bar across the track's end.
+    // zooms) and runs on past the buffer, beyond the panel's edge row. Its buffer stop as an industrial stub's.
     // ponytail: the stub is vertical (gen), so a quarter turn is the whole rotation.
     const stub = t => {
       const sg = L.signals[L.wye.stubSignal], e = edges[sg.from], s = nodes[sg.node], b = nodes[e.a === sg.node ? e.b : e.a];
@@ -256,11 +262,10 @@ export function createRenderer(canvas) {
       const w = ctx.measureText(t.name).width;
       text(t.name, -u.y * (w > len ? (w - len) / 2 + 4 : 0), 0, font, WHITE);
       ctx.restore();
-      const n = rightOf(u);
-      line(X(b.x) - n.x * lw, Y(b.y) - n.y * lw, X(b.x) + n.x * lw, Y(b.y) + n.y * lw, P.track, lw, 'butt');
+      bufferBar(s, b);
     };
     for (const t of L.tracks) {
-      if (t.stub) { if (t.cls === 'platform') stub(t); continue; } // the terminus's; an industrial stub's label comes with its drawing
+      if (t.stub && t.cls === 'platform') { stub(t); continue; } // the terminus's
       const ns = t.edges.flatMap(id => [nodes[edges[id].a], nodes[edges[id].b]]), y = Y(ns[0].y);
       const lo = Math.min(...ns.map(n => n.x)), hi = Math.max(...ns.map(n => n.x));
       if (t.cls === 'platform') {
@@ -269,8 +274,22 @@ export function createRenderer(canvas) {
         platform(x0, x1 - x0, cy, t.dir);
         text(t.name, (x0 + x1) / 2, cy, `bold ${labelPx}px ${SANS}`, WHITE);
       } else {
-        const cy = y + t.dir * Math.min(cellPx / 2, lw / 2 + 9);
-        text(t.name, X((lo + hi) / 2), cy, `small-caps ${labelPx}px ${SANS}`, P.dim);
+        // On the track's outer side, away from the main (a stub's, dir 0, by its row), over its middle. A spur's with a
+        // stub over its entry edge short of the stub's lead, which leaves the spur at Xs on that side. An industrial stub's
+        // over its buffer edge clear of the stub signal at its near end (whose dwarf stands on that side), or when longer
+        // from there on past the buffer, as the terminus's; and its buffer stop.
+        // ponytail: no collision avoidance; at a wide terminal's fit zoom names overlap the next row, as yard names do.
+        const font = `small-caps ${labelPx}px ${SANS}`, cy = y + (t.dir || (ns[0].y < L.mainRow[-1] ? -1 : 1)) * Math.min(cellPx / 2, lw / 2 + 9);
+        let cx = X((lo + hi) / 2);
+        if (t.stubOf != null) { const e = edges[t.edges[0]]; cx = X((nodes[e.a].x + nodes[e.b].x - t.dir) / 2); } // entry to Q
+        if (t.stub) {
+          const e = edges[t.edges.at(-1)], a = nodes[e.a], b = nodes[e.b], d = Math.sign(b.x - a.x), x0 = X(a.x) + d * 8, x1 = X(b.x) - d * lw;
+          ctx.font = font;
+          const w = ctx.measureText(t.name).width;
+          cx = Math.abs(x1 - x0) >= w ? (x0 + x1) / 2 : x0 + d * w / 2;
+          bufferBar(a, b);
+        }
+        text(t.name, cx, cy, font, P.dim);
       }
     }
     ctx.letterSpacing = '1px'; // names lifted 6 px clear of a row-0 label or platform box at tight zooms
@@ -375,23 +394,33 @@ export function createRenderer(canvas) {
       else if (ui.hoverSignal === sig.id) ring(cx, cy, rr, P.dim, 1.5);
     }
 
+    // A train's or a cut's block: a bg underlay, then the colour (a car's at 70 % alpha), each end trimmed for 1 px gaps;
+    // a selected train's outlined in white.
+    const tw = Math.max(4, 5 * z), tags = [];
+    const block = (b, col, sel) => {
+      const x1 = X(b.x1), y1 = Y(b.y1), x2 = X(b.x2), y2 = Y(b.y2), len = Math.hypot(x2 - x1, y2 - y1);
+      if (!len) return;
+      const trim = Math.max(0, Math.min(tw / 2 + 0.5, len / 2 - 0.25)), ux = (x2 - x1) / len * trim, uy = (y2 - y1) / len * trim;
+      if (sel) line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, WHITE, tw + 3);
+      line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, P.bg, tw);
+      ctx.globalAlpha = b.kind === 'loco' ? 1 : 0.7;
+      line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
+      ctx.globalAlpha = 1;
+    };
+    // 6½. Standing cuts: their cars as a train's, and nothing else (no loco, marker or tag). At a set-out or a pick-up
+    // they are where the train's cars were drawn, so nothing moves.
+    for (const c of sim.cuts.values()) for (const b of cutBlocks(sim, c)) block(b, COLORS.types[c.type] ?? COLORS.label, false);
+
     // 7. Trains: loco in the type colour, cars at 70 % alpha over a bg underlay, 1 px gaps; a red marker on the trailing
     // end (the loco's while it pushes), outlined like a lamp, blinking with flashing aspects (steady when they're off);
     // tags on top.
     // ponytail: no collision avoidance; tags draw after everything else on the panel, so they stay readable.
-    const tw = Math.max(4, 5 * z), tags = [];
+    // Cars just picked up from a cut of another type (gone from the train's stub since the last frame) crossfade from the
+    // cut's colour to the train's (spec "The visit" 9).
     for (const [t, bl] of drawn) {
-      const col = COLORS.types[t.type] ?? COLORS.label, sel = ui.selectedTrain === t.id;
-      for (const b of bl) {
-        const x1 = X(b.x1), y1 = Y(b.y1), x2 = X(b.x2), y2 = Y(b.y2), len = Math.hypot(x2 - x1, y2 - y1);
-        if (!len) continue;
-        const trim = Math.max(0, Math.min(tw / 2 + 0.5, len / 2 - 0.25)), ux = (x2 - x1) / len * trim, uy = (y2 - y1) / len * trim;
-        if (sel) line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, WHITE, tw + 3);
-        line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, P.bg, tw);
-        ctx.globalAlpha = b.kind === 'loco' ? 1 : 0.7;
-        line(x1 + ux, y1 + uy, x2 - ux, y2 - uy, col, tw);
-        ctx.globalAlpha = 1;
-      }
+      const col = COLORS.types[t.type] ?? COLORS.label, sel = ui.selectedTrain === t.id, c = !sim.cuts.has(t.dest) && cutsWas.get(t.dest);
+      const carCol = t.cars ? rgba(eased(`cars:${t.id}`, rgb(col), 120, rgb(c ? COLORS.types[c.type] ?? col : col)), 1) : col;
+      for (const b of bl) block(b, b.kind === 'loco' ? col : carCol, sel);
       ends(t, 'eot', bl.at(-1), (b, a) => {
         ctx.globalAlpha = a;
         disc(X(b.x2), Y(b.y2), Math.max(1.5, 1.6 * z), COLORS.lamp.R, P.bg);
@@ -432,6 +461,7 @@ export function createRenderer(canvas) {
     }
     for (const id of fade.keys()) if (!seen.has(id)) fade.delete(id);
     for (const id of was.keys()) if (!fade.has(id)) was.delete(id);
+    cutsWas = new Map(sim.cuts);
   };
 
   // Signals first, then switches (id = node), then train blocks, then routed edges (id = route id).

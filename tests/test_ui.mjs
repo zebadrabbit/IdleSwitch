@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 import { formatClock, formatDelay, dockFor, matchCandidate, tick, loadJSON, cleanSettings, cleanLayout, clampDock,
   DEFAULT_SETTINGS, DEFAULT_LAYOUT } from '../src/ui-util.js';
-import { mix, createRenderer, facingOf, rightOf, tagAt, CELL } from '../src/render.js';
+import { mix, createRenderer, facingOf, rightOf, tagAt, CELL, COLORS } from '../src/render.js';
 import { generate } from '../src/gen.js';
 import { createSim, step, nightOf, spawnTrain, setRoute, cancelRoute, switchLocked, aspectOf, lamps, signalHeads, trainBlocks, reverse,
-  signalLabel, FOUL } from '../src/sim.js';
-import { inspectorHTML } from '../src/panels.js';
+  signalLabel, FOUL, CAR, LOCO, cutBlocks, stopDist } from '../src/sim.js';
+import { inspectorHTML, legendHTML } from '../src/panels.js';
 
 // Clock: 06:00 start, minutes floor, wraps past midnight.
 assert.deepEqual([21600, 22859, 86399, 86400 + 3660].map(t => formatClock(t)), ['06:00', '06:20', '23:59', '01:01']);
@@ -66,11 +66,11 @@ globalThis.innerWidth = 1366; globalThis.innerHeight = 768; globalThis.devicePix
 let rec = [];
 const ctx = new Proxy({ globalAlpha: 1 }, {
   get: (o, k) => k in o ? o[k] : (...a) => {
-    if (k === 'fillText') rec.push({ k, text: a[0], x: a[1], y: a[2], align: o.textAlign, alpha: o.globalAlpha });
+    if (k === 'fillText') rec.push({ k, text: a[0], x: a[1], y: a[2], align: o.textAlign, alpha: o.globalAlpha, font: o.font });
     else if (k === 'fillRect' && a[3] === 15) rec.push({ k: 'tag', x: a[0], y: a[1], w: a[2], h: a[3] });
     else if (k === 'strokeRect' && a[2] === 7 && a[3] === 5.5) rec.push({ k: 'lock', x: a[0] + 3.5, y: a[1] + 1.5, alpha: o.globalAlpha });
     else if (k === 'createRadialGradient') rec.push({ k: 'halo' });
-    else if (k === 'translate' || k === 'rotate' || k === 'roundRect' || k === 'moveTo' || k === 'lineTo') rec.push({ k, a });
+    else if (k === 'translate' || k === 'rotate' || k === 'roundRect' || k === 'moveTo' || k === 'lineTo') rec.push({ k, a, cap: o.lineCap, alpha: o.globalAlpha, s: o.strokeStyle });
     return k === 'measureText' ? { width: 30 } : { addColorStop() {} };
   },
   set: (o, k, v) => { o[k] = v; return true; },
@@ -288,6 +288,92 @@ for (const seed of ['s8', 's14']) {
     assert.match(inspectorHTML(Q, { kind: 'switch', id: w.F1 }), new RegExp(`<th>Locked</th><td>route from ${signalLabel(Q, w.shunt.F1)}</td>`));
   }
 }
+
+// ---- Industrial stubs (s7 a north fan of two, s5 a south fan of three, s3 a spur stub each side). A cut's blocks run back
+// from FOUL short of the buffer, where the cars of the train that set it out stood, and a loco sent in stops touching them.
+{
+  const L = generate('s7'), S = createSim(L, 's7'), id = L.fan.stubs[0], [eKS, eSB] = L.tracks[id].edges.map(e => L.edges[e]);
+  const B = L.nodes[eSB.b], cut = { track: id, type: 'M', cars: 4 }, bl = cutBlocks(S, cut);
+  assert.ok(L.fan.side === 'north' && L.nodes[eSB.a].y === B.y && !S.cuts.has(id) && S.adj.get(eSB.b).length === 1, 's7: an empty horizontal north stub');
+  const near = Math.max(...bl.flatMap(b => [b.x1, b.x2])), far = Math.min(...bl.flatMap(b => [b.x1, b.x2]));
+  assert.ok(bl.length === 4 && bl.every(b => b.kind === 'car' && b.y1 === B.y && b.y2 === B.y && Math.abs(Math.abs(b.x1 - b.x2) - CAR) < 1e-9)
+    && Math.abs(near - (B.x - FOUL)) < 1e-9 && Math.abs(near - far - 4 * CAR) < 1e-9, `s7: 4 cars ending FOUL short of the buffer ${JSON.stringify(bl)}`);
+  const T = spawnTrain(S, { type: 'M', dir: -1, cars: 4, name: 'M 7' }); // shoved in to its stop point, loco trailing
+  Object.assign(T, { path: [eKS.id, eSB.id], pathStart: eKS.a, headDist: eKS.len + eSB.len - FOUL, locoAtTail: true, pushing: true });
+  const cars = trainBlocks(S, T).filter(b => b.kind === 'car');
+  assert.ok(cars.length === 4 && cars.every((c, i) => ['x1', 'y1', 'x2', 'y2'].every(k => Math.abs(c[k] - bl[i][k]) < 1e-9)),
+    `s7: the cut where the train's cars stood ${JSON.stringify(cars)}`);
+  S.cuts.set(id, cut);
+  Object.assign(T, { cars: 0, len: LOCO, headDist: 0 });
+  T.headDist = stopDist(S, T);
+  assert.ok(Math.abs(trainBlocks(S, T)[0].x1 - far) < 1e-9, 's7: a loco stops touching the cut');
+}
+// Each stub has a buffer stop (a bar 2 lw long across its end, as the terminus's) and its name in small caps on the side
+// away from the main, over its buffer edge clear of the stub signal's dwarf (8 px off S, lw short of the buffer) when it
+// fits, else from 8 px off S on past the buffer (the recording canvas measures every text 30 px: it fits at the fit
+// zoom, not at 0.2). A spur with a stub is named over its entry edge short of the stub's lead (Xs to Q). Standing cuts
+// draw as their cars at 70 % and nothing else (no trains here).
+for (const seed of ['s7', 's5', 's3']) {
+  const L = generate(seed), S = createSim(L, seed), R4 = createRenderer({ getContext: () => ctx, style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) });
+  R4.fit(L);
+  const stubs = L.tracks.filter(t => t.cls === 'stub');
+  assert.ok(stubs.length >= 2 && L.tracks.some(t => t.stubOf != null), `${seed}: stubs to draw`);
+  for (const zoom of [null, 0.2]) {
+    if (zoom) Object.assign(R4.camera, { zoom });
+    const z = R4.camera.zoom, lw = Math.max(2, 3 * z), X = gx => (gx * CELL - R4.camera.x) * z, Y = gy => (gy * CELL - R4.camera.y) * z;
+    const d = (rec = [], R4.draw(S, { blink: true, now: 16 }), rec);
+    for (const t of stubs) {
+      const e = L.edges[t.edges.at(-1)], A = L.nodes[e.a], B = L.nodes[e.b], bx = X(B.x), by = Y(B.y), away = B.y < L.mainRow[-1] ? -1 : 1;
+      const bars = d.filter((r, i) => r.k === 'moveTo' && r.cap === 'butt' && Math.abs(r.a[0] - bx) < 1e-9 && Math.abs(Math.abs(r.a[1] - by) - lw) < 1e-9
+        && d[i + 1].k === 'lineTo' && Math.abs(d[i + 1].a[0] - bx) < 1e-9 && Math.abs(d[i + 1].a[1] + r.a[1] - 2 * by) < 1e-9);
+      assert.equal(bars.length, 1, `${seed}: a buffer stop across ${t.name}'s end`);
+      const name = d.find(r => r.text === t.name), u = Math.sign(B.x - A.x), x0 = X(A.x) + 8 * u, x1 = bx - lw * u;
+      assert.ok(name && Math.sign(name.y - by) === away && /small-caps/.test(name.font), `${seed}: ${t.name} named away from the main`);
+      assert.ok(Math.abs(name.x - (Math.abs(x1 - x0) >= 30 ? (x0 + x1) / 2 : x0 + 15 * u)) < 1e-9, `${seed}: ${t.name}'s name clear of its signal (${name.x}, ${x0}, ${x1})`);
+    }
+    for (const t of L.tracks.filter(t => t.stubOf != null)) {
+      const e = L.edges[t.edges[0]], name = d.find(r => r.text === t.name);
+      assert.ok(Math.abs(name.x - X((L.nodes[e.a].x + L.nodes[e.b].x - t.dir) / 2)) < 1e-9, `${seed}: ${t.name} named short of its stub's lead`);
+    }
+    if (zoom) continue;
+    const n = [...S.cuts.values()].reduce((s, c) => s + c.cars, 0);
+    assert.equal(d.filter(r => r.k === 'moveTo' && r.alpha === 0.7).length, n, `${seed}: ${n} cut cars at 70 %`);
+  }
+}
+// A set-out or a pick-up moves no pixel: on s7 the first visitor sets its cars out on one stub of the fan, then runs light to
+// the other and picks up a cut of another type. The car strokes on that stub are where they were the frame before (each
+// from either end: a stroke reads the same both ways, and the train turns round in the same step), in the same colour; the
+// picked-up cars then crossfade to the train's colour (spec "The visit" 9: one 16 ms frame of a 120 ms ease, then all).
+{
+  const L = generate('s7'), S = createSim(L, 's7'), R5 = createRenderer({ getContext: () => ctx, style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) });
+  R5.fit(L);
+  S.auto = true;
+  const z = R5.camera.zoom, X = gx => (gx * CELL - R5.camera.x) * z, Y = gy => (gy * CELL - R5.camera.y) * z, done = [];
+  let now = 0;
+  const rgbOf = c => (c.startsWith('#') ? [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)) : c.match(/\d+/g).slice(0, 3).map(Number));
+  const carsOn = id => { // the 70 % strokes along the stub's buffer edge, west end first, west to east: [x1, y1, x2, y2, colour]
+    const e = L.edges[L.tracks[id].edges.at(-1)], p = L.nodes[e.a], q = L.nodes[e.b], lo = X(Math.min(p.x, q.x)), hi = X(Math.max(p.x, q.x));
+    rec = []; R5.draw(S, { blink: false, now: (now += 16) });
+    return rec.flatMap((r, i) => r.k === 'moveTo' && r.alpha === 0.7 && Math.abs(r.a[1] - Y(p.y)) < 1e-6 && r.a[0] >= lo && r.a[0] <= hi
+      ? [r.a[0] < rec[i + 1].a[0] ? [...r.a, ...rec[i + 1].a, r.s] : [...rec[i + 1].a, ...r.a, r.s]] : []).sort((a, b) => a[0] - b[0]);
+  };
+  for (let i = 0; i < 3000 && done.length < 2; i++) {
+    const t = [...S.trains.values()].find(t => t.state === 'dwelling' && L.fan.stubs.includes(t.dest));
+    if (!t) { step(S); continue; }
+    const id = t.dest, had = S.cuts.get(id), before = carsOn(id);
+    step(S);
+    if (S.cuts.get(id) === had) continue;
+    const after = carsOn(id), cut = had ?? S.cuts.get(id), [from, to] = [cut.type, t.type].map(k => rgbOf(COLORS.types[k]));
+    const tinted = (bl, f) => bl.every(b => rgbOf(b[4]).every((v, k) => Math.abs(v - from[k]) <= f * Math.abs(to[k] - from[k]) + 0.5));
+    done.push([t.type, cut.type]);
+    assert.ok(before.length === cut.cars && after.length === cut.cars && before.every((b, j) => b.slice(0, 4).every((v, k) => Math.abs(v - after[j][k]) < 1e-9))
+      && tinted(before, 0) && tinted(after, 0.13), `s7: ${had ? 'a pick-up' : 'a set-out'} at ${L.tracks[id].name} moves no pixel ${JSON.stringify([before, after])}`);
+    for (let k = 0; k < 40; k++) carsOn(id);
+    assert.ok(carsOn(id).every(b => String(rgbOf(b[4])) === String(to)), `s7: then the train's colour`);
+  }
+  assert.deepEqual(done, [['M', 'M'], ['M', 'I']], 's7: a set-out, then a pick-up of a cut of another type');
+}
+assert.match(legendHTML(), /standing cut/);
 
 // A light engine's inspector says so.
 {

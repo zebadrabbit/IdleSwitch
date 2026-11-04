@@ -150,6 +150,7 @@ export function legendHTML() {
     + '<div class="sub">Track</div>' + tracks.map(([n, c]) => `<div><i class="bar" style="background:${c}"></i>${n}</div>`).join('')
     + '<div class="sub">Trains</div><div class="cols">'
     + Object.keys(TYPES).map(t => `<div>${swatch(COLORS.types[t])}<span class="mono">${t}</span> ${TYPES[t].name}</div>`).join('') + '</div>'
+    + `<div><i class="bar" style="background:repeating-linear-gradient(90deg,${COLORS.types.M} 0 6px,transparent 6px 7px);opacity:.7"></i>standing cut</div>` // cars, no loco
     + `<div class="sub">Keys</div>${kv(KEYS.map(([k, v]) => [`<kbd>${k}</kbd>`, v]))}`;
 }
 

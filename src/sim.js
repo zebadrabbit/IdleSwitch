@@ -536,6 +536,19 @@ export function trainBlocks(sim, train, lag = 0) {
   return out;
 }
 
+// A standing cut's blocks, as trainBlocks gives a train's: its cars along the stub's buffer edge from FOUL short of the
+// buffer back, the nearest first, each led by its buffer end. That is where the cars of the train that set it out stood
+// (shoved in to the stop point, loco trailing), and stopDist puts a loco sent in to it touching the last, so a set-out or
+// a pick-up moves no pixel. The generator lists a stub's buffer edge last, the buffer its b.
+export function cutBlocks(sim, cut) {
+  const { nodes, edges, tracks } = sim.layout, e = edges[tracks[cut.track].edges.at(-1)], b = nodes[e.b], s = nodes[e.a];
+  const at = d => ({ x: b.x + (s.x - b.x) * d / e.len, y: b.y + (s.y - b.y) * d / e.len }); // d cells from the buffer
+  return Array.from({ length: cut.cars }, (_, j) => {
+    const p = at(FOUL + j * CAR), q = at(FOUL + (j + 1) * CAR);
+    return { x1: p.x, y1: p.y, x2: q.x, y2: q.y, kind: 'car' };
+  });
+}
+
 // Turns a standing train round where it stands (spec "Reversal"). Its new path is the edges it occupies (the occupancy
 // rule's), reversed, from the far end of its head's edge; r, the unused part of that edge beyond the old head, is where
 // the new tail stands, exactly where the head was: nothing jumps, and occupancy is the same set. The run so far is banked

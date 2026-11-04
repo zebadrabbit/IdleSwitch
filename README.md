@@ -38,6 +38,8 @@ About three terminals in five have a wye in one gap between modules, a junction 
 
 A terminus wye makes the Tampa move. Its stem is a stub platform ending at a buffer stop, and passenger trains and expresses from either end call there. One pulls past the wye on the main and stops at the pull-ahead signal beyond it, then reverses and backs through the far leg into the stub, loco trailing, at 15 mph: the headlight is on the leading car and the red marker on the loco. After ten minutes at the platform it pulls out loco first by the other leg and runs back toward the portal it came from. There is one terminus visit at a time: the stub is offered only while it is free and no train for it is waiting, and while a terminus train that has not yet reversed is on the wye's main inside the gap, a route that would follow it in is refused `terminus`. Through trains cross the junction in one route from pull-ahead signal to pull-ahead signal, past the two shunt dwarfs at the feet (e.g. `E63Ks`, `W67Ks`), which give a reversed train its way into the stub. A terminus train that has waited twenty minutes to get into the gap gives the stub up and runs through.
 
+About two terminals in five have an industrial lead in a gap of its own: a lead that climbs off Main 1 to a fan of two or three dead-end stubs above it (or drops off Main 2 to a fan below), each stub named for its industry and ending at a buffer stop. Most stubs hold a standing cut of cars, drawn as a train's cars with no loco, marker or tag. Only the main's own trains work a fan, westbounds on Main 1 and eastbounds on Main 2, so the lead always trails and a visit needs no runaround. A freight bound for it pulls past the lead, stops at the pull-ahead signal beyond, waits for a moment when nobody else is on the wrong main, then reverses and shoves its cars up the lead into an empty stub (the log says it is `backing into` it). It sets them out in three minutes and runs light back down to the lead's dwarf; if another stub holds a cut it backs onto it and picks it up in two, then pulls out loco first and carries on its way, loaded or light (`departed … light`). A light engine comes only to pick a cut up. Nothing moves at a set-out or a pick-up; picked-up cars take the train's colour in a quick crossfade. About as many terminals have a spur stub: a single stub one row deeper off a yard spur, worked the same way from the spur's exit signal, and a spur with a stub sees only these short visits. One train works a fan or a spur stub at a time. A visitor that a human routes past its stand or onto a main gives the visit up, and so does one that has stood twenty minutes before it could turn round: it keeps whatever it has coupled, runs for the far end, and the log says it `missed` the stub.
+
 Signal aspects (American practice):
 
 | Name | High (1 head) | High (2 head) | Dwarf | Meaning |
@@ -51,7 +53,7 @@ Signal aspects (American practice):
 | Slow Clear | — | — | G | proceed at slow speed |
 | Stop | R | R / R | R | stop |
 
-Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf, `E63Ks` a terminus's shunt dwarf, and a branch's or a stub's signals face north or south (`S68B`).
+Signals are named by direction, column and row: `E12C` faces east at column 12 on row C (rows run A, B, C from the top), `W41Ad` is a westbound dwarf, `W69Bd` an industrial stub's dwarf (it faces out of the stub, toward its points), `E63Ks` a shunt dwarf (at a terminus's foot or an industrial lead's switches), and a branch's or a terminus stub's signals face north or south (`S68B`).
 
 Trains are a locomotive block plus one block per car, with an ID tag (type letter plus number; even eastbound, odd westbound):
 
@@ -79,10 +81,10 @@ The Settings panel (5) holds sim speed, density, return to AUTO after 2 idle min
 ## Design notes
 
 - Each main has a home direction, Main 1 westbound and Main 2 eastbound, and is signalled both ways; traffic locking keeps opposing trains out of the same stretch of main between crossover pairs. A meet is an overtake: the lower-priority train steps into a siding or yard track, or a train held behind a standing one passes it on the other main.
-- Every track is a through track except a terminus's stub. Only a terminus train reverses, and it keeps its ID; every other train keeps its direction and ID from portal to portal.
+- Every track is a through track except a terminus's stub and the industrial stubs. Only terminus trains and industrial visitors reverse, and they keep their IDs; every other train keeps its direction and ID from portal to portal.
 - A switch is held by its trunk edge (occupied or routed) and by any set route through it that no train has entered yet; there is no flank protection.
 - Yard tracks must be clear to receive a train.
-- Human routes stand until a train takes them or you cancel them, with one exception: in AUTO the operator clears a human route no train can take 3 sim minutes after it was set. That is a route out of an empty track no train is bound for; into a track the train waiting at it doesn't fit; from a branch's stem signal against the direction of every train waiting there; a wrong-main route, or one from a signal on the other main, with no train standing at its signal; or one from a terminus's shunt dwarf with no train standing at it.
+- Human routes stand until a train takes them or you cancel them, with one exception: in AUTO the operator clears a human route no train can take 3 sim minutes after it was set. That is a route out of an empty track no train is bound for; into a track the train waiting at it doesn't fit; from a branch's stem signal against the direction of every train waiting there; a wrong-main route, or one from a signal on the other main, with no train standing at its signal; or one from a shunt dwarf, an industrial lead's dwarf or a stub's dwarf with no train standing at it.
 - Trains wait off-screen in a portal queue until a destination fits; the first eligible train in the queue enters, so one waiting for a full spur does not block the rest.
 
 ## Layout

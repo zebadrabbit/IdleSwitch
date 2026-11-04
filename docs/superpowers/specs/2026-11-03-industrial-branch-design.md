@@ -340,6 +340,23 @@ machine follows what actually happened (arrived where, with what). A human canno
 - **Log** lines: `reversing at <signal>`, `backing into <stub>` (exist), `set out <n> cars at <stub>`, `picked up <n>
   cars at <stub>`, `departed <stub>` / `departed <stub> light`, `missed <stub>`.
 
+(Amended 2026-11-04, Task 5: **placement and the pick-up colour.**
+1. A stub's name sits over its buffer edge, clear of the stub signal's dwarf (which stands on the same side, the right of
+   travel out of the stub), centred there when it fits, else from just past the dwarf on past the buffer, as the
+   terminus's name runs on past its buffer. Centred over the whole stub, the dwarf's lamp covered the name's first letter
+   from zoom 0.85 down.
+2. A spur with a stub is named over its entry edge short of the stub's lead (entry to `Q`): centred on the spur, the name
+   sat where the lead leaves `Xs`, and the lead crossed it.
+3. Step 9's "the two are the same industry type in practice" does not hold: a loaded visitor that sets out at one stub
+   and picks up at another picks up the other industry's type (s7: a manifest sets out at a lumber stub and picks up an
+   intermodal cut). The crossfade step 9 allows is built: the renderer remembers the cuts it last drew, and cars that
+   appear on a train in the stub whose cut has just gone ease from the cut's colour to the train's (120 ms). Positions
+   never move: a set-out or pick-up is pixel-identical in the stub, the colour aside.
+4. The `J` shunt's glyph (below the straight on a north fan, above on a south one, back from `J` along `Lt–J`) clears
+   `K1`'s padlock (on the far side of the ladder) and the stub 0 line at zoom 0.6 and 2: `signalGeom` is unchanged.
+5. At the fit zoom of a wide fan seed (about 0.35 with the docks open) stub names overlap the neighbouring stub's line and
+   one another, as yard track names do there; accepted.)
+
 ## Tests
 
 - `test_gen`: among s0–s199, ≥ 25 % of seeds have a fan (both sides, both counts seen) and ≥ 20 % have at least one
