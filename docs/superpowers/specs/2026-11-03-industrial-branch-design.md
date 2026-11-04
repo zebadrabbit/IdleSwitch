@@ -302,6 +302,11 @@ machine follows what actually happened (arrived where, with what). A human canno
   same 8 busy hours give s12 10 visits, s14 11 and s19 12, none given up, and s14's longest stand is 17.0 min.)
 - **Dead routes.** Shunt routes with no train at their signal die after GRACE (the existing rule covers `X`, `J` and
   `Xs`).
+  (Amended 2026-11-04, Task 4 monkey runs: **also from `Lt` and the stub signals.** A human route from a fan's lead signal,
+  or from an industrial stub's signal (`Si`, `Sq`), with no train at it is dead after GRACE, like a shunt's: only a
+  visitor ever stands there. `Lt`'s route runs down the lead onto the run. It is no wrong-main route and runs out of no
+  track, so no clause caught it, and in a random-clicking run of s12 one held the run from 06:09 to 06:44. A stub
+  signal's route was kept alive by the out-of-a-track clause while a visitor was bound for that stub.)
 - **The cut is a wall.** The stop-point rule in stage 8 applies to every train and every stub. The soak asserts no
   train's head is ever past a cut's near end.
 - Everything else stands: trunk lock, un-entered routes own their switches, one un-entered route per signal, sectional

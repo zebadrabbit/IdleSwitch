@@ -1082,7 +1082,9 @@ function hold(sim, t, sig, cands) {
 //   ends there (signalAheadOf), whichever its dir; or
 // - from a terminus's shunt signal with no train at it: only a reversed terminus train ever comes there, and none can
 //   while the stub is busy. Left, one onto the main held a departure and the trains behind it at b for good, and a
-//   back-in route at the other foot kept the arrival reversing for hours.
+//   back-in route at the other foot kept the arrival reversing for hours. Likewise from a fan's lead signal (Lt) or an
+//   industrial stub's signal, where only a visitor stands: Lt's runs down the lead onto the run, and under random clicking
+//   held the run 35 min on s12 (a stub signal's lived on while a visitor was bound for that stub).
 const GRACE = 3 * 60;
 function deadRoute(sim, r) {
   const { edges, tracks, signals, nodes, mainRow } = sim.layout;
@@ -1090,7 +1092,7 @@ function deadRoute(sim, r) {
   const from = edges[r.cand.edges[0]].track, into = edges[r.cand.edges.at(-1)].track, trains = [...sim.trains.values()];
   const sig = signals[r.signal], at = trains.filter(t => signalAheadOf(sim, t) === r.signal);
   if (at.length && at.every(t => r.dir !== 0 && t.dir !== r.dir)) return true;
-  if (sig.kind === 'shunt' && !at.length) return true;
+  if ((sig.kind === 'shunt' || r.signal === sim.layout.fan?.leadSignal || tracks[edges[sig.from]?.track]?.cls === 'stub') && !at.length) return true;
   const onOther = sig.dir !== 0 && nodes[sig.node].y === mainRow[-sig.dir];
   if ((r.cand.wrongMain || r.cand.gapWrong || onOther) && !at.length) return true;
   if (from === null) return into !== null && at.some(t => !fits(sim, t, into));

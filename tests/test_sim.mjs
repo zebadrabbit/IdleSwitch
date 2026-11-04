@@ -2772,6 +2772,22 @@ for (const [visitor, stood] of [[false, 0], [true, 0], [true, 600]]) {
   assert.ok(on('V 1'), 'not entered with the train home');
 }
 
+// A human route from the fan's lead signal (Lt) or from a stub's signal with no train at it dies after GRACE, like a shunt's
+// (amendment 2026-11-04, the monkey runs): only a visitor ever stands there. Lt's runs down the lead onto the run and held
+// the run 35 min on s12 under random clicking; one from a stub signal lived on while a visitor was bound for that stub.
+for (const from of ['Lt', 'stub']) {
+  const S = quiet(fN), G = S.layout, F = G.fan, full = fullOf(S);
+  const sig = from === 'Lt' ? F.leadSignal : fanGeo(S).stubSig(full), c = S.routesFrom.get(sig)[0];
+  if (from === 'stub') spawnTrain(S, { type: 'M', dir: F.main, dest: full, cars: 0, shunt: true, name: 'V 1' }); // bound for it, at its portal
+  const r = setRoute(S, sig, c.exitNode, { human: true }).route;
+  assert.ok(r, `${from}: route not set`);
+  S.auto = true;
+  for (let i = 0; i < 178; i++) step(S);
+  assert.ok(S.routes.has(r.id), `${from}: cleared before the grace was up`);
+  for (let i = 0; i < 4; i++) step(S);
+  assert.ok(!S.routes.has(r.id) && S.log.some(e => e.text.startsWith(`AUTO: cleared route ${signalLabel(S, sig)} → `)), `${from}: not cleared`);
+}
+
 // ---- The spur stub visit (spec "The spur stub (geometry)", "Traffic", "The visit": a visitor at a spur stub). pN: a
 // westbound spur with a stub (above Main 1), pS: an eastbound one (below Main 2).
 // The menu: a spur with a stub is an industrial lead. In place of its spur item, one visit with dest the spur and stub its
