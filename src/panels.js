@@ -34,13 +34,15 @@ const swatch = color => `<i class="sw" style="background:${color}"></i>`;
 const delayHTML = d => `<span class="delay ${d.cls}">${d.text}</span>`;
 
 // Board status words (spec: approaching / routed / holding / dwelling / departing; plus waiting at a red; a terminus
-// train reversing at its pull-ahead signal, then backing in while it pushes), and ' · wrong main' while the train is.
+// train reversing at its pull-ahead signal, then backing in while it pushes; a fan visitor setting out or picking up while
+// it dwells in a stub), and ' · wrong main' while the train is.
 export const trainStatus = (t, sim) => status(t) + (isWrongMain(sim, t) ? ' · wrong main' : '');
 function status(t) {
   if (t.state === 'entering' || !t.path.length) return 'approaching'; // still at its portal, off the panel
   if (t.state === 'stopped') return 'waiting';
   if (t.state === 'running' && t.pushing) return 'backing in';
   if (t.state === 'running') return t.dwellUntil > 0 && t.dest === null ? 'departing' : 'routed';
+  if (t.state === 'dwelling' && t.shunt) return t.shunt.stage === 'setOut' ? 'setting out' : 'picking up';
   return t.state; // dwelling, holding, reversing
 }
 

@@ -241,6 +241,16 @@ AUTO the operator drives every stage; in MANUAL the human sets the same routes f
 machine follows what actually happened (arrived where, with what). A human cannot reverse a train; reversals happen in
 `missions()` when the train is stopped at a stand or in a stub with its dwell up.
 
+(Amended 2026-11-04, Task 3: **four accepted deviations.**
+1. `fits` counts a standing cut: a train fits a full stub only if it fits beside the cut. So a human route into a full stub
+   is taken only by a train that fits there, and one that doesn't fit dies after GRACE (`deadRoute`). Otherwise the train
+   would stop with its tail out across the ladder, and turned round it would read no signal.
+2. The stop point is a cut short only on a path that ends at the stub's buffer. A train turned round in a full stub
+   (after its set-out) has the cut behind it.
+3. A reversal logs the signal the train stood at, or at a buffer (no signal) the stub signal it now reads.
+4. The operator's "arriving, it dwells" skip does not apply to visitors: turned round in its stub, a visitor's path is
+   still on the stub, and it is leaving.)
+
 ## Interlocking additions and operator rules
 
 - **One train in a fan.** By reservation and the menu rule; a human route into the lead needs a train's head at `X` or
@@ -263,6 +273,14 @@ machine follows what actually happened (arrived where, with what). A human canno
   main all that time, or the section opposed) gives the visit up and runs on: at a fan, its route `P → b` is its home
   sense and always available when free; at a spur, it departs by the spur's exit. One that has stood `2 × STARVE` at
   `b'` with its way to `P` refused does the same. Expected to fire rarely; counted in the long runs.
+  (Amended 2026-11-04, Task 3: **a visitor at its stand also gives up while a terminus train is turning round**
+  (`terminusTurning`: one that has stood STARVE in its stub waiting to leave, or at `b`/`b'` waiting to come in). The gate's
+  "no terminus train on its visit" clause has the visitor wait out that visit, standing on its home main, where it can hold
+  the very trains the terminus train waits on. On s14 busy (a south terminus and a south fan, both on Main 2) a terminus
+  train in its stub waited from 06:45 for the eastbound trains in its gap to clear, and they were queued behind a visitor
+  standing at `P` from 06:54, which was waiting on that visit. The valve released the visitor at 20 min, a minute before the
+  terminus train had stood 30 (STALL). With the rule, s14 runs 8 busy hours with 6 visits, 4 given up and a longest stand
+  of 20.7 min. The valve counts time stood anywhere short of the stand, not only at `b'`.)
 - **Dead routes.** Shunt routes with no train at their signal die after GRACE (the existing rule covers `X`, `J` and
   `Xs`).
 - **The cut is a wall.** The stop-point rule in stage 8 applies to every train and every stub. The soak asserts no

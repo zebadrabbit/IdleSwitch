@@ -6,7 +6,7 @@ import { createSim, setRoute, cancelRoute, throwSwitch, forwardEdges, findPath, 
   wrongMainTrains, PASS_WAIT,
   ASPECT, aspectOf, signalHeads, lamps, clearAspects,
   MPH, CAR, LOCO, FOUL, TYPES, trainLength, spawnTrain, despawnTrain, moveTrains, pathLength, pointAt,
-  trainBlocks, headNode, reverse, PUSH_MPH, CUT_MIN, CUT_MAX, cutLen,
+  trainBlocks, headNode, reverse, PUSH_MPH, CUT_MIN, CUT_MAX, cutLen, stopDist,
   DENSITY, DWELL, step, trafficMenu, fits, trackFree, holdingTracks, signalLabel, logEvent,
   WRONG_MAIN_COST, MOVING_COST, STANDING_COST, nightLevel, SLOW_ORDER, edgeSpeed, slowOrderLabel, OPERATORS } from '../src/sim.js';
 import { trainStatus, boardHTML, exitLabel } from '../src/panels.js';
@@ -47,6 +47,26 @@ function termSeed(side) {
   assert.fail(`no ${side} terminus seed in s0..s99`);
 }
 const tN = termSeed('north'), tS = termSeed('south');
+// Fan seeds (spec "The fan (geometry)"): the first of s0..s99 with an industrial fan on that side, of that many stubs when
+// asked, and no terminus (tS has both): s7 north with two, s5 south with three, s55 south with two.
+function fanSeed(side, count = null) {
+  for (let i = 0; i < 100; i++) {
+    const G = generate(`s${i}`), f = G.fan;
+    if (f?.side === side && (count ?? f.count) === f.count && G.wye?.kind !== 'terminus') return `s${i}`;
+  }
+  assert.fail(`no ${side} fan seed in s0..s99`);
+}
+const fN = fanSeed('north'), fS = fanSeed('south'), fS2 = fanSeed('south', 2);
+// A fan sim's geometry: the run P-X (one main edge), the straight Lt-J, each stub's buffer node and stub signal, the stand's
+// signal (at P facing the run: the arriving visitor reads it), the run's main section and the fan section's edges. Its
+// serving dir is fan.main.
+function fanGeo(S) {
+  const G = S.layout, F = G.fan, between = (a, b) => G.edges.find(e => (e.a === a && e.b === b) || (e.a === b && e.b === a)).id;
+  const run = between(F.P, F.X), e2 = id => G.edges[G.tracks[id].edges[1]];
+  return { F, d: F.main, run, straight: between(F.Lt, F.J), buffer: id => [e2(id).a, e2(id).b].find(n => S.adj.get(n).length === 1),
+    stubSig: id => G.signals.find(s => s.from === e2(id).id).id, pSig: signalAhead(S, F.P, run),
+    main: S.sectionEdges.get(G.edges[run].section), fan: S.sectionEdges.get(G.edges[G.tracks[F.stubs[0]].edges[0]].section) };
+}
 // A terminus sim's wye: the run from each foot to its pull-ahead column (one main edge, keyed by the arrival dir that
 // stops at its P: east of F2 eastbound, west of F1 westbound), the main between the feet, the legs, the stub's edges and
 // its buffer, the pull-ahead signal of each arrival dir (at P, facing the run), the feet main's junction edges.
@@ -629,7 +649,7 @@ assert.equal(S.trains.get(X.id), X);
 assert.deepEqual(X, { id: X.id, name: 'X 101', type: 'X', dir: W, cars: 8, entry: 1, exit: 0, prio: 5, len: trainLength('X'),
   maxSpeed: 60 * MPH, path: [], pathStart: pnode(S, W), routes: [], pathOff: 0, headDist: 0, speed: 0, state: 'entering', dest: null,
   goal: { exit: 0 }, dwellUntil: 0, holdFor: null, spawnTime: S.time, sched: S.time, lastMoveTime: S.time, stops: 0, stalled: false,
-  events: [], run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: W, reversed1: false });
+  events: [], run: 0, locoAtTail: false, pushing: false, terminus: false, arrival: W, reversed1: false, shunt: null });
 assert.equal(headNode(S, X), pnode(S, W));
 assert.equal(signalAheadOf(S, X), entrySig(S, W), 'before its first route it reads the portal signal');
 assert.deepEqual(trainBlocks(S, X), [], 'nothing on the board before its first route');
@@ -811,7 +831,7 @@ const xOf = (S, n) => S.layout.nodes[n].x;
 
 // constants
 assert.deepEqual(DENSITY, { light: 12 * 60, normal: 7 * 60, busy: 4 * 60 });
-assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60, terminus: 10 * 60 });
+assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60, terminus: 10 * 60, setOut: 3 * 60, pickUp: 2 * 60 });
 
 // fits: nothing is 99 cells long; a P fits every platform (generator floors)
 {
@@ -820,15 +840,18 @@ assert.deepEqual(DWELL, { P: 3 * 60, L: 15 * 60, industry: 25 * 60, terminus: 10
   for (const t of L.tracks.filter(k => k.cls === 'platform')) assert.equal(fits(S, { len: trainLength('P') }, t.id), true);
 }
 
-// trafficMenu: X3 Z2 M3 always; P6 per platform, spur trainType 2 per spur, L2 per yard track of that dir
+// trafficMenu: X3 Z2 M3 always; P6 per platform, spur trainType 2 per spur, L2 per yard track of that dir; for a fan's
+// serving dir (s7: a north fan, westbound) a loaded visit 3 to its first empty stub and a light one 2 to its first full one
 for (const seed of ['lebanon', 's7', 's42']) {
   const S = createSim(generate(seed), seed), G = S.layout;
   for (const dir of [E, W]) {
-    const mine = G.tracks.filter(t => t.dir === dir);
+    const mine = G.tracks.filter(t => t.dir === dir), visit = (full, weight) => G.fan.stubs.filter(id => S.cuts.has(id) === full)
+      .slice(0, 1).map(id => ({ type: G.tracks[id].industry.trainType, dest: id, weight }));
     const want = [{ type: 'X', dest: null, weight: 3 }, { type: 'Z', dest: null, weight: 2 }, { type: 'M', dest: null, weight: 3 },
       ...mine.filter(t => t.cls === 'platform').map(t => ({ type: 'P', dest: t.id, weight: 6 })),
       ...mine.filter(t => t.cls === 'spur').map(t => ({ type: t.industry.trainType, dest: t.id, weight: 2 })),
-      ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 }))];
+      ...mine.filter(t => t.cls === 'yard').map(t => ({ type: 'L', dest: t.id, weight: 2 })),
+      ...(G.fan?.main === dir ? [...visit(false, 3), ...visit(true, 2)] : [])];
     const key = m => `${m.type}:${m.dest}:${m.weight}`;
     assert.deepEqual(trafficMenu(S, dir).map(key).sort(), want.map(key).sort(), `${seed} ${dir}: menu`);
     assert.deepEqual(holdingTracks(S, dir).sort(), mine.filter(t => t.cls === 'siding' || t.cls === 'yard').map(t => t.id).sort());
@@ -1144,12 +1167,17 @@ for (const seed of ['s1', 's3']) {
 // never standing there, trains to and from the branch. Two termini (tN north, tS south) with the same, plus: every
 // train's path chains from its pathStart; at every reversal no other train, and no route not its own, on any section the
 // reversing train stands in, nor (pulled ahead at P) on the feet main's junction edges; terminus trains in and out
-// within the hour, by the portal they came in by.
+// within the hour, by the portal they came in by. Four fan seeds (north and south, two and three stubs: s7, s47, fS, fS2;
+// tS has a fan and a terminus) with the same, plus: at most one train in a fan (on its path or routed); no head past a cut (a train
+// whose path ends in a full stub stands short of it); a visitor's reversals pass the same check as a terminus train's;
+// every visitor done with its visit within 40 min of entering, in from the fan's serving portal and out at the far end;
+// at least three visits (a set-out or a pick-up) completed per fan seed.
 const snap = S => JSON.stringify({ time: S.time, trains: [...S.trains.values()].map(t => [t.id, t.headDist, t.speed, t.state]), completed: S.completed });
 const held = new Set(); // trains seen holding for an overtake, over all the seeds
 let sawWrongMain = false;
-for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS, tN, tS]) {
-  const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0);
+for (const seed of [...new Set(['lebanon', 's7', 's42', 's47', sN, sS, tN, tS, fN, fS, fS2])]) {
+  const S = busySim(seed), G = S.layout, dwelt = new Map(), w = G.wye, br = G.portals.find(p => p.dir === 0), F = G.fan;
+  const fanEdges = F ? fanGeo(S).fan : [], visitors = new Set();
   const branchSec = w ? G.edges.find(e => e.cls === 'wye').section : null, rows = [G.mainRow[E], G.mainRow[W]];
   const feet = w?.kind === 'terminus' ? termOf(S).feet : [], loco = new Map(); // train id -> locoAtTail after the last step
   let entered = 0, wrongTicks = 0, exemptTicks = 0, reversals = 0, visiting = false, wmWas = new Set();
@@ -1165,22 +1193,29 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS, tN, tS]) {
       visiting = [...S.trains.values()].some(T => T.terminus && T.path.some(e => G.edges[e].junction || G.edges[e].section === branchSec));
       wmWas = wmNow;
     }
+    if (F) {
+      const inFan = new Set([...S.trains.values()].filter(T => T.path.some(e => fanEdges.includes(e))).map(T => T.id));
+      for (const e of fanEdges) if (S.edgeState[e].route !== null) inFan.add(S.routes.get(S.edgeState[e].route).trainId);
+      assert.ok(inFan.size <= 1, `${seed}: two trains in the fan`);
+    }
     for (const T of S.trains.values()) {
       let n = T.pathStart;
       for (const e of T.path) { assert.ok(G.edges[e].a === n || G.edges[e].b === n, `${seed}: ${T.name}'s path is not chained from pathStart`); n = farOf(G, e, n); }
       // its tail is on its path (behind it only while it is still coming in at its portal): a reversal never jumps it
       const coming = T.run === 0 && T.pathOff === 0 && T.pathStart === G.portals[T.entry].node;
       assert.ok(coming || T.headDist - T.len >= T.pathOff - 1e-9, `${seed}: ${T.name}'s tail is off its path`);
-      if (!T.terminus) continue;
+      if (S.cuts.has(G.edges[T.path.at(-1)]?.track)) assert.ok(T.headDist <= stopDist(S, T) + 1e-6, `${seed}: ${T.name} past a cut`);
+      if (T.shunt) visitors.add(T.name);
+      if (!T.terminus && !T.shunt) continue;
       const since = S.time - T.events.find(e => e.kind === 'entered').t;
-      assert.ok(since <= 3600, `${seed}: terminus ${T.name} in for ${since} s`);
+      assert.ok(since <= (T.shunt ? 2400 : 3600), `${seed}: ${T.shunt ? 'visitor' : 'terminus'} ${T.name} in for ${since} s`);
       if (loco.has(T.id) && loco.get(T.id) !== T.locoAtTail) { // it reversed this step (missions runs last)
-        reversals++;
+        if (T.terminus) reversals++;
         const mine = new Set(T.path.filter(e => S.edgeState[e].occ.has(T.id)).map(e => G.edges[e].section));
         const other = e => [...S.edgeState[e].occ].some(id => id !== T.id)
           || (S.edgeState[e].route !== null && S.routes.get(S.edgeState[e].route).trainId !== T.id);
         for (const [sec, es] of S.sectionEdges) if (mine.has(sec)) assert.ok(!es.some(other), `${seed}: ${T.name} reversed with another train in section ${sec}`);
-        if (T.locoAtTail) assert.ok(!feet.some(other), `${seed}: ${T.name} reversed at P with another train on the feet main's junction edges`);
+        if (T.terminus && T.locoAtTail) assert.ok(!feet.some(other), `${seed}: ${T.name} reversed at P with another train on the feet main's junction edges`);
       }
       loco.set(T.id, T.locoAtTail);
     }
@@ -1248,8 +1283,9 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS, tN, tS]) {
     assert.deepEqual(Object.keys(c).sort(), ['delay', 'distance', 'events', 'exitTime', 'from', 'name', 'spawnTime', 'stops', 'to', 'type']);
     // in at its dir's portal or the branch, out at the far end or the branch, never in and out by the branch; a terminus
     // train (it reversed) in and out by its dir's portal, within the hour
-    const d = Number(c.name.split(' ')[1]) % 2 ? W : E, term = c.events.some(e => e.kind === 'reversing');
-    if (term) assert.ok(c.from === portalOf(S, d).name && c.to === c.from && c.exitTime - c.events[1].t <= 3600, `${seed}: terminus ${c.name} from ${c.from} to ${c.to}`);
+    const d = Number(c.name.split(' ')[1]) % 2 ? W : E, term = c.events.some(e => e.kind === 'reversing') && !visitors.has(c.name);
+    if (visitors.has(c.name)) assert.ok(c.from === portalOf(S, F.main).name && c.to === portalOf(S, -F.main).name, `${seed}: visitor ${c.name} from ${c.from} to ${c.to}`);
+    else if (term) assert.ok(c.from === portalOf(S, d).name && c.to === c.from && c.exitTime - c.events[1].t <= 3600, `${seed}: terminus ${c.name} from ${c.from} to ${c.to}`);
     else assert.ok([portalOf(S, d).name, br?.name].includes(c.from) && [portalOf(S, -d).name, br?.name].includes(c.to) && c.from !== c.to,
       `${seed}: ${c.name} from ${c.from} to ${c.to}`);
     assert.ok(c.exitTime > c.spawnTime && c.distance > 0);
@@ -1267,8 +1303,12 @@ for (const seed of ['lebanon', 's7', 's42', 's47', sN, sS, tN, tS]) {
     assert.ok(P.events.filter(e => e.kind === 'route').every(e => /^[EWNS]\d+[A-Z][ds]?$/.test(e.signal)));
   }
   if (w?.kind === 'terminus') {
-    const done = S.completed.filter(c => c.events.some(e => e.kind === 'reversing'));
+    const done = S.completed.filter(c => c.events.some(e => e.kind === 'reversing') && !visitors.has(c.name));
     assert.ok(done.length >= 5 && reversals >= 2 * done.length, `${seed}: ${done.length} terminus trains, ${reversals} reversals`);
+  }
+  if (F) {
+    const visits = S.completed.filter(c => c.events.some(e => e.kind === 'setOut' || e.kind === 'pickUp')).length;
+    assert.ok(visits >= 3, `${seed}: ${visits} fan visits completed`);
   }
   if (br) {
     const arrivals = S.completed.filter(c => c.from === br.name).length, departures = S.completed.filter(c => c.to === br.name).length;
@@ -2416,3 +2456,256 @@ for (const stood of [20, 19]) {
   assert.ok(close(h1, p1 - FOUL - 5 * CAR, 1e-6), `full stub: ${h1} vs ${p1}`);
 }
 console.log('terminus ok');
+
+// ---- The fan visit (spec "Traffic", "The visit (the mission)", "Interlocking additions and operator rules"). fN: a north
+// fan (worked by westbounds off Main 1), fS: a south one (eastbounds off Main 2).
+{
+const quiet = seed => { const S = createSim(generate(seed), seed); S.nextSpawn = S.nextSpawn.map(() => Infinity); return S; };
+const stand = (S, T, path, start) => { // T on path from start, head FOUL short of its end, occupying every path edge
+  Object.assign(T, { path: [...path], pathStart: start, state: 'stopped' });
+  T.headDist = pathLength(S, T) - FOUL;
+  path.forEach(e => S.edgeState[e].occ.add(T.id));
+  return T;
+};
+const startOf = (G, e, dir) => ((G.nodes[G.edges[e].a].x < G.nodes[G.edges[e].b].x) === (dir > 0) ? G.edges[e].a : G.edges[e].b);
+const emptyOf = S => S.layout.fan.stubs.find(id => !S.cuts.has(id)), fullOf = S => S.layout.fan.stubs.find(id => S.cuts.has(id));
+// V: a visitor of the fan's serving dir standing at the stand (P) unreversed, reserved for dest
+const atStand = (S, dest, cars) => {
+  const G = S.layout, g = fanGeo(S), V = spawnTrain(S, { type: G.tracks[dest].industry.trainType, dir: g.d, dest, cars, shunt: true, name: 'V 1' });
+  S.reserved.set(dest, V.id);
+  return stand(S, V, [g.run], g.F.X);
+};
+// O: a train of the other dir standing on the serving main well clear of the fan: wrong main
+const wrongMain = S => {
+  const G = S.layout, F = G.fan, xs = e => [G.nodes[G.edges[e].a].x, G.nodes[G.edges[e].b].x];
+  const far = G.edges.find(e => e.main === F.main && !e.junction && (Math.max(...xs(e.id)) < F.x0 - 8 || Math.min(...xs(e.id)) > F.x1 + 8)).id;
+  const O = stand(S, spawnTrain(S, { type: 'M', dir: -F.main, name: 'M 3' }), [far], startOf(G, far, -F.main));
+  assert.ok(isWrongMain(S, O));
+  return () => { S.edgeState[far].occ.delete(O.id); S.trains.delete(O.id); }; // sends it home
+};
+const kindsOf = T => T.events.map(e => e.kind).filter((k, i, a) => k !== 'route' || a[i - 1] !== 'route'); // runs of routes as one
+const done = (S, T) => S.completed.find(c => c.name === T.name);
+
+assert.deepEqual([DWELL.setOut, DWELL.pickUp], [180, 120]);
+
+// The menu (spec "Traffic"): for the serving dir from the serving portal only, a loaded visit (CUT_MIN..CUT_MAX cars) to
+// the first empty stub at 3 x frt and a light one (no cars) to the first full stub at 2 x frt, each of its stub's industry
+// type, marked shunt; neither while the fan is held or a visitor for it is queued (one in the offing). A fan is one unit:
+// no stub of it is free while another is reserved, routed or bound for.
+for (const seed of [fN, fS]) {
+  const S = quiet(seed), G = S.layout, g = fanGeo(S), F = g.F, d = g.d, at = portalOf(S, d).id, cuts = new Map(S.cuts);
+  const visits = (dir = d, p = at) => trafficMenu(S, dir, p).filter(m => m.shunt);
+  const empty = emptyOf(S), full = fullOf(S), [ld, lt] = [visits().filter(m => m.cars > 0), visits().filter(m => m.cars === 0)];
+  assert.ok(ld.length === 1 && ld[0].cars >= CUT_MIN && ld[0].cars <= CUT_MAX, `${seed}: loaded ${JSON.stringify(ld)}`);
+  assert.deepEqual({ ...ld[0], cars: 0 }, { type: G.tracks[empty].industry.trainType, cars: 0, dest: empty, weight: 3, shunt: true });
+  assert.deepEqual(lt, [{ type: G.tracks[full].industry.trainType, cars: 0, dest: full, weight: 2, shunt: true }], `${seed}: light`);
+  assert.deepEqual(visits(-d, portalOf(S, -d).id), [], `${seed}: drawn for the other dir`);
+  for (const p of G.portals.filter(p => p.dir === 0)) assert.deepEqual(visits(d, p.id), [], `${seed}: drawn at the branch portal`);
+  S.cuts.set(empty, { track: empty, type: 'M', cars: 3 });
+  assert.ok(!visits().some(m => m.cars > 0), `${seed}: loaded with no stub empty`);
+  S.cuts.clear();
+  assert.ok(!visits().some(m => m.cars === 0), `${seed}: light with every stub empty`);
+  S.cuts = new Map(cuts);
+  S.queue[at].push({ id: 90, name: 'M 91', type: 'M', dir: d, entry: at, exit: portalOf(S, -d).id, dest: full, cars: 0, shunt: true,
+    len: LOCO, spawnTime: S.time, sched: S.time });
+  assert.deepEqual(visits(), [], `${seed}: drawn while a visitor is queued`);
+  S.queue[at].length = 0;
+  S.reserved.set(F.stubs[1], 7);
+  assert.deepEqual([trackFree(S, F.stubs[0]), trackFree(S, F.stubs[0], 7), visits()], [false, true, []], `${seed}: another stub reserved`);
+  S.reserved.clear();
+  S.edgeState[g.straight].occ.add(8);
+  assert.deepEqual([trackFree(S, F.stubs[0]), visits()], [false, []], `${seed}: a train on the lead`);
+  S.edgeState[g.straight].occ.clear();
+  const T = spawnTrain(S, { type: 'M', dir: d, dest: F.stubs[1], cars: 0, shunt: true });
+  assert.equal(trackFree(S, F.stubs[0]), false, `${seed}: a train bound for another stub`);
+  S.trains.delete(T.id);
+  assert.equal(trackFree(S, F.stubs[0]), true);
+}
+
+// A visit in AUTO at light density, the visitor queued by hand at the serving portal (drawn traffic around it). Every step:
+// its path chains, no point of it jumps at a reversal (the new tail where the head was), it pushes no faster than 15 mph,
+// it turns round at P only while no other train is wrong main; the loco block stands still across a set-out or a pick-up
+// (the cars become the cut's, or the cut's become the train's). Returns the sim, the train and its status words.
+const visit = (seed, cars, setup = () => {}) => {
+  const S = createSim(generate(seed), seed, { density: 'light' }), G = S.layout, F = G.fan, d = F.main, entry = portalOf(S, d);
+  setup(S);
+  const dest = F.stubs.find(id => S.cuts.has(id) === (cars === 0)), type = G.tracks[dest].industry.trainType;
+  S.auto = true;
+  S.queue = G.portals.map(() => []);
+  S.queue[entry.id].push({ id: S.nextTrainId++, name: 'V 1', type, dir: d, entry: entry.id, exit: portalOf(S, -d).id, dest, cars,
+    len: trainLength(type, cars), shunt: true, spawnTime: S.time, sched: S.time });
+  let T = null, left = null; // the cuts as it departs Lt (a visitor drawn after it may change them before it is out)
+  const words = new Set(), loco = T => { const b = trainBlocks(S, T).find(k => k.kind === 'loco'); return b && [[b.x1, b.y1], [b.x2, b.y2]].sort(); };
+  for (let i = 0; i < 3600 && !done(S, { name: 'V 1' }); i++) {
+    const was = T && S.trains.has(T.id) && { dir: T.dir, head: pointAt(S, T, T.headDist), tail: pointAt(S, T, T.headDist - T.len), loco: loco(T), n: T.events.length, len: T.len };
+    step(S);
+    T ??= [...S.trains.values()].find(t => t.name === 'V 1') ?? null;
+    if (!T || !S.trains.has(T.id)) continue;
+    let n = T.pathStart;
+    for (const e of T.path) { assert.ok(G.edges[e].a === n || G.edges[e].b === n, `${seed}: the path is not chained`); n = farOf(G, e, n); }
+    if (was && was.dir !== T.dir) {
+      if (was.len === T.len) { // (a set-out shortens it in the same step: its loco stands still, below)
+        near(pointAt(S, T, T.headDist - T.len), was.head, `${seed}: a reversal moved the tail`);
+        near(pointAt(S, T, T.headDist), was.tail, `${seed}: a reversal moved the head`);
+      }
+      if (T.dir === -d && T.events.filter(e => e.kind === 'reversing').length === 1)
+        assert.ok(wrongMainTrains(S).every(u => u === T), `${seed}: turned round at P with another train wrong main`);
+    }
+    for (const e of was ? T.events.slice(was.n) : []) {
+      if (e.kind !== 'setOut' && e.kind !== 'pickUp') continue;
+      loco(T).flat().forEach((v, j) => assert.ok(close(v, was.loco.flat()[j]), `${seed}: the loco moved at a ${e.kind}`));
+      const cut = S.cuts.get(T.dest);
+      if (e.kind === 'setOut') assert.deepEqual([T.len, T.cars, cut.cars, cut.type], [LOCO, 0, e.cars, type], `${seed}: set out`);
+      else assert.ok(close(T.len, LOCO + e.cars * CAR) && T.cars === e.cars && !cut, `${seed}: picked up`);
+    }
+    if (T.pushing) assert.ok(T.speed <= PUSH_MPH * MPH + 1e-9, `${seed}: pushing at ${T.speed / MPH} mph`);
+    if (!left && T.events.some(e => e.kind === 'departed')) left = new Map(S.cuts);
+    words.add(trainStatus(T, S));
+  }
+  assert.ok(done(S, T), `${seed}: V 1 not out\n${S.log.map(e => e.text).join('\n')}`);
+  assert.deepEqual([done(S, T).from, done(S, T).to], [entry.name, portalOf(S, -d).name], `${seed}: portals`);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')) && [...S.reserved.values()].every(id => id !== T.id));
+  return { S, T, words, left };
+};
+const near = (p, q, msg) => assert.ok(p && q && close(p.x, q.x) && close(p.y, q.y), `${msg}: ${JSON.stringify(p)} vs ${JSON.stringify(q)}`);
+const said = (S, T, lines) => { // T's log lines in this order
+  const at = lines.map(s => S.log.findIndex(e => e.text.startsWith(`${T.name} ${s}`)));
+  assert.ok(at.every((v, i) => v >= 0 && (!i || v > at[i - 1])), `the log ${at}: ${lines}\n${S.log.map(e => e.text).join('\n')}`);
+};
+
+// A loaded visit: in by the serving portal, stands at P, turns round, backs in to the empty stub and sets its cars out
+// there as a standing cut, runs out light to Lt, turns round, backs on to the full stub's cut and picks it up, runs out
+// to Lt and leaves by the far end loco first. The board reads backing in, setting out and picking up.
+for (const seed of [fN, fS]) {
+  let empty, full;
+  const { S, T, words, left } = visit(seed, 4, S => { empty = emptyOf(S); full = fullOf(S); });
+  const G = S.layout, g = fanGeo(S), name = id => G.tracks[id].name, cut = T.events.find(e => e.kind === 'pickUp').cars;
+  assert.deepEqual(kindsOf(T), ['queued', 'entered', 'route', 'reversing', 'route', 'backing', 'arrived', 'setOut', 'reversing', 'route',
+    'reversing', 'route', 'backing', 'arrived', 'pickUp', 'reversing', 'route', 'departed', 'route', 'out'], `${seed}: events`);
+  said(S, T, [`reversing at ${signalLabel(S, g.pSig)}`, `backing into ${name(empty)}`, `arrived at ${name(empty)}`, `set out 4 cars at ${name(empty)}`,
+    `backing into ${name(full)}`, `picked up ${cut} cars at ${name(full)}`, `departed ${name(full)}`, 'out via ']);
+  assert.ok(!S.log.some(e => e.text === `${T.name} departed ${name(full)} light`));
+  assert.deepEqual([left.get(empty)?.cars, left.has(full), T.cars], [4, false, cut], `${seed}: the cuts as it left`);
+  for (const w of ['backing in', 'setting out', 'picking up']) assert.ok(words.has(w), `${seed}: status words ${[...words]}`);
+}
+// A light visit picks up and leaves loaded; a loaded one with no other stub full sets out and leaves light.
+for (const seed of [fN, fS]) {
+  const { S, T } = visit(seed, 0), full = T.events.find(e => e.kind === 'pickUp').track;
+  assert.deepEqual(kindsOf(T), ['queued', 'entered', 'route', 'reversing', 'route', 'backing', 'arrived', 'pickUp', 'reversing', 'route',
+    'departed', 'route', 'out'], `${seed}: light visit`);
+  assert.ok(T.cars >= CUT_MIN && S.log.some(e => e.text === `V 1 departed ${full}`));
+}
+{
+  const { S, T } = visit(fN, 5, S => S.cuts.clear()), stub = T.events.find(e => e.kind === 'setOut').track;
+  assert.deepEqual(kindsOf(T).slice(-6), ['setOut', 'reversing', 'route', 'departed', 'route', 'out'], 'drop-only');
+  assert.ok(T.cars === 0 && S.log.some(e => e.text === `V 1 departed ${stub} light`));
+}
+
+// A visitor a human routes into a stub other than its dest adapts (spec "Human routes"): loaded into a full stub (the
+// cut small enough to stand beside) it stops at the cut, light into the empty one at the buffer; it sets nothing out and
+// picks nothing up, turns round, runs out to Lt (its next route from that stub's signal) and leaves as it came.
+for (const loaded of [true, false]) {
+  const S = quiet(fN), G = S.layout, g = fanGeo(S), F = g.F, full = fullOf(S), empty = emptyOf(S), wrong = loaded ? full : empty;
+  S.cuts.set(full, { track: full, type: 'M', cars: 3 });
+  const V = atStand(S, loaded ? empty : full, loaded ? 3 : 0);
+  S.auto = true;
+  step(S);
+  assert.deepEqual([V.dir, V.state, V.shunt.stage], [-g.d, 'reversing', 'in'], 'did not turn round at P');
+  assert.equal(setRoute(S, F.shunt.X, g.buffer(wrong), { human: true }).ok, true);
+  let stopped = null;
+  for (let i = 0; i < 3600 && S.trains.has(V.id); i++) {
+    step(S);
+    if (stopped === null && V.state === 'stopped' && G.edges[V.path.at(-1)]?.track === wrong) stopped = [V.headDist, stopDist(S, V)];
+  }
+  assert.ok(stopped && close(stopped[0], stopped[1], 1e-6), `stopped ${stopped}`);
+  const kinds = V.events.map(e => e.kind), back = kinds.indexOf('reversing', kinds.indexOf('reversing') + 1);
+  assert.ok(!kinds.includes('setOut') && !kinds.includes('pickUp'), `${loaded}: ${kinds}`);
+  assert.equal(V.events.slice(back).find(e => e.kind === 'route').signal, signalLabel(S, g.stubSig(wrong)));
+  assert.deepEqual([V.cars, S.cuts.get(full).cars, S.cuts.has(empty), done(S, V)?.to], [loaded ? 3 : 0, 3, false, portalOf(S, -g.d).name]);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')) && S.reserved.size === 0);
+}
+
+// Reverse 1 waits for a moment when no other train is wrong main (spec "The shove is the wrong-main move"): the predicate
+// setRoute uses for 'wrong main' (another train wrong main, an untaken wrong-main route, a terminus train on its visit).
+// Sent home, it turns round within 5 s.
+for (const [seed, why] of [[fN, 'wrong main'], [fS, 'wrong main'], [tS, 'terminus']]) {
+  const S = quiet(seed), G = S.layout, V = atStand(S, emptyOf(S), 4);
+  let home;
+  if (why === 'terminus') {
+    const k = termOf(S), w = k.w, U = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.run[E]], w.F2);
+    home = () => { S.edgeState[k.run[E]].occ.delete(U.id); S.trains.delete(U.id); };
+  } else home = wrongMain(S);
+  for (let i = 0; i < 60; i++) step(S);
+  assert.deepEqual([V.dir, V.state, V.events.some(e => e.kind === 'reversing')], [G.fan.main, 'stopped', false], `${seed}: turned round (${why})`);
+  home();
+  for (let i = 0; i < 5 && V.dir === G.fan.main; i++) step(S);
+  assert.deepEqual([V.dir, V.shunt.stage], [-G.fan.main, 'in'], `${seed}: did not turn round`);
+}
+
+// ... and at its stand it gives the visit up while a terminus train is turning round (stood STARVE in its stub, here): it
+// would wait out that train's visit, standing on its home main, where it can hold the trains the terminus train waits on
+// (s14: the terminus train's way out against Main 2 waited on the eastbound trains queued behind a visitor at P). One
+// that has not stood STARVE holds the gate shut and nothing more.
+for (const starved of [true, false]) {
+  const S = quiet(tS), G = S.layout, k = termOf(S), w = k.w, dest = emptyOf(S), V = atStand(S, dest, 4);
+  const D = stand(S, spawnTrain(S, { type: 'P', dir: E, dest: w.stub, name: 'P 2' }), [k.stub[1]], k.buffer);
+  Object.assign(D, { dir: W, reversed1: true, dest: null, exit: D.entry, goal: { exit: D.entry }, lastMoveTime: S.time - (starved ? 600 : 0) });
+  S.auto = true;
+  step(S);
+  assert.equal(S.log.some(e => e.text === `V 1 missed ${G.tracks[dest].name}`), starved, `starved ${starved}`);
+  assert.deepEqual([V.shunt?.stage ?? null, V.dir], [starved ? null : 'approach', G.fan.main]);
+}
+
+// The valve: a visitor that has stood 20 min (2 x STARVE) at its stand unable to turn round gives the visit up, keeps its
+// cars and runs on for the far end; the fan is free again and back on the menu. At 19 min it waits.
+for (const stood of [20, 19]) {
+  const S = quiet(fN), G = S.layout, dest = emptyOf(S), V = atStand(S, dest, 4), home = wrongMain(S);
+  V.lastMoveTime = S.time - stood * 60;
+  S.auto = true;
+  step(S);
+  const missed = S.log.some(e => e.text === `V 1 missed ${G.tracks[dest].name}`);
+  assert.equal(missed, stood >= 20, `${stood} min: missed ${missed}`);
+  if (!missed) { assert.deepEqual([V.shunt.stage, V.dest], ['approach', dest]); continue; }
+  assert.deepEqual([V.shunt, V.dest, V.cars, V.exit, S.reserved.size], [null, null, 4, portalOf(S, E).id, 0]); // (westbound: out west)
+  assert.ok(V.events.some(e => e.kind === 'missed') && trafficMenu(S, W).some(m => m.shunt), 'the fan is not on the menu again');
+  home();
+  for (let i = 0; i < 3600 && S.trains.has(V.id); i++) step(S);
+  assert.deepEqual([done(S, V)?.to, V.cars], [portalOf(S, E).name, 4]);
+}
+
+// A human route from P on along the main before it turns round sends it past its stand: it gives the visit up and runs
+// for the far end with its cars.
+{
+  const S = quiet(fN), G = S.layout, g = fanGeo(S), dest = emptyOf(S), V = atStand(S, dest, 4);
+  const on = S.routesFrom.get(g.pSig).find(c => !c.diverging && !c.slow);
+  assert.equal(setRoute(S, g.pSig, on.exitNode, { human: true }).ok, true);
+  S.auto = true;
+  for (let i = 0; i < 3600 && S.trains.has(V.id); i++) step(S);
+  assert.ok(S.log.some(e => e.text === `V 1 missed ${G.tracks[dest].name}`) && !V.events.some(e => e.kind === 'reversing'));
+  assert.deepEqual([done(S, V)?.to, V.cars, S.reserved.size], [portalOf(S, -g.d).name, 4, 0]);
+}
+
+// Its departure from Lt needs the run, and waits for a train of the other dir standing at P's signal on the serving main
+// (wrong main there: a passing move): that train's way on is free, so it is routed on and clears, and the visitor's route
+// out is set within 5 s of the run's section being clear of it. Nothing stalls.
+for (const seed of [fN, fS]) {
+  const S = quiet(seed), G = S.layout, g = fanGeo(S), F = g.F, d = g.d, dest = fullOf(S);
+  const V = stand(S, spawnTrain(S, { type: 'M', dir: d, dest, cars: 3, shunt: true, name: 'V 1' }), [g.straight], F.J);
+  Object.assign(V.shunt, { stage: 'depart' });
+  V.goal = { node: F.Lt };
+  S.reserved.set(dest, V.id);
+  const into = G.edges.find(e => e.id !== g.run && e.main === d && [e.a, e.b].includes(F.P)).id;
+  const O = stand(S, spawnTrain(S, { type: 'M', dir: -d, name: 'M 3' }), [into], startOf(G, into, -d));
+  S.auto = true;
+  let clear = null;
+  for (let i = 0; i < 1800 && !V.routes.length; i++) {
+    step(S);
+    const holds = g.main.some(e => S.edgeState[e].occ.has(O.id) || (S.edgeState[e].route !== null && S.routes.get(S.edgeState[e].route).trainId === O.id));
+    if (holds) assert.equal(V.routes.length, 0, `${seed}: routed out against the train at P`);
+    else clear ??= S.time;
+  }
+  assert.ok(V.routes.length && clear !== null && S.time - clear <= 5, `${seed}: routed ${S.time - clear} s after the run cleared`);
+  assert.ok(!S.log.some(e => e.text.startsWith('STALL')));
+}
+}
+console.log('industrial ok');
