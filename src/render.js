@@ -137,21 +137,20 @@ export function createRenderer(canvas) {
     return sim.routes.get(st.route)?.human ? COLORS.human : COLORS.route;
   }
 
-  // Signal sizes at this zoom (brief sizes at zoom >= 1, never below 3 px a lamp). Two heads stack outward
-  // (top head nearest the track) when a row has room for them; at tighter zooms they sit side by side, the
-  // bottom head upstream, so the glyph never reaches the neighbouring track. reach: the largest glyph's
-  // extent from the track centre. Rows and the stem column share the cell, so the same sizes serve a stem.
+  // Signal sizes at this zoom (brief sizes at zoom >= 1, never below 3 px a lamp). Two heads always stack
+  // outward, top head nearest the track, as American heads do; at tight zooms the stack can reach into the
+  // neighbouring row (the user's ruling: stacked, never side by side). reach: the largest glyph's extent
+  // from the track centre. Rows and the stem column share the cell, so the same sizes serve a stem.
   function sigSize() {
     const z = r.camera.zoom, lw = lineW(), rad = clamp(4 * z, 3, 4), off = clamp(7 * z, 4, 7);
-    const stack = CELL * z >= off + 4 * rad + 2 + lw;
-    return { lw, rad, off, stack, reach: off + (stack ? 4 * rad + 1 : 2 * rad) };
+    return { lw, rad, off, reach: off + 4 * rad + 1 };
   }
   // Head centres in screen px, on the right-hand side of travel past it (v = rightOf(f), f its facing): below an
   // eastbound signal, above a westbound one, west of one facing down a stem, east of one facing up it. The second
-  // head goes further out along v, or upstream (-f) when side by side.
+  // head goes further out along v.
   function signalGeom(sim, sig) {
     const n = sim.layout.nodes[sig.node], x = X(n.x), y = Y(n.y), f = facingOf(sim.layout, sig), v = rightOf(f);
-    const { lw, rad, off, stack } = sigSize();
+    const { lw, rad, off } = sigSize();
     if (sig.kind === 'dwarf' || sig.kind === 'shunt') {
       // A terminus's shunt signals are dwarfs too. One stands on a foot of the wye, so its glyph stands back from the
       // points along the run it faces: the chevron's tip 6 px short of the node, clear of the leg and the foot's padlock.
@@ -161,7 +160,7 @@ export function createRenderer(canvas) {
     }
     const h1 = [x + v.x * (off + rad), y + v.y * (off + rad)], heads = [h1];
     if (signalHeads(sim, sig.id) === 2)
-      heads.push(stack ? [h1[0] + v.x * (2 * rad + 1), h1[1] + v.y * (2 * rad + 1)] : [h1[0] - f.x * (2 * rad + 1), h1[1] - f.y * (2 * rad + 1)]);
+      heads.push([h1[0] + v.x * (2 * rad + 1), h1[1] + v.y * (2 * rad + 1)]);
     const centre = [(heads[0][0] + heads.at(-1)[0]) / 2, (heads[0][1] + heads.at(-1)[1]) / 2];
     return { x, y, f, v, rad, heads, centre, extent: rad + (heads.length - 1) * (rad + 0.5) };
   }
@@ -265,8 +264,7 @@ export function createRenderer(canvas) {
       const ns = t.edges.flatMap(id => [nodes[edges[id].a], nodes[edges[id].b]]), y = Y(ns[0].y);
       const lo = Math.min(...ns.map(n => n.x)), hi = Math.max(...ns.map(n => n.x));
       if (t.cls === 'platform') {
-        // The exit signal stands a cell in from the exit end, its second head upstream at tight zooms; keep
-        // the box clear of it and of both ladders.
+        // The exit signal stands a cell in from the exit end; keep the box clear of it and of both ladders.
         const x0 = X(lo + (t.dir < 0 ? 2 : 0.5)), x1 = X(hi - (t.dir > 0 ? 2 : 0.5)), cy = y + t.dir * Math.min(cellPx / 2, boxOff);
         platform(x0, x1 - x0, cy, t.dir);
         text(t.name, (x0 + x1) / 2, cy, `bold ${labelPx}px ${SANS}`, WHITE);
@@ -353,7 +351,7 @@ export function createRenderer(canvas) {
     // 6. Signals.
     for (const sig of L.signals) {
       const g = signalGeom(sim, sig), lp = lamps(aspectOf(sim, sig.id), sig.kind, g.heads.length);
-      if (sig.kind === 'high') { // stub mast from the track to the heads; a bar joins side-by-side heads
+      if (sig.kind === 'high') { // stub mast from the track up through the heads
         const [hx, hy] = g.heads.at(-1);
         line(g.x + g.v.x * lw / 2, g.y + g.v.y * lw / 2, g.heads[0][0], g.heads[0][1], P.track, 2, 'butt');
         line(g.heads[0][0], g.heads[0][1], hx, hy, P.track, 2, 'butt');
